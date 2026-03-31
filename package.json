@@ -10,7 +10,10 @@
     "recharts": "latest",
     "firebase": "latest",
     "clsx": "latest",
-    "tailwind-merge": "latest"
+    "tailwind-merge": "latest",
+    "tailwindcss": "^3.0.0",
+    "postcss": "^8.0.0",
+    "autoprefixer": "^10.0.0"
   },
   "scripts": {
     "start": "react-scripts start",
