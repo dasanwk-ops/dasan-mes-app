@@ -92,10 +92,10 @@ const syncToGoogleSheets = async (
   // 🌟 [핵심 로직] 창고 잔여 물량과 이미 출고된 물량을 합쳐서 '총 생산량'을 복원합니다.
   const mergedLots = {};
 
-  // 1. 현재 완제품 창고 및 포장완료 상태인 데이터 수집
-  const wipFinished = (wipList || []).filter(
-    (w) => w.currentStep === "done" || w.currentStep === "step8"
-  );
+ // 1. 현재 완제품 창고 및 포장완료 상태인 데이터 수집
+const wipFinished = (wipList || []).filter(
+  (w) => w.currentStep === "done"
+);
 
   wipFinished.forEach((w) => {
     mergedLots[w.mixLot] = {
@@ -329,9 +329,9 @@ export default function DasanMES() {
     if (!isUnlocked) return; // 로그인 전에는 작동하지 않음
 
     // 현재 완제품 수량과 출고된 수량을 계산합니다.
-    const currentFinished = wipList.filter(
-      (w) => w.currentStep === "done" || w.currentStep === "step8"
-    ).length;
+const currentFinished = wipList.filter(
+  (w) => w.currentStep === "done"
+).length;
     const currentShipped = shippingHistory.length;
 
     // 만약 이전보다 '포장 완료된 제품'이나 '출고된 제품'이 늘어났다면? -> 자동 동기화 발동!
