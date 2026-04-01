@@ -952,7 +952,55 @@ function DashboardView({
         </div>
       </div>
 
-      {/* 🌟 3. [통합] 원재료 현황 및 생산 재고 예측 섹션 */}
+      {/* 🚀 4번이 위로 올라왔습니다! 공정별 네비게이션 아이콘 */}
+      <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
+        <h3 className="text-lg font-bold mb-6 text-slate-800 flex items-center">
+          <ArrowRight className="w-5 h-5 mr-2 text-blue-600" /> 공정 상황 상세
+          이동
+        </h3>
+        <div className="flex justify-between items-start w-full">
+          {pipelineSteps.map((step, idx) => {
+            const count = wipList
+              .filter((w) => w.currentStep.startsWith(step.id))
+              .reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
+            const Icon = step.icon;
+            return (
+              <div
+                key={step.id}
+                onClick={() => setActiveStep(step.id)}
+                className="flex-1 flex flex-col items-center relative group cursor-pointer hover:bg-slate-50 rounded-xl py-2"
+              >
+                {idx < pipelineSteps.length - 1 && (
+                  <div className="absolute top-6 left-1/2 w-full h-0.5 bg-slate-100 -z-10"></div>
+                )}
+                <div
+                  className={`w-10 h-10 rounded-2xl flex items-center justify-center mb-2 shadow-sm ${
+                    count > 0
+                      ? "bg-blue-600 text-white"
+                      : "bg-slate-100 text-slate-400"
+                  }`}
+                >
+                  <Icon className="w-5 h-5" />
+                </div>
+                <div className="text-center w-full">
+                  <div className="text-[10px] font-bold text-slate-500 mb-0.5">
+                    {step.name}
+                  </div>
+                  <div
+                    className={`text-sm font-black ${
+                      count > 0 ? "text-blue-700" : "text-slate-300"
+                    }`}
+                  >
+                    {count}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 🌟 3번이 아래로 내려갔습니다! 원재료 현황 및 생산 재고 예측 섹션 */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6 space-y-6">
         <div className="flex justify-between items-center">
           <div className="flex items-center gap-2">
@@ -1284,54 +1332,6 @@ function DashboardView({
                     })}
             </tbody>
           </table>
-        </div>
-      </div>
-
-      {/* 4. 공정별 네비게이션 아이콘 (기존 유지) */}
-      <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
-        <h3 className="text-lg font-bold mb-6 text-slate-800 flex items-center">
-          <ArrowRight className="w-5 h-5 mr-2 text-blue-600" /> 공정 상황 상세
-          이동
-        </h3>
-        <div className="flex justify-between items-start w-full">
-          {pipelineSteps.map((step, idx) => {
-            const count = wipList
-              .filter((w) => w.currentStep.startsWith(step.id))
-              .reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
-            const Icon = step.icon;
-            return (
-              <div
-                key={step.id}
-                onClick={() => setActiveStep(step.id)}
-                className="flex-1 flex flex-col items-center relative group cursor-pointer hover:bg-slate-50 rounded-xl py-2"
-              >
-                {idx < pipelineSteps.length - 1 && (
-                  <div className="absolute top-6 left-1/2 w-full h-0.5 bg-slate-100 -z-10"></div>
-                )}
-                <div
-                  className={`w-10 h-10 rounded-2xl flex items-center justify-center mb-2 shadow-sm ${
-                    count > 0
-                      ? "bg-blue-600 text-white"
-                      : "bg-slate-100 text-slate-400"
-                  }`}
-                >
-                  <Icon className="w-5 h-5" />
-                </div>
-                <div className="text-center w-full">
-                  <div className="text-[10px] font-bold text-slate-500 mb-0.5">
-                    {step.name}
-                  </div>
-                  <div
-                    className={`text-sm font-black ${
-                      count > 0 ? "text-blue-700" : "text-slate-300"
-                    }`}
-                  >
-                    {count}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
         </div>
       </div>
 
