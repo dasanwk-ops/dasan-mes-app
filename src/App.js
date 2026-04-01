@@ -188,10 +188,37 @@ const wipFinished = (wipList || []).filter(
       headers: { "Content-Type": "text/plain" },
       body: JSON.stringify(payload),
     });
-    // 사용자가 직접 버튼을 눌렀을 때(ctx가 있을 때)만 알림을 띄웁니다.
+// 사용자가 직접 버튼을 눌렀을 때(ctx가 있을 때)만 알림을 띄웁니다.
     if (ctx) ctx.showToast("주주 보고용 구글 시트 동기화 완료", "success");
   } catch (e) {
     if (ctx) ctx.showToast("시트 동기화 실패", "error");
+  }
+};
+
+// 🌟 [신규 추가] 개별 공정 기록을 구글 시트로 전송하는 스텔스 엔진
+const logProcessToGoogleSheet = async (stepId, wipItem, operator = "현장작업자", details = "") => {
+  const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxFqyQaps_suzkAmQnOgDDOU_A1p--lmvAIOLZEo8LSPIAQ5mVLofzfFZo0Rmvq7LI7DA/exec";
+  try {
+    const payload = {
+      type: "PROCESS_LOG",
+      data: {
+        stepId: stepId,
+        timestamp: getKST(),
+        lot: wipItem.mixLot || wipItem.lot || wipItem.orderNo || "N/A",
+        product: wipItem.type ? `${wipItem.type} ${wipItem.height}T` : (wipItem.productCode || "N/A"),
+        qty: Number(wipItem.qty) || 0,
+        worker: operator,
+        details: details
+      }
+    };
+    await fetch(APPS_SCRIPT_URL, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify(payload)
+    });
+  } catch (error) {
+    console.error(`[${stepId}] 기록 전송 실패:`, error);
   }
 };
 
@@ -1977,8 +2004,11 @@ function Step0OrderManagement({ orderList, ctx }) {
           });
 
           setReleaseQtyMap({ ...releaseQtyMap, [order.id]: "" });
-          ctx.showToast(`${inputQty}개 원재료 창고로 전송 완료`, "success");
-        } catch (e) {
+      ctx.showToast(`${inputQty}개 원재료 창고로 전송 완료`, "success");
+
+      // 🌟 시트 기록 추가
+      logProcessToGoogleSheet("step0", { ...order, qty: inputQty, mixLot: order.orderNo }, "마스터", "발주 분할 투입");
+    } catch (e) {
           ctx.showToast("투입 처리 중 오류 발생", "error");
         }
       }
@@ -2428,9 +2458,12 @@ function Step1MaterialWarehouse({
         details: `${
           lot.details
         }\n[${getKST()}] [원재료창고] 출고완료 (담당:${op})`,
-      });
-      ctx.showToast(`로트 ${lot.mixLot} 출고 및 혼합 이관 완료`, "success");
-    } catch (e) {
+     });
+    ctx.showToast(`로트 ${lot.mixLot} 출고 및 혼합 이관 완료`, "success");
+
+    // 🌟 시트 기록 추가
+    logProcessToGoogleSheet("step1", lot, op, "원재료 혼합 공정으로 출고");
+  } catch (e) {
       ctx.showToast("오류 발생", "error");
     }
   };
@@ -2967,9 +3000,12 @@ function Step2Mixing({ wipList, ctx }) {
         }`,
       });
       setOperator("");
-      setSpecialNote("");
-      ctx.showToast("혼합 완료", "success");
-    } catch (err) {
+    setSpecialNote("");
+    ctx.showToast("혼합 완료", "success");
+
+    // 🌟 시트 기록 추가
+    logProcessToGoogleSheet("step2", activeJob, operator, specialNote || "일반 혼합");
+  } catch (err) {
       ctx.showToast("오류 발생", "error");
     }
   };
@@ -3011,9 +3047,12 @@ function Step2Mixing({ wipList, ctx }) {
       setIsSplitMode(false);
       setSplitWeightStr("");
       setOperator("");
-      setSpecialNote("");
-      ctx.showToast("잔량 분할 완료", "success");
-    } catch (err) {
+    setSpecialNote("");
+    ctx.showToast("잔량 분할 완료", "success");
+
+    // 🌟 시트 기록 추가
+    logProcessToGoogleSheet("step2", { ...activeJob, qty: subQty }, operator, "잔량 분할 소진");
+  } catch (err) {
       ctx.showToast("오류 발생", "error");
     }
   };
@@ -3439,10 +3478,13 @@ function Step3FirstMolding({ wipList, ctx }) {
           qty: Math.max(0, aQty - defQty),
           currentStep: "step4",
           details: `${docSnap.data().details || ""}\n${recordDetails}`, // 🌟 여기에 적용
-        });
-      });
-      ctx.showToast("1차 성형 완료", "success");
-    } catch (err) {
+ });
+  });
+  ctx.showToast("1차 성형 완료", "success");
+
+  // 🌟 시트 기록 추가
+  logProcessToGoogleSheet("step3", wItem, d.operator, recordDetails);
+} catch (err) {
       ctx.showToast(typeof err === "string" ? err : "오류 발생", "error");
     }
   };
@@ -3850,10 +3892,13 @@ function Step4SecondMolding({ wipList, ctx }) {
         }
 
         transaction.delete(docRef);
-      });
+  });
 
-      ctx.showToast("2차 성형 완료 및 열처리 이관", "success");
-    } catch (err) {
+  ctx.showToast("2차 성형 완료 및 열처리 이관", "success");
+
+  // 🌟 시트 기록 추가
+  logProcessToGoogleSheet("step4", wipItem, d.operator, `A호기(${qtyA}개)/B호기(${qtyB}개) 성형완료`);
+} catch (err) {
       ctx.showToast(typeof err === "string" ? err : "오류 발생", "error");
     }
   };
@@ -4562,12 +4607,15 @@ function Step5HeatTreatment({ wipList, furnaces, ctx }) {
           }\n[${curTime}] [열처리] 직경:${dAvg} | 높이:${hAvg} | 평균수축률:${avgS} | 담당:${
             f.operator
           }`,
-        });
-      }
-    }
+       });
+  }
 
-    try {
-      for (let id of wipsToDelete) await deleteDoc(getDocRef("wipList", id));
+  // 🌟 시트 기록 추가 (반복문 안에서 각 로트별로 쏨)
+  logProcessToGoogleSheet("step5", w, f.operator, `열처리 완료`);
+} 
+
+try {
+  for (let id of wipsToDelete) await deleteDoc(getDocRef("wipList", id));
       for (let w of newWips) await setDoc(getDocRef("wipList", w.id), w);
       await setDoc(getDocRef("equipment", "furnaces"), {
         ...furnaces,
@@ -5136,10 +5184,13 @@ function Step6Inspection({ wipList, ctx }) {
           data.innerDia || 0
         } | 외경:${data.outerDia || 0} | 턱:${data.stepH || 0} | 제품:${
           data.prodH || 0
-        } | 담당:${data.operator}${defectStr}`,
-      });
-      ctx.showToast("검수 완료", "success");
-    } catch (err) {
+       } | 담당:${data.operator}${defectStr}`,
+  });
+  ctx.showToast("검수 완료", "success");
+
+  // 🌟 시트 기록 추가
+  logProcessToGoogleSheet("step6", w, data.operator, `치수측정 완료 ${defectStr}`);
+} catch (err) {
       ctx.showToast("오류 발생", "error");
     }
   };
@@ -5403,11 +5454,14 @@ function Step7Drying({ wipList, dryingRoom: room, ctx }) {
       delete newCompData[targetId];
       await setDoc(getDocRef("equipment", "dryingRoom"), {
         ...room,
-        completionData: newCompData,
-      });
+    completionData: newCompData,
+  });
 
-      ctx.showToast("건조 완료 및 포장 이관", "success");
-    } catch (err) {
+  ctx.showToast("건조 완료 및 포장 이관", "success");
+
+  // 🌟 시트 기록 추가
+  logProcessToGoogleSheet("step7", w, room?.operator, recordDetails);
+} catch (err) {
       ctx.showToast("오류 발생", "error");
     }
   };
@@ -5616,17 +5670,20 @@ function Step8Packaging({ wipList, orderList, ctx }) {
       });
 
       // 2. 발주 상태 업데이트 (생산완료)
-      if (wip.orderId) {
-        const targetOrder = (orderList || []).find((o) => o.id === wip.orderId);
-        if (targetOrder) {
-          await setDoc(getDocRef("orderList", wip.orderId), {
-            ...targetOrder,
-            status: "생산완료",
-          });
-        }
-      }
-      ctx.showToast("포장 및 수축률 기록 완료", "success");
-    } catch (err) {
+          if (wip.orderId) {
+            const targetOrder = (orderList || []).find((o) => o.id === wip.orderId);
+            if (targetOrder) {
+              await setDoc(getDocRef("orderList", wip.orderId), {
+                ...targetOrder,
+                status: "생산완료",
+              });
+            }
+          }
+          ctx.showToast("포장 및 수축률 기록 완료", "success");
+
+          // 🌟 시트 기록 추가
+          logProcessToGoogleSheet("step8", wip, data.operator, `포장 S.F:${wip.shrinkageRate} ${defectStr}`);
+        } catch (err) {
       console.error(err);
       ctx.showToast("오류 발생", "error");
     }
@@ -5853,10 +5910,13 @@ function Step9FinishedGoods({ wipList, shippingHistory, orderList, ctx }) {
             ...wip,
             qty: wip.qty - safeQty,
           });
-        }
+       }
 
-        ctx.showToast("출고 및 출고완료 처리됨", "success");
-      } catch (e) {
+    ctx.showToast("출고 및 출고완료 처리됨", "success");
+
+    // 🌟 시트 기록 추가
+    logProcessToGoogleSheet("step9", { ...wip, qty: safeQty }, d.operator, `[출고처: ${d.destination}]`);
+  } catch (e) {
         ctx.showToast("출고 중 오류가 발생했습니다.", "error");
       }
     });
