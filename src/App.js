@@ -3496,8 +3496,8 @@ function Step3FirstMolding({ wipList, ctx }) {
   });
   ctx.showToast("1차 성형 완료", "success");
 
-  // 🌟 시트 기록 추가 (압력, 치수 분리 기록)
-logProcessToGoogleSheet("step3", wItem, d.operator, {
+// 🌟 시트 기록 추가 (정상수량 = 전체 - 불량 적용)
+logProcessToGoogleSheet("step3", { ...wItem, qty: aQty - defQty }, d.operator, {
   defects: defQty,
   defectReason: d.defectReason,
   conditions: `압력:${d.pressure || 0}`,
@@ -3916,9 +3916,17 @@ function Step4SecondMolding({ wipList, ctx }) {
 
   ctx.showToast("2차 성형 완료 및 열처리 이관", "success");
 
- // 🌟 시트 기록 추가 (A/B 호기 각각 상세 기록)
+ // 🌟 시트 기록 추가 (단위 추가 및 보강)
 if (qtyA > 0) {
   logProcessToGoogleSheet("step4", { ...wipItem, qty: qtyA }, d.operator, {
+    defects: defA,
+    defectReason: d.defectReasonA || "-",
+    equipment: "A호기",
+    conditions: `압력:${d.pressureA || 0}bar`,
+    measurements: `직경:${dAvgA}mm, 높이:${hAvgA}mm`,
+    details: d.specialNote || "-"
+  });
+}
     defects: defA,
     defectReason: d.defectReasonA,
     equipment: "A호기",
@@ -5232,8 +5240,8 @@ function Step6Inspection({ wipList, ctx }) {
   });
   ctx.showToast("검수 완료", "success");
 
-  // 🌟 시트 기록 추가 (내경, 외경 등 모든 치수 분리 기록)
-logProcessToGoogleSheet("step6", w, data.operator, {
+ // 🌟 시트 기록 추가 (불량 차감된 수량 전송)
+logProcessToGoogleSheet("step6", { ...w, qty: w.qty - defectQty }, data.operator, {
   defects: defectQty,
   defectReason: data.defectReason,
   measurements: `내경:${data.innerDia}, 외경:${data.outerDia}, 턱:${data.stepH}, 제품높이:${data.prodH}`,
