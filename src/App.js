@@ -2469,10 +2469,12 @@ function Step1MaterialWarehouse({
      });
     ctx.showToast(`로트 ${lot.mixLot} 출고 및 혼합 이관 완료`, "success");
 
-   // 🌟 시트 기록 추가
-logProcessToGoogleSheet("step1", lot, op, { 
-  details: "원재료 혼합 공정으로 출고" 
-});
+// 🌟 시트 기록 추가 (수량 대신 총 중량(kg)과 투입 원료명 기록)
+    const materialsStr = Object.keys(neededBOM).join(", ");
+    logProcessToGoogleSheet("step1", { ...lot, qty: totalW.toFixed(3) }, op, { 
+      measurements: `투입원료: ${materialsStr}`,
+      details: "원재료 혼합 공정으로 출고 (단위: kg)" 
+    });
   } catch (e) {
       ctx.showToast("오류 발생", "error");
     }
@@ -3013,10 +3015,11 @@ function Step2Mixing({ wipList, ctx }) {
     setSpecialNote("");
     ctx.showToast("혼합 완료", "success");
 
-   // 🌟 시트 기록 추가
-logProcessToGoogleSheet("step2", activeJob, operator, { 
-  details: specialNote || "일반 혼합" 
-});
+// 🌟 시트 기록 추가 (수량 대신 총 혼합 중량 기록)
+    logProcessToGoogleSheet("step2", { ...activeJob, qty: activeJob.weight }, operator, { 
+      measurements: `혼합중량: ${activeJob.weight}kg`,
+      details: specialNote ? `일반 혼합 [메모:${specialNote}] (단위: kg)` : "일반 혼합 (단위: kg)"
+    });
   } catch (err) {
       ctx.showToast("오류 발생", "error");
     }
@@ -3062,10 +3065,11 @@ logProcessToGoogleSheet("step2", activeJob, operator, {
     setSpecialNote("");
     ctx.showToast("잔량 분할 완료", "success");
 
-   // 🌟 시트 기록 추가
-logProcessToGoogleSheet("step2", { ...activeJob, qty: subQty }, operator, { 
-  details: "잔량 분할 소진" 
-});
+// 🌟 시트 기록 추가 (수량 대신 분할된 중량 기록)
+    logProcessToGoogleSheet("step2", { ...activeJob, qty: subTotal.toFixed(3) }, operator, { 
+      measurements: `분할중량: ${subTotal.toFixed(3)}kg`,
+      details: "잔량 분할 소진 (단위: kg)" 
+    });
   } catch (err) {
       ctx.showToast("오류 발생", "error");
     }
@@ -3494,15 +3498,15 @@ function Step3FirstMolding({ wipList, ctx }) {
           details: `${docSnap.data().details || ""}\n${recordDetails}`, // 🌟 여기에 적용
  });
   });
-  ctx.showToast("1차 성형 완료", "success");
+ctx.showToast("1차 성형 완료", "success");
 
-// 🌟 시트 기록 추가 (정상수량 = 전체 - 불량 적용)
+// 🌟 시트 기록 추가 (정상수량=전체-불량 적용 및 단위 추가)
 logProcessToGoogleSheet("step3", { ...wItem, qty: aQty - defQty }, d.operator, {
   defects: defQty,
-  defectReason: d.defectReason,
-  conditions: `압력:${d.pressure || 0}`,
-  measurements: `직경:${dAvg}, 높이:${hAvg}, 무게:${wAvg}`,
-  details: d.specialNote
+  defectReason: d.defectReason || "-",
+  conditions: `압력:${d.pressure || 0}ton`,
+  measurements: `직경:${dAvg}mm, 높이:${hAvg}mm, 무게:${wAvg}g`,
+  details: d.specialNote || "-"
 });
 } catch (err) {
       ctx.showToast(typeof err === "string" ? err : "오류 발생", "error");
@@ -3914,9 +3918,9 @@ function Step4SecondMolding({ wipList, ctx }) {
         transaction.delete(docRef);
   });
 
-  ctx.showToast("2차 성형 완료 및 열처리 이관", "success");
+ctx.showToast("2차 성형 완료 및 열처리 이관", "success");
 
- // 🌟 시트 기록 추가 (단위 추가 및 보강)
+// 🌟 시트 기록 추가 (A/B 호기 상세 데이터 전용 칸 배정)
 if (qtyA > 0) {
   logProcessToGoogleSheet("step4", { ...wipItem, qty: qtyA }, d.operator, {
     defects: defA,
@@ -3927,20 +3931,14 @@ if (qtyA > 0) {
     details: d.specialNote || "-"
   });
 }
-    defects: defA,
-    defectReason: d.defectReasonA,
-    equipment: "A호기",
-    conditions: `압력:${d.pressureA}`,
-    measurements: `직경:${dAvgA}, 높이:${hAvgA}`
-  });
-}
 if (qtyB > 0) {
   logProcessToGoogleSheet("step4", { ...wipItem, qty: qtyB }, d.operator, {
     defects: defB,
-    defectReason: d.defectReasonB,
+    defectReason: d.defectReasonB || "-",
     equipment: "B호기",
-    conditions: `압력:${d.pressureB}`,
-    measurements: `직경:${dAvgB}, 높이:${hAvgB}`
+    conditions: `압력:${d.pressureB || 0}bar`,
+    measurements: `직경:${dAvgB}mm, 높이:${hAvgB}mm`,
+    details: d.specialNote || "-"
   });
 }
 } catch (err) {
@@ -4655,16 +4653,18 @@ function Step5HeatTreatment({ wipList, furnaces, ctx }) {
        });
   }
 
-  // 🌟 시트 기록 추가 (장비호기, 온도, 수축률 분리 기록)
-logProcessToGoogleSheet("step5", w, f.operator, {
-  defects: def,
-  defectReason: cData.reason,
-  equipment: `${fid}호기`,
-  conditions: `온도:${f.temp}`,
-  measurements: `수축률:${w.shrinkageRate || "-"}`,
-  details: cData.specialNote
-});
-} 
+// 🌟 시트 기록 추가 (열처리 온도 및 수축률 전용 칸 기록 - 수축률 계산 보강)
+          const displayShrink = diff > 0.3 ? "편차분할" : (validShrinks.length > 0 ? (validShrinks.reduce((a, b) => a + b, 0) / validShrinks.length).toFixed(4) : "-");
+          
+          logProcessToGoogleSheet("step5", { ...w, qty: remainQty }, f.operator, {
+            defects: def,
+            defectReason: cData.reason || "-",
+            equipment: `${fid}호기`,
+            conditions: `온도:${f.temp}°C`,
+            measurements: `평균수축률:${displayShrink}%`,
+            details: cData.specialNote || "-"
+          });
+        } // for문 종료 괄호 
 
 try {
   for (let id of wipsToDelete) await deleteDoc(getDocRef("wipList", id));
@@ -5240,12 +5240,12 @@ function Step6Inspection({ wipList, ctx }) {
   });
   ctx.showToast("검수 완료", "success");
 
- // 🌟 시트 기록 추가 (불량 차감된 수량 전송)
+// 🌟 시트 기록 추가 (모든 치수 및 현장 메모 분리 기록)
 logProcessToGoogleSheet("step6", { ...w, qty: w.qty - defectQty }, data.operator, {
   defects: defectQty,
-  defectReason: data.defectReason,
-  measurements: `내경:${data.innerDia}, 외경:${data.outerDia}, 턱:${data.stepH}, 제품높이:${data.prodH}`,
-  details: "치수측정 완료"
+  defectReason: data.defectReason || "-",
+  measurements: `내경:${data.innerDia}, 외경:${data.outerDia}, 턱:${data.stepH}, 제품:${data.prodH}`,
+  details: data.memo || "검수완료"
 });
 } catch (err) {
       ctx.showToast("오류 발생", "error");
@@ -5274,8 +5274,9 @@ logProcessToGoogleSheet("step6", { ...w, qty: w.qty - defectQty }, data.operator
                 치수 측정 (내/외/턱/높)
               </th>
               <th className="p-4 font-bold border-b">불량 관리</th>
-              <th className="p-4 font-bold border-b">담당자</th>
-              <th className="p-4 font-bold border-b text-center">작업</th>
+              <th className="p-4 font-bold border-b">담당자</th>
+              <th className="p-4 font-bold border-b">메모</th>
+              <th className="p-4 font-bold border-b text-center">작업</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -5403,17 +5404,26 @@ logProcessToGoogleSheet("step6", { ...w, qty: w.qty - defectQty }, data.operator
                     </td>
 
                     <td className="p-4">
+                      <input
+                        type="text"
+                        onChange={(e) =>
+                          handleDataChange(wip.id, "operator", e.target.value)
+                        }
+                        className="w-20 border p-1.5 text-xs rounded font-bold focus:border-indigo-400 outline-none"
+                        placeholder="성명"
+                      />
+                    </td>
+                    <td className="p-4">
                       <input
                         type="text"
                         onChange={(e) =>
-                          handleDataChange(wip.id, "operator", e.target.value)
+                          handleDataChange(wip.id, "memo", e.target.value)
                         }
-                        className="w-20 border p-1.5 text-xs rounded font-bold focus:border-indigo-400 outline-none"
-                        placeholder="성명"
+                        className="w-full border p-1.5 text-xs rounded focus:border-indigo-400 outline-none"
+                        placeholder="특이사항 입력"
                       />
                     </td>
-
-                    <td className="p-4 text-center">
+                    <td className="p-4 text-center">
                       <button
                         onClick={() => moveNext(wip.id)}
                         className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-xs font-black shadow-sm transition-transform active:scale-95"
@@ -5516,12 +5526,12 @@ function Step7Drying({ wipList, dryingRoom: room, ctx }) {
 
   ctx.showToast("건조 완료 및 포장 이관", "success");
 
-  // 🌟 시트 기록 추가 (온도, 습도 분리 기록)
-logProcessToGoogleSheet("step7", w, room?.operator, {
+// 🌟 시트 기록 추가 (온도, 습도, 불량 분리 기록)
+logProcessToGoogleSheet("step7", { ...w, qty: remainQty }, room?.operator, {
   defects: def,
-  defectReason: cData.reason,
-  conditions: `온도:${room?.temp}°C, 습도:${room?.humidity}%`,
-  details: cData.specialNote
+  defectReason: cData.reason || "-",
+  conditions: `온도:${room?.temp || 60}°C, 습도:${room?.humidity || 20}%`,
+  details: cData.specialNote || "-"
 });
 } catch (err) {
       ctx.showToast("오류 발생", "error");
@@ -5743,12 +5753,12 @@ function Step8Packaging({ wipList, orderList, ctx }) {
           }
           ctx.showToast("포장 및 수축률 기록 완료", "success");
 
-          // 🌟 시트 기록 추가 (최종 수축률 데이터 분리)
-logProcessToGoogleSheet("step8", wip, data.operator, {
+ // 🌟 시트 기록 추가 (수축률 및 불량 분리 기록)
+logProcessToGoogleSheet("step8", { ...wip, qty: wip.qty - defectQty }, data.operator, {
   defects: defectQty,
-  defectReason: data.defectReason,
-  measurements: `최종 S.F:${wip.shrinkageRate}`,
-  details: data.specialNote
+  defectReason: data.defectReason || "-",
+  measurements: `S.F:${wip.shrinkageRate}`,
+  details: data.specialNote || "-"
 });
         } catch (err) {
       console.error(err);
@@ -5981,10 +5991,10 @@ function Step9FinishedGoods({ wipList, shippingHistory, orderList, ctx }) {
 
     ctx.showToast("출고 및 출고완료 처리됨", "success");
 
-   // 🌟 시트 기록 추가 (출고처를 장비 칸에 기록)
+// 🌟 시트 기록 추가 (출고처 정보를 [장비] 칸에 기록)
 logProcessToGoogleSheet("step9", { ...wip, qty: safeQty }, d.operator, {
   equipment: d.destination,
-  details: "최종 출고 처리"
+  details: wip.details ? "이력포함출고" : "일반출고"
 });
   } catch (e) {
         ctx.showToast("출고 중 오류가 발생했습니다.", "error");
