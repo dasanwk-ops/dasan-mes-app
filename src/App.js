@@ -2469,11 +2469,11 @@ function Step1MaterialWarehouse({
      });
     ctx.showToast(`로트 ${lot.mixLot} 출고 및 혼합 이관 완료`, "success");
 
-// 🌟 시트 기록 추가 (수량 대신 총 중량(kg)과 투입 원료명 기록)
-    const materialsStr = Object.keys(neededBOM).join(", ");
-    logProcessToGoogleSheet("step1", { ...lot, qty: totalW.toFixed(3) }, op, { 
-      measurements: `투입원료: ${materialsStr}`,
-      details: "원재료 혼합 공정으로 출고 (단위: kg)" 
+// 🌟 시트 기록 추가 (수량은 EA 유지 + 사용된 원재료와 세부 무게 기록)
+    const materialsStr = Object.entries(neededBOM).map(([mat, kg]) => `${mat}(${kg.toFixed(3)}kg)`).join(", ");
+    logProcessToGoogleSheet("step1", { ...lot, qty: lot.qty }, op, { 
+      measurements: `투입: ${materialsStr}`,
+      details: "원재료 혼합 공정으로 출고" 
     });
   } catch (e) {
       ctx.showToast("오류 발생", "error");
@@ -3015,10 +3015,11 @@ function Step2Mixing({ wipList, ctx }) {
     setSpecialNote("");
     ctx.showToast("혼합 완료", "success");
 
-// 🌟 시트 기록 추가 (수량 대신 총 혼합 중량 기록)
-    logProcessToGoogleSheet("step2", { ...activeJob, qty: activeJob.weight }, operator, { 
-      measurements: `혼합중량: ${activeJob.weight}kg`,
-      details: specialNote ? `일반 혼합 [메모:${specialNote}] (단위: kg)` : "일반 혼합 (단위: kg)"
+// 🌟 시트 기록 추가 (수량은 EA 유지 + 원재료별 세부 배합량 기록)
+    const materialsStr = activeMaterials.map((m) => `${m}(${(parseFloat(activeJob.weight) * ratios[m]).toFixed(3)}kg)`).join(", ");
+    logProcessToGoogleSheet("step2", { ...activeJob, qty: activeJob.qty }, operator, { 
+      measurements: `총 ${activeJob.weight}kg [${materialsStr}]`,
+      details: specialNote || "일반 혼합" 
     });
   } catch (err) {
       ctx.showToast("오류 발생", "error");
@@ -3065,10 +3066,11 @@ function Step2Mixing({ wipList, ctx }) {
     setSpecialNote("");
     ctx.showToast("잔량 분할 완료", "success");
 
-// 🌟 시트 기록 추가 (수량 대신 분할된 중량 기록)
-    logProcessToGoogleSheet("step2", { ...activeJob, qty: subTotal.toFixed(3) }, operator, { 
-      measurements: `분할중량: ${subTotal.toFixed(3)}kg`,
-      details: "잔량 분할 소진 (단위: kg)" 
+// 🌟 시트 기록 추가 (수량은 EA 유지 + 원재료별 세부 배합량 기록)
+    const splitMaterialsStr = activeMaterials.map((m) => `${m}(${(subTotal * ratios[m]).toFixed(3)}kg)`).join(", ");
+    logProcessToGoogleSheet("step2", { ...activeJob, qty: subQty }, operator, { 
+      measurements: `총 ${subTotal.toFixed(3)}kg [${splitMaterialsStr}]`,
+      details: specialNote || "잔량 분할 소진" 
     });
   } catch (err) {
       ctx.showToast("오류 발생", "error");
