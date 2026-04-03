@@ -5403,16 +5403,17 @@ logProcessToGoogleSheet("step6", { ...w, qty: w.qty - defectQty }, data.operator
                       </div>
                     </td>
 
-                    <td className="p-4">
-                      <input
-                        type="text"
-                        onChange={(e) =>
-                          handleDataChange(wip.id, "operator", e.target.value)
-                        }
-                        className="w-20 border p-1.5 text-xs rounded font-bold focus:border-indigo-400 outline-none"
-                        placeholder="성명"
-                      />
-                    </td>
+<td className="p-4">
+                      <input
+                        type="text"
+                        onChange={(e) =>
+                          handleDataChange(wip.id, "operator", e.target.value)
+                        }
+                        className="w-20 border p-1.5 text-xs rounded font-bold focus:border-indigo-400 outline-none"
+                        placeholder="성명"
+                      />
+                    </td>
+                    {/* 🌟 여기에 메모 입력칸을 새로 추가합니다! 🌟 */}
                     <td className="p-4">
                       <input
                         type="text"
@@ -5423,7 +5424,8 @@ logProcessToGoogleSheet("step6", { ...w, qty: w.qty - defectQty }, data.operator
                         placeholder="특이사항 입력"
                       />
                     </td>
-                    <td className="p-4 text-center">
+                    {/* ------------------------------------------- */}
+                    <td className="p-4 text-center">
                       <button
                         onClick={() => moveNext(wip.id)}
                         className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-xs font-black shadow-sm transition-transform active:scale-95"
