@@ -1,0 +1,8 @@
+{
+  "short_name": "다산MES",
+  "name": "다산산업 공정관리 시스템",
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#4f46e5",
+  "background_color": "#f8fafc"
+}
