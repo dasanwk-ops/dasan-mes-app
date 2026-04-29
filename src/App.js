@@ -5270,16 +5270,14 @@ logProcessToGoogleSheet("step6", { ...w, qty: w.qty - defectQty }, data.operator
       <div className="overflow-x-auto">
         <table className="w-full text-sm text-left border-collapse">
           <thead>
-            <tr className="text-[11px] uppercase tracking-wider text-slate-500 bg-slate-50/50">
-              <th className="p-4 font-bold border-b">로트 / 제품명</th>
-              <th className="p-4 font-bold border-b">현재수량</th>
-              <th className="p-4 font-bold border-b text-center">
-                치수 측정 (내/외/턱/높)
-              </th>
-              <th className="p-4 font-bold border-b">불량 관리</th>
-              <th className="p-4 font-bold border-b">담당자</th>
-              <th className="p-4 font-bold border-b">메모</th>
-              <th className="p-4 font-bold border-b text-center">작업</th>
+           <tr className="text-[11px] uppercase tracking-wider text-slate-500 bg-slate-50/50">
+              <th className="p-4 font-bold border-b w-40 whitespace-nowrap">로트 / 제품명</th>
+              <th className="p-4 font-bold border-b w-20 whitespace-nowrap">현재수량</th>
+              <th className="p-4 font-bold border-b text-center w-56 whitespace-nowrap">치수 측정 (내/외/턱/높)</th>
+              <th className="p-4 font-bold border-b w-32 whitespace-nowrap">불량 관리</th>
+              <th className="p-4 font-bold border-b w-28 whitespace-nowrap">담당자</th>
+              <th className="p-4 font-bold border-b min-w-[150px]">메모</th>
+              <th className="p-4 font-bold border-b text-center w-24 whitespace-nowrap">작업</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
