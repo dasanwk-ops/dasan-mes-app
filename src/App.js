@@ -5759,7 +5759,7 @@ const [printedStatus, setPrintedStatus] = useState({}); // 🌟 출력 여부 �
     }
   };
 
-  const handlePrintLabel = async (wipId) => {
+ const handlePrintLabel = async (wipId) => {
     const data = formData[wipId] || {};
     const wip = wipList.find((w) => w.id === wipId);
 
@@ -5771,29 +5771,38 @@ const [printedStatus, setPrintedStatus] = useState({}); // 🌟 출력 여부 �
     const finalQty = Math.max(0, wip.qty - defectQty);
     const finalLot = `F${getKSTDateOnly().slice(-5)}${wip.id.slice(-2)}`;
 
-    // ✨ 대표님 요청 규칙 적용
     const productName = `Z1100VT${wip.type}${wip.height}`;
     const sizeDisplay = `Φ98 x ${wip.height}mm`;
+    
+    // 확대율 계산 추가
+    const s = Number(wip.shrinkageRate);
+    const calculatedScaleFactor = (1 / (1 - s / 100)).toFixed(4);
 
     try {
-      await addDoc(collection(db, "print-queue"), {
+      // 🌟 db 변수 대신 getFirestore()를 직접 사용하여 전송 실패 방지
+      const printQueueRef = collection(getFirestore(), "print-queue");
+
+      await addDoc(printQueueRef, {
         productName: productName,
         color: wip.type,
         height: wip.height,
         lotNumber: finalLot,
         shrinkage: wip.shrinkageRate,
-        scaleFactor: calculatedScaleFactor,
+        scaleFactor: calculatedScaleFactor, // 🌟 확대율 데이터 추가
         mfgDate: getKST().split(" ")[0],
         size: sizeDisplay,
         quantity: finalQty,
         status: "pending",
         createdAt: serverTimestamp(),
       });
-     ctx.showToast("프린터로 라벨 출력 명령을 전송했습니다! 🖨️", "success");
-      setPrintedStatus(prev => ({ ...prev, [wipId]: true })); // 🌟 전송 성공 시 '출력됨'으로 상태 변경
+
+      ctx.showToast("프린터로 라벨 출력 명령을 전송했습니다! 🖨️", "success");
+      setPrintedStatus(prev => ({ ...prev, [wipId]: true })); // 버튼 상태 변경
+
     } catch (err) {
       console.error("인쇄 전송 오류:", err);
-      ctx.showToast("인쇄 명령 전송에 실패했습니다.", "error");
+      // 🌟 구체적인 에러 원인을 알림창에 표시
+      ctx.showToast(`전송 실패: ${err.message}`, "error");
     }
   };
 
