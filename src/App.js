@@ -5268,7 +5268,7 @@ logProcessToGoogleSheet("step6", { ...w, qty: w.qty - defectQty }, data.operator
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full text-sm text-left border-collapse">
+        <table className="w-full text-sm text-left border-collapse table-fixed">
           <thead>
            <tr className="text-[11px] uppercase tracking-wider text-slate-500 bg-slate-50/50">
               <th className="p-4 font-bold border-b w-40 whitespace-nowrap">로트 / 제품명</th>
@@ -5769,7 +5769,7 @@ logProcessToGoogleSheet("step8", { ...wip, qty: wip.qty - defectQty }, data.oper
     }
   };
 
-  const handlePrintLabel = async (wipId) => {
+const handlePrintLabel = async (wipId) => {
     const data = formData[wipId] || {};
     const wip = wipList.find((w) => w.id === wipId);
 
@@ -5781,15 +5781,21 @@ logProcessToGoogleSheet("step8", { ...wip, qty: wip.qty - defectQty }, data.oper
     const finalQty = Math.max(0, wip.qty - defectQty);
     const finalLot = `F${getKSTDateOnly().slice(-5)}${wip.id.slice(-2)}`;
 
+    // ✅ 대표님이 말씀하신 규칙 적용 부분
+    // 제품명: Z1100VT + 색상(wip.type) + 높이(wip.height)
+    const productName = `Z1100VT${wip.type}${wip.height}`;
+    // 사이즈: Φ98 x 높이mm
+    const sizeDisplay = `Φ98 x ${wip.height}mm`;
+
     try {
       await addDoc(collection(db, "print-queue"), {
-        productName: `ECLIPSE Ge9 ${wip.type}`,
+        productName: productName,      // 예: Z1100VTBL325
         color: wip.type,
         height: wip.height,
         lotNumber: finalLot,
         shrinkage: wip.shrinkageRate,
         mfgDate: getKST().split(" ")[0],
-        size: "98파이",
+        size: sizeDisplay,             // 예: Φ98 x 25mm
         quantity: finalQty,
         status: "pending",
         createdAt: serverTimestamp(),
