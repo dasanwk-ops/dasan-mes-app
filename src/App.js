@@ -5698,7 +5698,7 @@ logProcessToGoogleSheet("step7", { ...w, qty: remainQty }, room?.operator, {
 }
 
 // ==========================================
-// Step 8: Packaging (수축률 UI 완벽 반영 버전)
+// Step 8: Packaging (수축률 UI 완벽 반영 및 인쇄 연동 버전)
 // ==========================================
 function Step8Packaging({ wipList, orderList, ctx }) {
   const pendingWip = wipList.filter((w) => w.currentStep === "step8");
@@ -5710,11 +5710,10 @@ function Step8Packaging({ wipList, orderList, ctx }) {
       [id]: { ...(prev[id] || {}), [field]: val },
     }));
 
-const moveNext = async (wipId) => {
+  const moveNext = async (wipId) => {
     const data = formData[wipId] || {};
     const wip = wipList.find((w) => w.id === wipId);
 
-    // ✅ 열처리에서 넘어온 수축률 데이터가 있는지 체크
     if (!data.operator || !wip?.shrinkageRate) {
       return ctx.showToast(
         "작업자 성명 입력 혹은 열처리 단계 수축률 데이터가 필요합니다.",
@@ -5723,11 +5722,7 @@ const moveNext = async (wipId) => {
     }
 
     const defectQty = parseInt(data.defects) || 0;
-    // 🌟 불량 기록 문자열 생성
-    const defectStr =
-      defectQty > 0
-        ? ` [불량 ${defectQty}개: ${data.defectReason || "사유미상"}]`
-        : "";
+    const defectStr = defectQty > 0 ? ` [불량 ${defectQty}개: ${data.defectReason || "사유미상"}]` : "";
 
     try {
       const newLot = `F${getKSTDateOnly().slice(-5)}${wip.id.slice(-2)}`;
@@ -5738,38 +5733,33 @@ const moveNext = async (wipId) => {
         shrinkageRate: wip.shrinkageRate,
         qty: Math.max(0, wip.qty - defectQty),
         currentStep: "done",
-        // 🌟 끝에 defectStr 추가
-        details: `${wip.details || ""}\n[${getKST()}] [포장완료] 담당: ${
-          data.operator
-        } [수축률: ${wip.shrinkageRate}]${defectStr}`,
+        details: `${wip.details || ""}\n[${getKST()}] [포장완료] 담당: ${data.operator} [수축률: ${wip.shrinkageRate}]${defectStr}`,
       });
 
-      // 2. 발주 상태 업데이트 (생산완료)
-          if (wip.orderId) {
-            const targetOrder = (orderList || []).find((o) => o.id === wip.orderId);
-            if (targetOrder) {
-              await setDoc(getDocRef("orderList", wip.orderId), {
-                ...targetOrder,
-                status: "생산완료",
-              });
-            }
-          }
-          ctx.showToast("포장 및 수축률 기록 완료", "success");
+      if (wip.orderId) {
+        const targetOrder = (orderList || []).find((o) => o.id === wip.orderId);
+        if (targetOrder) {
+          await setDoc(getDocRef("orderList", wip.orderId), {
+            ...targetOrder,
+            status: "생산완료",
+          });
+        }
+      }
+      ctx.showToast("포장 및 수축률 기록 완료", "success");
 
- // 🌟 시트 기록 추가 (수축률 및 불량 분리 기록)
-logProcessToGoogleSheet("step8", { ...wip, qty: wip.qty - defectQty }, data.operator, {
- defects: defectQty,
- defectReason: data.defectReason || "-",
- measurements: `S.F:${wip.shrinkageRate}`,
- details: data.specialNote || "-"
-});
-        } catch (err) {
+      logProcessToGoogleSheet("step8", { ...wip, qty: wip.qty - defectQty }, data.operator, {
+        defects: defectQty,
+        defectReason: data.defectReason || "-",
+        measurements: `S.F:${wip.shrinkageRate}`,
+        details: data.specialNote || "-"
+      });
+    } catch (err) {
       console.error(err);
       ctx.showToast("오류 발생", "error");
     }
   };
 
-const handlePrintLabel = async (wipId) => {
+  const handlePrintLabel = async (wipId) => {
     const data = formData[wipId] || {};
     const wip = wipList.find((w) => w.id === wipId);
 
@@ -5781,21 +5771,19 @@ const handlePrintLabel = async (wipId) => {
     const finalQty = Math.max(0, wip.qty - defectQty);
     const finalLot = `F${getKSTDateOnly().slice(-5)}${wip.id.slice(-2)}`;
 
-    // ✅ 대표님이 말씀하신 규칙 적용 부분
-    // 제품명: Z1100VT + 색상(wip.type) + 높이(wip.height)
+    // ✨ 대표님 요청 규칙 적용
     const productName = `Z1100VT${wip.type}${wip.height}`;
-    // 사이즈: Φ98 x 높이mm
     const sizeDisplay = `Φ98 x ${wip.height}mm`;
 
     try {
       await addDoc(collection(db, "print-queue"), {
-        productName: productName,      // 예: Z1100VTBL325
+        productName: productName,
         color: wip.type,
         height: wip.height,
         lotNumber: finalLot,
         shrinkage: wip.shrinkageRate,
         mfgDate: getKST().split(" ")[0],
-        size: sizeDisplay,             // 예: Φ98 x 25mm
+        size: sizeDisplay,
         quantity: finalQty,
         status: "pending",
         createdAt: serverTimestamp(),
@@ -5807,26 +5795,10 @@ const handlePrintLabel = async (wipId) => {
     }
   };
 
- // 🌟 시트 기록 추가 (수축률 및 불량 분리 기록)
-logProcessToGoogleSheet("step8", { ...wip, qty: wip.qty - defectQty }, data.operator, {
-  defects: defectQty,
-  defectReason: data.defectReason || "-",
-  measurements: `S.F:${wip.shrinkageRate}`,
-  details: data.specialNote || "-"
-});
-        } catch (err) {
-      console.error(err);
-      ctx.showToast("오류 발생", "error");
-    }
-  };
-
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
       <h3 className="text-lg font-bold mb-2">포장 및 라벨링</h3>
-      <p className="text-sm text-slate-500 mb-6">
-        최종 수축률(Scaling Factor)을 입력하고 라벨을 발행합니다.
-      </p>
-
+      <p className="text-sm text-slate-500 mb-6">최종 수축률(Scaling Factor)을 입력하고 라벨을 발행합니다.</p>
       <div className="overflow-x-auto">
         <table className="w-full text-sm text-left">
           <thead className="text-xs text-slate-500 uppercase bg-slate-50 border-y border-slate-200">
@@ -5834,8 +5806,7 @@ logProcessToGoogleSheet("step8", { ...wip, qty: wip.qty - defectQty }, data.oper
               <th className="px-4 py-3">현재 로트</th>
               <th className="px-4 py-3">제품/색상</th>
               <th className="px-4 py-3 text-center">최종수량</th>
-              <th className="px-4 py-3 text-blue-600">수축률 (S.F)</th>{" "}
-              {/* 🌟 추가된 제목 */}
+              <th className="px-4 py-3 text-blue-600">수축률 (S.F)</th>
               <th className="px-4 py-3 text-red-600">불량(수량/사유)</th>
               <th className="px-4 py-3">메모/작업자</th>
               <th className="px-4 py-3 text-center">작업</th>
@@ -5843,136 +5814,46 @@ logProcessToGoogleSheet("step8", { ...wip, qty: wip.qty - defectQty }, data.oper
           </thead>
           <tbody>
             {pendingWip.length === 0 && (
-              <tr>
-                <td
-                  colSpan="7"
-                  className="text-center py-10 text-slate-400 font-bold"
-                >
-                  포장 대기 중인 제품이 없습니다.
-                </td>
-              </tr>
+              <tr><td colSpan="7" className="text-center py-10 text-slate-400 font-bold">포장 대기 중인 제품이 없습니다.</td></tr>
             )}
             {pendingWip.map((wip) => {
               const data = formData[wip.id] || {};
               return (
-                <tr
-                  key={wip.id}
-                  className="border-b border-slate-100 hover:bg-slate-50 transition-colors"
-                >
+                <tr key={wip.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
                   <td className="px-4 py-4">
                     <div className="flex flex-col">
-                      {/* 1. 현재 로트 (원로트) - 상단에 작게 표시 */}
-                      <span className="text-[10px] text-slate-400 font-bold mb-1 uppercase">
-                        원로트: {wip.mixLot}
-                      </span>
-                      {/* 2. 최종 포장 로트 - 하단에 확대율처럼 크고 명확하게 표시 */}
+                      <span className="text-[10px] text-slate-400 font-bold mb-1 uppercase">원로트: {wip.mixLot}</span>
                       <div className="text-lg font-black text-indigo-700 bg-indigo-50 px-4 py-1.5 rounded-lg border border-indigo-200 shadow-sm w-max tracking-widest">
-                        F{getKSTDateOnly().slice(-5)}
-                        {wip.id.slice(-2)}
+                        F{getKSTDateOnly().slice(-5)}{wip.id.slice(-2)}
                       </div>
                     </div>
                   </td>
-                  <td className="px-4 py-4 font-bold text-slate-800">
-                    {wip.type}{" "}
-                    <span className="text-indigo-600">{wip.height}T</span>
-                  </td>
-                  <td className="px-4 py-4 font-black text-indigo-700 text-xl text-center">
-                    {wip.qty}
-                  </td>
-
-                  {/* 🌟 수축률 입력 칸 추가 */}
+                  <td className="px-4 py-4 font-bold text-slate-800">{wip.type} <span className="text-indigo-600">{wip.height}T</span></td>
+                  <td className="px-4 py-4 font-black text-indigo-700 text-xl text-center">{wip.qty}</td>
                   <td className="px-4 py-4">
-                    <div className="flex flex-col items-center">
-                      <span className="text-[10px] text-slate-400 font-bold mb-1 uppercase">
-                        S.F & Scale Factor
-                      </span>
-                      <div className="flex flex-col items-center bg-blue-50 px-4 py-1.5 rounded-lg border border-blue-100 shadow-sm min-w-[100px]">
-                        {/* 1. 수축률 (%) 표시 */}
-                        <div className="text-[10px] font-bold text-slate-500 mb-0.5">
-                          수축률:{" "}
-                          {wip.shrinkageRate ? `${wip.shrinkageRate}%` : "-"}
-                        </div>
-                        {/* 2. 확대율(Scale Factor) 자동 계산 표시 */}
-                        <div className="text-lg font-black text-blue-700">
-                          {(() => {
-                            const s = Number(wip.shrinkageRate);
-                            if (!isNaN(s) && s > 0 && s < 100) {
-                              // 공식: 1 / (1 - (수축률 / 100))
-                              return (1 / (1 - s / 100)).toFixed(4);
-                            }
-                            return "계산 불가";
-                          })()}
-                        </div>
-                      </div>
+                    <div className="flex flex-col items-center bg-blue-50 px-4 py-1.5 rounded-lg border border-blue-100 shadow-sm min-w-[100px]">
+                      <div className="text-[10px] font-bold text-slate-500 mb-0.5">수축률: {wip.shrinkageRate}%</div>
+                      <div className="text-lg font-black text-blue-700">{(1 / (1 - Number(wip.shrinkageRate) / 100)).toFixed(4)}</div>
                     </div>
                   </td>
-
                   <td className="px-4 py-4 w-40">
                     <div className="flex flex-col space-y-1">
-                      <input
-                        type="number"
-                        placeholder="불량"
-                        value={data.defects || ""}
-                        onChange={(e) =>
-                          handleDataChange(wip.id, "defects", e.target.value)
-                        }
-                        className="border border-red-200 rounded p-1.5 text-xs text-center text-red-600 bg-red-50"
-                      />
-                      <input
-                        type="text"
-                        placeholder="사유"
-                        value={data.defectReason || ""}
-                        onChange={(e) =>
-                          handleDataChange(
-                            wip.id,
-                            "defectReason",
-                            e.target.value
-                          )
-                        }
-                        className="border rounded p-1.5 text-[10px]"
-                      />
+                      <input type="number" placeholder="불량" value={data.defects || ""} onChange={(e) => handleDataChange(wip.id, "defects", e.target.value)} className="border border-red-200 rounded p-1.5 text-xs text-center text-red-600 bg-red-50" />
+                      <input type="text" placeholder="사유" value={data.defectReason || ""} onChange={(e) => handleDataChange(wip.id, "defectReason", e.target.value)} className="border rounded p-1.5 text-[10px]" />
                     </div>
                   </td>
-
                   <td className="px-4 py-4 w-40">
                     <div className="flex flex-col space-y-1">
-                      <input
-                        type="text"
-                        placeholder="메모"
-                        value={data.specialNote || ""}
-                        onChange={(e) =>
-                          handleDataChange(
-                            wip.id,
-                            "specialNote",
-                            e.target.value
-                          )
-                        }
-                        className="border rounded p-1.5 text-[10px]"
-                      />
-                      <input
-                        type="text"
-                        placeholder="작업자"
-                        value={data.operator || ""}
-                        onChange={(e) =>
-                          handleDataChange(wip.id, "operator", e.target.value)
-                        }
-                        className="border rounded p-1.5 text-xs text-center font-bold focus:border-indigo-400"
-                      />
+                      <input type="text" placeholder="메모" value={data.specialNote || ""} onChange={(e) => handleDataChange(wip.id, "specialNote", e.target.value)} className="border rounded p-1.5 text-[10px]" />
+                      <input type="text" placeholder="작업자" value={data.operator || ""} onChange={(e) => handleDataChange(wip.id, "operator", e.target.value)} className="border rounded p-1.5 text-xs text-center font-bold" />
                     </div>
                   </td>
-
                   <td className="px-4 py-4">
                     <div className="flex flex-col space-y-2">
-                      <button
-  onClick={() => handlePrintLabel(wip.id)}
-  className="text-[10px] bg-slate-100 text-slate-600 px-2 py-1.5 rounded font-bold flex items-center justify-center shadow-sm border border-slate-200 transition-colors hover:bg-indigo-50 hover:text-indigo-600 hover:border-indigo-200"
->
-  <Printer className="w-3 h-3 mr-1" /> 라벨출력
-</button>
-                      <button
-                        onClick={() => moveNext(wip.id)}
-                        className="text-[10px] bg-indigo-600 text-white px-2 py-1.5 rounded font-bold hover:bg-indigo-700 flex items-center justify-center shadow-sm"
-                      >
+                      <button onClick={() => handlePrintLabel(wip.id)} className="text-[10px] bg-slate-100 text-slate-600 px-2 py-1.5 rounded font-bold flex items-center justify-center shadow-sm border border-slate-200 hover:bg-indigo-50 hover:text-indigo-600 transition-colors">
+                        <Printer className="w-3 h-3 mr-1" /> 라벨출력
+                      </button>
+                      <button onClick={() => moveNext(wip.id)} className="text-[10px] bg-indigo-600 text-white px-2 py-1.5 rounded font-bold hover:bg-indigo-700 flex items-center justify-center shadow-sm">
                         <CheckCircle2 className="w-3 h-3 mr-1" /> 포장완료
                       </button>
                     </div>
