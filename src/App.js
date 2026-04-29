@@ -15,6 +15,7 @@ import {
   onSnapshot,
   runTransaction,
   serverTimestamp,
+  addDoc,
 } from "firebase/firestore";
 import {
   LayoutDashboard,
@@ -5711,7 +5712,7 @@ function Step8Packaging({ wipList, orderList, ctx }) {
       [id]: { ...(prev[id] || {}), [field]: val },
     }));
 
-  const moveNext = async (wipId) => {
+const moveNext = async (wipId) => {
     const data = formData[wipId] || {};
     const wip = wipList.find((w) => w.id === wipId);
 
@@ -5756,6 +5757,51 @@ function Step8Packaging({ wipList, orderList, ctx }) {
             }
           }
           ctx.showToast("포장 및 수축률 기록 완료", "success");
+
+ // 🌟 시트 기록 추가 (수축률 및 불량 분리 기록)
+logProcessToGoogleSheet("step8", { ...wip, qty: wip.qty - defectQty }, data.operator, {
+ defects: defectQty,
+ defectReason: data.defectReason || "-",
+ measurements: `S.F:${wip.shrinkageRate}`,
+ details: data.specialNote || "-"
+});
+        } catch (err) {
+      console.error(err);
+      ctx.showToast("오류 발생", "error");
+    }
+  };
+
+  const handlePrintLabel = async (wipId) => {
+    const data = formData[wipId] || {};
+    const wip = wipList.find((w) => w.id === wipId);
+
+    if (!wip?.shrinkageRate) {
+      return ctx.showToast("열처리 단계 수축률 데이터가 없습니다.", "error");
+    }
+
+    const defectQty = parseInt(data.defects) || 0;
+    const finalQty = Math.max(0, wip.qty - defectQty);
+    const finalLot = `F${getKSTDateOnly().slice(-5)}${wip.id.slice(-2)}`;
+
+    try {
+      await addDoc(collection(db, "print-queue"), {
+        productName: `ECLIPSE Ge9 ${wip.type}`,
+        color: wip.type,
+        height: wip.height,
+        lotNumber: finalLot,
+        shrinkage: wip.shrinkageRate,
+        mfgDate: getKST().split(" ")[0],
+        size: "98파이",
+        quantity: finalQty,
+        status: "pending",
+        createdAt: serverTimestamp(),
+      });
+      ctx.showToast("프린터로 라벨 출력 명령을 전송했습니다! 🖨️", "success");
+    } catch (err) {
+      console.error("인쇄 전송 오류:", err);
+      ctx.showToast("인쇄 명령 전송에 실패했습니다.", "error");
+    }
+  };
 
  // 🌟 시트 기록 추가 (수축률 및 불량 분리 기록)
 logProcessToGoogleSheet("step8", { ...wip, qty: wip.qty - defectQty }, data.operator, {
@@ -5913,9 +5959,12 @@ logProcessToGoogleSheet("step8", { ...wip, qty: wip.qty - defectQty }, data.oper
 
                   <td className="px-4 py-4">
                     <div className="flex flex-col space-y-2">
-                      <button className="text-[10px] bg-slate-100 text-slate-600 px-2 py-1.5 rounded font-bold hover:bg-slate-200 flex items-center justify-center">
-                        <Printer className="w-3 h-3 mr-1" /> 라벨출력
-                      </button>
+                      <button
+  onClick={() => handlePrintLabel(wip.id)}
+  className="text-[10px] bg-slate-100 text-slate-600 px-2 py-1.5 rounded font-bold flex items-center justify-center shadow-sm border border-slate-200 transition-colors hover:bg-indigo-50 hover:text-indigo-600 hover:border-indigo-200"
+>
+  <Printer className="w-3 h-3 mr-1" /> 라벨출력
+</button>
                       <button
                         onClick={() => moveNext(wip.id)}
                         className="text-[10px] bg-indigo-600 text-white px-2 py-1.5 rounded font-bold hover:bg-indigo-700 flex items-center justify-center shadow-sm"
