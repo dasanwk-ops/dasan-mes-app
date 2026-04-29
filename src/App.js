@@ -5782,6 +5782,7 @@ function Step8Packaging({ wipList, orderList, ctx }) {
         height: wip.height,
         lotNumber: finalLot,
         shrinkage: wip.shrinkageRate,
+        scaleFactor: calculatedScaleFactor,
         mfgDate: getKST().split(" ")[0],
         size: sizeDisplay,
         quantity: finalQty,
