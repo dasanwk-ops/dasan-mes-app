@@ -5702,8 +5702,8 @@ logProcessToGoogleSheet("step7", { ...w, qty: remainQty }, room?.operator, {
 // ==========================================
 function Step8Packaging({ wipList, orderList, ctx }) {
   const pendingWip = wipList.filter((w) => w.currentStep === "step8");
-  const [formData, setFormData] = useState({});
-
+const [formData, setFormData] = useState({});
+const [printedStatus, setPrintedStatus] = useState({}); // 🌟 출력 여부 저장 변수 추가 
   const handleDataChange = (id, field, val) =>
     setFormData((prev) => ({
       ...prev,
@@ -5789,7 +5789,8 @@ function Step8Packaging({ wipList, orderList, ctx }) {
         status: "pending",
         createdAt: serverTimestamp(),
       });
-      ctx.showToast("프린터로 라벨 출력 명령을 전송했습니다! 🖨️", "success");
+     ctx.showToast("프린터로 라벨 출력 명령을 전송했습니다! 🖨️", "success");
+      setPrintedStatus(prev => ({ ...prev, [wipId]: true })); // 🌟 전송 성공 시 '출력됨'으로 상태 변경
     } catch (err) {
       console.error("인쇄 전송 오류:", err);
       ctx.showToast("인쇄 명령 전송에 실패했습니다.", "error");
@@ -5851,9 +5852,17 @@ function Step8Packaging({ wipList, orderList, ctx }) {
                   </td>
                   <td className="px-4 py-4">
                     <div className="flex flex-col space-y-2">
-                      <button onClick={() => handlePrintLabel(wip.id)} className="text-[10px] bg-slate-100 text-slate-600 px-2 py-1.5 rounded font-bold flex items-center justify-center shadow-sm border border-slate-200 hover:bg-indigo-50 hover:text-indigo-600 transition-colors">
-                        <Printer className="w-3 h-3 mr-1" /> 라벨출력
-                      </button>
+                     <button 
+  onClick={() => handlePrintLabel(wip.id)} 
+  className={`text-[10px] px-2 py-1.5 rounded font-bold flex items-center justify-center shadow-sm border transition-colors ${
+    printedStatus[wip.id] 
+      ? "bg-green-50 text-green-600 border-green-200 hover:bg-green-100" // 🟢 출력 후 스타일
+      : "bg-slate-100 text-slate-600 border-slate-200 hover:bg-indigo-50 hover:text-indigo-600" // ⚪ 처음 상태 스타일
+  }`}
+>
+  <Printer className="w-3 h-3 mr-1" />
+  {printedStatus[wip.id] ? "재출력" : "라벨출력"} 
+</button>
                       <button onClick={() => moveNext(wip.id)} className="text-[10px] bg-indigo-600 text-white px-2 py-1.5 rounded font-bold hover:bg-indigo-700 flex items-center justify-center shadow-sm">
                         <CheckCircle2 className="w-3 h-3 mr-1" /> 포장완료
                       </button>
