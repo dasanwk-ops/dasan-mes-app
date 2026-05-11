@@ -5704,7 +5704,7 @@ function Step8Packaging({ wipList, orderList, ctx }) {
   const pendingWip = wipList.filter((w) => w.currentStep === "step8");
 const [formData, setFormData] = useState({});
   const [printedStatus, setPrintedStatus] = useState({}); // 🌟 인쇄 상태 저장소 추가
-const [printedStatus, setPrintedStatus] = useState({}); // 🌟 출력 여부 저장 변수 추가 
+
   const handleDataChange = (id, field, val) =>
     setFormData((prev) => ({
       ...prev,
