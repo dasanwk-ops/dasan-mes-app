@@ -50,6 +50,7 @@ import {
   RefreshCcw,
   Boxes,
   Lock,
+  Settings,
 } from "lucide-react";
 
 // ==========================================
@@ -255,6 +256,24 @@ const getColRef = (colName) =>
 const getDocRef = (colName, docId) =>
   doc(db, "artifacts", appId, "public", "data", colName, docId.toString());
 
+const DEFAULT_MASTER_SETTINGS = {
+  MATERIAL_TYPES: ["4Y-W", "4Y-Y", "5E-P", "4Y-G"],
+  PRODUCT_COLORS: ["BL0", "BL1", "BL2", "BL3", "A1", "A2", "B1"],
+  PRODUCT_HEIGHTS: ["20", "22", "25", "30", "35"],
+  WEIGHT_BY_HEIGHT: { 20: 502, 22: 553, 25: 628, 30: 754, 35: 879 },
+  RATIO_BY_COLOR: {
+    BL0: { "4Y-W": 1.0, "4Y-Y": 0.0, "5E-P": 0.0, "4Y-G": 0.0 },
+    BL1: { "4Y-W": 0.961, "4Y-Y": 0.03, "5E-P": 0.004, "4Y-G": 0.005 },
+    BL2: { "4Y-W": 0.931, "4Y-Y": 0.055, "5E-P": 0.006, "4Y-G": 0.008 },
+    BL3: { "4Y-W": 0.915, "4Y-Y": 0.079, "5E-P": 0.006, "4Y-G": 0.0 },
+    A1: { "4Y-W": 0.83, "4Y-Y": 0.15, "5E-P": 0.02, "4Y-G": 0.0 },
+    A2: { "4Y-W": 0.786, "4Y-Y": 0.174, "5E-P": 0.02, "4Y-G": 0.02 },
+   B1: { "4Y-W": 0.869, "4Y-Y": 0.12, "5E-P": 0.011, "4Y-G": 0.0 },
+  },
+  // 🌟 [추가] 1, 2차 성형 목표 압력 가이드 기본값
+  TARGET_PRESSURE: { step3: "70", step4A: "2360", step4B: "2360" }
+};
+
 const MATERIAL_TYPES = ["4Y-W", "4Y-Y", "5E-P", "4Y-G"];
 const PRODUCT_COLORS = ["BL0", "BL1", "BL2", "BL3", "A1", "A2", "B1"];
 const PRODUCT_HEIGHTS = ["20", "22", "25", "30", "35"];
@@ -353,6 +372,8 @@ export default function DasanMES() {
   const [shippingHistory, setShippingHistory] = useState([]);
   const [furnaces, setFurnaces] = useState(cloneDeep(DEFAULT_FURNACES));
   const [dryingRoom, setDryingRoom] = useState(cloneDeep(DEFAULT_DRYING_ROOM));
+  // 🌟 [추가] 마스터 환경설정 상태 추가
+  const [masterSettings, setMasterSettings] = useState(DEFAULT_MASTER_SETTINGS);
 
   // ==============================================================
   // 🌟 [추가됨] 스텔스 자동 동기화 센서 (버튼 안 눌러도 됨)
@@ -435,10 +456,16 @@ const currentFinished = wipList.filter(
     setupListener("shippingHistory", (d) =>
       setShippingHistory(d.sort((a, b) => b.id - a.id))
     );
-    onSnapshot(getColRef("equipment"), (snap) => {
+   onSnapshot(getColRef("equipment"), (snap) => {
       snap.docs.forEach((d) => {
         if (d.id === "furnaces") setFurnaces(d.data());
         if (d.id === "dryingRoom") setDryingRoom(d.data());
+        // 🌟 [추가] 클라우드에서 세팅값을 실시간으로 당겨옵니다.
+        if (d.id === "settings") {
+            if(d.data() && Object.keys(d.data()).length > 0) {
+                setMasterSettings(d.data());
+            }
+        }
       });
     });
   }, [user, isUnlocked]);
@@ -516,6 +543,7 @@ const currentFinished = wipList.filter(
       shippingHistory,
       furnaces,
       dryingRoom,
+      masterSettings, // 🌟 [추가] 하위 메뉴로 세팅값 전달
       setActiveStep,
       ctx,
     };
@@ -540,10 +568,12 @@ const currentFinished = wipList.filter(
         return <Step7Drying {...props} />;
       case "step8":
         return <Step8Packaging {...props} />;
-      case "step9":
+     case "step9":
         return <Step9FinishedGoods {...props} />;
       case "tracking":
         return <StepTracking {...props} />;
+      case "settings": // 🌟 [추가] 환경설정 화면 라우터 추가
+        return <Step10Settings {...props} />;
       default:
         return <DashboardView {...props} />;
     }
@@ -622,8 +652,17 @@ const currentFinished = wipList.filter(
                     />{" "}
                     {step.name}
                   </button>
-                </li>
+               </li>
               ))}
+              {/* 🌟 [추가] 마스터 환경설정 버튼 */}
+              <li className="mt-4 border-t border-slate-800 pt-4">
+                  <button
+                    onClick={() => setActiveStep("settings")}
+                    className={`w-full flex items-center px-6 py-3 text-sm font-medium transition-colors ${activeStep === "settings" ? "bg-red-600 text-white shadow-md" : "hover:bg-slate-800 text-red-400"}`}
+                  >
+                    <Settings className={`w-5 h-5 mr-3 ${activeStep === "settings" ? "text-white" : "text-red-400"}`} /> 마스터 환경설정
+                  </button>
+              </li>
             </ul>
           </div>
         </div>
@@ -656,23 +695,16 @@ const currentFinished = wipList.filter(
 }
 
 // ==========================================
-// Dashboard View (재고 예측 + 원재료 현황 통합 버전)
+// Dashboard View 
 // ==========================================
 function DashboardView({
-  inventory,
-  wipList,
-  orderList = [],
-  inventoryHistory,
-  shippingHistory,
-  setActiveStep,
-  ctx,
+  inventory, wipList, orderList = [], inventoryHistory, shippingHistory, setActiveStep, ctx, masterSettings
 }) {
-  // 1. 재고 예측 시뮬레이션 계산 로직 (가장 상단 유지)
   const stockForecast = React.useMemo(() => {
     const getBOM = (color, singleWeight, qty) => {
       const baseKg = (Number(singleWeight) * Number(qty)) / 1000;
       const totalKg = baseKg * 1.01 + 0.2;
-      const ratios = RATIO_BY_COLOR[color] || { "4Y-W": 1.0 };
+      const ratios = masterSettings.RATIO_BY_COLOR[color] || { "4Y-W": 1.0 };
       const req = {};
       for (const [mat, ratio] of Object.entries(ratios)) {
         if (ratio > 0) req[mat] = totalKg * ratio;
@@ -680,59 +712,31 @@ function DashboardView({
       return req;
     };
 
-    return MATERIAL_TYPES.map((type) => {
-      const currentStock = inventory
-        .filter((i) => i.type === type)
-        .reduce((sum, i) => sum + i.weight, 0);
-
-      const reqFromOrders = orderList
-        .filter((o) => o.status === "대기중" || o.status === "부분투입")
-        .reduce((sum, o) => {
+    return masterSettings.MATERIAL_TYPES.map((type) => {
+      const currentStock = inventory.filter((i) => i.type === type).reduce((sum, i) => sum + i.weight, 0);
+      const reqFromOrders = orderList.filter((o) => o.status === "대기중" || o.status === "부분투입").reduce((sum, o) => {
           const remainQty = o.qty - (o.releasedQty || 0);
           if (remainQty <= 0) return sum;
           const bom = getBOM(o.color, o.singleWeight, remainQty);
           return sum + (bom[type] || 0);
         }, 0);
-
-      const reqFromPendingLots = (wipList || [])
-        .filter((w) => w.currentStep === "step1")
-        .reduce((sum, w) => {
+      const reqFromPendingLots = (wipList || []).filter((w) => w.currentStep === "step1").reduce((sum, w) => {
           const bom = getBOM(w.type, w.singleWeight || 628, w.qty);
           return sum + (bom[type] || 0);
         }, 0);
-
       const totalRequired = reqFromOrders + reqFromPendingLots;
       const expectedStock = currentStock - totalRequired;
-
-      return {
-        type,
-        current: currentStock,
-        required: totalRequired,
-        expected: expectedStock,
-        isShort: expectedStock < 0,
-      };
+      return { type, current: currentStock, required: totalRequired, expected: expectedStock, isShort: expectedStock < 0 };
     });
-  }, [inventory, orderList, wipList]);
+  }, [inventory, orderList, wipList, masterSettings]);
 
-  // 기존 요약 데이터 계산
-  const pendingOrdersQty = orderList
-    .filter((o) => o.status === "대기중")
-    .reduce((sum, o) => sum + (Number(o.qty) || 0), 0);
-  const wipQty = (wipList || [])
-    .filter((w) => w.currentStep !== "done")
-    .reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
-  const readyToShipQty = (wipList || [])
-    .filter((w) => w.currentStep === "done")
-    .reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
+  const pendingOrdersQty = orderList.filter((o) => o.status === "대기중").reduce((sum, o) => sum + (Number(o.qty) || 0), 0);
+  const wipQty = (wipList || []).filter((w) => w.currentStep !== "done").reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
+  const readyToShipQty = (wipList || []).filter((w) => w.currentStep === "done").reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
 
-  const pipelineSteps = PROCESS_STEPS.filter(
-    (s) =>
-      s.id.startsWith("step") && !["step0", "step1", "step9"].includes(s.id)
-  );
+  const pipelineSteps = PROCESS_STEPS.filter((s) => s.id.startsWith("step") && !["step0", "step1", "step9"].includes(s.id));
   const activeWipList = (wipList || []).filter((w) => w.currentStep !== "done");
-  const finishedWipList = (wipList || []).filter(
-    (w) => w.currentStep === "done"
-  );
+  const finishedWipList = (wipList || []).filter((w) => w.currentStep === "done");
 
   const fgSummary = finishedWipList.reduce((acc, curr) => {
     const k = `${curr.type}_${curr.height}`;
@@ -749,7 +753,6 @@ function DashboardView({
     return new Date(b.orderDate) - new Date(a.orderDate);
   });
 
-  // 상태값 정의
   const [editingId, setEditingId] = React.useState(null);
   const [editData, setEditData] = React.useState({});
   const [editingInvId, setEditingInvId] = React.useState(null);
@@ -763,7 +766,7 @@ function DashboardView({
   const [selectedMaterial, setSelectedMaterial] = React.useState(null);
 
   const WIP_STEPS = [
-    { value: "step2", label: "혼합 대기" },
+    { value: "step2", label: "배합 대기" },
     { value: "step3", label: "1차 성형 대기" },
     { value: "step4", label: "2차 성형 대기" },
     { value: "step5", label: "열처리 대기" },
@@ -774,259 +777,114 @@ function DashboardView({
     { value: "step8", label: "포장 대기" },
   ];
 
-  // 🌟 이 함수가 실제로 시트에 데이터를 쏴주는 '진짜' 엔진입니다.
   const handleSyncGoogleSheet = async () => {
-    await syncToGoogleSheets(
-      orderList,
-      wipList,
-      inventoryHistory,
-      shippingHistory,
-      ctx
-    );
+    await syncToGoogleSheets(orderList, wipList, inventoryHistory, shippingHistory, ctx);
   };
 
-  // 아래 handleSaveWip과 handleDeleteWip은 기존 그대로 유지합니다.
   const handleSaveWip = async (wip) => {
     const safeQty = Number(editData.qty);
-    if (isNaN(safeQty) || safeQty < 0)
-      return ctx.showToast("올바른 숫자를 입력해주세요.", "error");
+    if (isNaN(safeQty) || safeQty < 0) return ctx.showToast("올바른 숫자를 입력해주세요.", "error");
     try {
-      await setDoc(getDocRef("wipList", wip.id), {
-        ...wip,
-        qty: safeQty,
-        currentStep: editData.currentStep,
-      });
+      await setDoc(getDocRef("wipList", wip.id), { ...wip, qty: safeQty, currentStep: editData.currentStep });
       setEditingId(null);
       ctx.showToast("수정 완료", "success");
-    } catch (e) {
-      ctx.showToast("실패", "error");
-    }
+    } catch (e) { ctx.showToast("실패", "error"); }
   };
-
   const handleDeleteWip = (id) => {
     ctx.showConfirm("삭제하시겠습니까?", async () => {
-      try {
-        await deleteDoc(getDocRef("wipList", id));
-        ctx.showToast("삭제 완료", "success");
-      } catch (e) {
-        ctx.showToast("실패", "error");
-      }
+      try { await deleteDoc(getDocRef("wipList", id)); ctx.showToast("삭제 완료", "success"); } catch (e) { ctx.showToast("실패", "error"); }
     });
   };
   const handleSaveInv = async (item) => {
     const safeWeight = Number(editInvData.weight);
-    if (isNaN(safeWeight) || safeWeight < 0)
-      return ctx.showToast("올바른 중량을 입력해주세요.", "error");
+    if (isNaN(safeWeight) || safeWeight < 0) return ctx.showToast("올바른 중량을 입력해주세요.", "error");
     try {
-      await setDoc(getDocRef("inventory", item.id), {
-        ...item,
-        weight: safeWeight,
-        lot: editInvData.lot || item.lot,
-      });
+      await setDoc(getDocRef("inventory", item.id), { ...item, weight: safeWeight, lot: editInvData.lot || item.lot });
       setEditingInvId(null);
       ctx.showToast("수정 완료", "success");
-    } catch (e) {
-      ctx.showToast("실패", "error");
-    }
+    } catch (e) { ctx.showToast("실패", "error"); }
   };
   const handleDeleteInv = (id) => {
     ctx.showConfirm("삭제하시겠습니까?", async () => {
-      try {
-        await deleteDoc(getDocRef("inventory", id));
-        ctx.showToast("삭제 완료", "success");
-      } catch (e) {
-        ctx.showToast("실패", "error");
-      }
+      try { await deleteDoc(getDocRef("inventory", id)); ctx.showToast("삭제 완료", "success"); } catch (e) { ctx.showToast("실패", "error"); }
     });
   };
   const handleSaveOrder = async (order) => {
     const safeQty = Number(editOrderData.qty);
-    if (isNaN(safeQty) || safeQty < 0)
-      return ctx.showToast("올바른 수량을 입력해주세요.", "error");
+    if (isNaN(safeQty) || safeQty < 0) return ctx.showToast("올바른 수량을 입력해주세요.", "error");
     try {
-      await setDoc(getDocRef("orderList", order.id), {
-        ...order,
-        qty: safeQty,
-        status: editOrderData.status,
-      });
+      await setDoc(getDocRef("orderList", order.id), { ...order, qty: safeQty, status: editOrderData.status });
       setEditingOrderId(null);
       ctx.showToast("수정 완료", "success");
-    } catch (e) {
-      ctx.showToast("실패", "error");
-    }
+    } catch (e) { ctx.showToast("실패", "error"); }
   };
   const handleDeleteOrder = (id) => {
     ctx.showConfirm("삭제하시겠습니까?", async () => {
-      try {
-        await deleteDoc(getDocRef("orderList", id));
-        ctx.showToast("삭제 완료", "success");
-      } catch (e) {
-        ctx.showToast("실패", "error");
-      }
+      try { await deleteDoc(getDocRef("orderList", id)); ctx.showToast("삭제 완료", "success"); } catch (e) { ctx.showToast("실패", "error"); }
     });
   };
   const handleSaveFg = async (fg) => {
     const safeQty = Number(editFgData.qty);
-    if (isNaN(safeQty) || safeQty < 0)
-      return ctx.showToast("올바른 수량을 입력해주세요.", "error");
+    if (isNaN(safeQty) || safeQty < 0) return ctx.showToast("올바른 수량을 입력해주세요.", "error");
     try {
-      await setDoc(getDocRef("wipList", fg.id), {
-        ...fg,
-        qty: safeQty,
-        mixLot: editFgData.mixLot || fg.mixLot,
-        details: editFgData.details || fg.details,
-      });
+      await setDoc(getDocRef("wipList", fg.id), { ...fg, qty: safeQty, mixLot: editFgData.mixLot || fg.mixLot, details: editFgData.details || fg.details });
       setEditingFgId(null);
       ctx.showToast("수정 완료", "success");
-    } catch (e) {
-      ctx.showToast("실패", "error");
-    }
+    } catch (e) { ctx.showToast("실패", "error"); }
   };
   const handleDeleteFg = (id) => {
     ctx.showConfirm("삭제하시겠습니까?", async () => {
-      try {
-        await deleteDoc(getDocRef("wipList", id));
-        ctx.showToast("삭제 완료", "success");
-      } catch (e) {
-        ctx.showToast("실패", "error");
-      }
+      try { await deleteDoc(getDocRef("wipList", id)); ctx.showToast("삭제 완료", "success"); } catch (e) { ctx.showToast("실패", "error"); }
     });
   };
   const handleDeleteShippingHistory = (id) => {
     ctx.showConfirm("삭제하시겠습니까?", async () => {
-      try {
-        await deleteDoc(getDocRef("shippingHistory", id));
-        ctx.showToast("삭제 완료", "success");
-      } catch (e) {
-        ctx.showToast("실패", "error");
-      }
+      try { await deleteDoc(getDocRef("shippingHistory", id)); ctx.showToast("삭제 완료", "success"); } catch (e) { ctx.showToast("실패", "error"); }
     });
   };
 
   return (
     <div className="space-y-6">
-      {/* 1. 헤더 */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-6 rounded-xl shadow-sm border border-slate-100">
         <div>
-          <h2 className="text-2xl font-black text-slate-800 tracking-tight">
-            통합 관리자 대시보드
-          </h2>
-          <p className="text-slate-500 text-sm mt-1">
-            공정, 발주, 원재료 정보를 마스터 권한으로 통합 관리합니다.
-          </p>
+          <h2 className="text-2xl font-black text-slate-800 tracking-tight">통합 관리자 대시보드</h2>
+          <p className="text-slate-500 text-sm mt-1">내열 소재 생산 지시 및 공정 이력을 통합 관리합니다.</p>
         </div>
-        <button
-          onClick={handleSyncGoogleSheet}
-          className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-5 py-2.5 rounded-lg shadow-sm font-bold transition-all"
-        >
-          <svg
-            className="w-4 h-4"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-            />
-          </svg>
-          구글 시트 동기화
+        <button onClick={handleSyncGoogleSheet} className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-5 py-2.5 rounded-lg shadow-sm font-bold transition-all">
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg> 구글 시트 동기화
         </button>
       </div>
 
-      {/* 2. 상단 핵심 요약 지표 */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="bg-white rounded-xl p-6 shadow-sm border border-slate-100 flex flex-col items-center">
-          <div className="text-slate-500 text-xs font-bold mb-1">
-            대기중 발주 수량
-          </div>
-          <div className="text-3xl font-black text-indigo-600">
-            {pendingOrdersQty.toLocaleString()} EA
-          </div>
+          <div className="text-slate-500 text-xs font-bold mb-1">대기중 생산지시(건)</div>
+          <div className="text-3xl font-black text-indigo-600">{pendingOrdersQty.toLocaleString()} EA</div>
         </div>
         <div className="bg-white rounded-xl p-6 shadow-sm border border-slate-100 flex flex-col items-center">
-          <div className="text-slate-500 text-xs font-bold mb-1">
-            진행 중 공정 수량
-          </div>
-          <div className="text-3xl font-black text-blue-600">
-            {wipQty.toLocaleString()} EA
-          </div>
+          <div className="text-slate-500 text-xs font-bold mb-1">진행 중 공정 물량</div>
+          <div className="text-3xl font-black text-blue-600">{wipQty.toLocaleString()} EA</div>
         </div>
-        <div
-          onClick={() =>
-            document
-              .getElementById("master-finished-goods")
-              ?.scrollIntoView({ behavior: "smooth" })
-          }
-          className="bg-white rounded-xl p-6 shadow-sm border border-slate-100 flex flex-col items-center cursor-pointer hover:border-green-400 transition-all group relative overflow-hidden"
-        >
-          <div className="absolute top-0 right-0 p-3 opacity-0 group-hover:opacity-100 transition-opacity">
-            <svg
-              className="w-5 h-5 text-green-500"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"
-              />
-            </svg>
-          </div>
-          <div className="text-slate-500 text-xs font-bold mb-1">
-            출고대기 수량
-          </div>
-          <div className="text-3xl font-black text-green-600">
-            {readyToShipQty.toLocaleString()} EA
-          </div>
+        <div onClick={() => document.getElementById("master-finished-goods")?.scrollIntoView({ behavior: "smooth" })} className="bg-white rounded-xl p-6 shadow-sm border border-slate-100 flex flex-col items-center cursor-pointer hover:border-green-400 transition-all group relative overflow-hidden">
+          <div className="text-slate-500 text-xs font-bold mb-1">출고대기 완제품</div>
+          <div className="text-3xl font-black text-green-600">{readyToShipQty.toLocaleString()} EA</div>
         </div>
       </div>
 
-      {/* 🚀 4번이 위로 올라왔습니다! 공정별 네비게이션 아이콘 */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
-        <h3 className="text-lg font-bold mb-6 text-slate-800 flex items-center">
-          <ArrowRight className="w-5 h-5 mr-2 text-blue-600" /> 공정 상황 상세
-          이동
-        </h3>
+        <h3 className="text-lg font-bold mb-6 text-slate-800 flex items-center"><ArrowRight className="w-5 h-5 mr-2 text-blue-600" /> 공정 상황 퀵 네비게이션</h3>
         <div className="flex justify-between items-start w-full">
           {pipelineSteps.map((step, idx) => {
-            const count = wipList
-              .filter((w) => w.currentStep.startsWith(step.id))
-              .reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
+            const count = wipList.filter((w) => w.currentStep.startsWith(step.id)).reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
             const Icon = step.icon;
             return (
-              <div
-                key={step.id}
-                onClick={() => setActiveStep(step.id)}
-                className="flex-1 flex flex-col items-center relative group cursor-pointer hover:bg-slate-50 rounded-xl py-2"
-              >
-                {idx < pipelineSteps.length - 1 && (
-                  <div className="absolute top-6 left-1/2 w-full h-0.5 bg-slate-100 -z-10"></div>
-                )}
-                <div
-                  className={`w-10 h-10 rounded-2xl flex items-center justify-center mb-2 shadow-sm ${
-                    count > 0
-                      ? "bg-blue-600 text-white"
-                      : "bg-slate-100 text-slate-400"
-                  }`}
-                >
+              <div key={step.id} onClick={() => setActiveStep(step.id)} className="flex-1 flex flex-col items-center relative group cursor-pointer hover:bg-slate-50 rounded-xl py-2">
+                {idx < pipelineSteps.length - 1 && <div className="absolute top-6 left-1/2 w-full h-0.5 bg-slate-100 -z-10"></div>}
+                <div className={`w-10 h-10 rounded-2xl flex items-center justify-center mb-2 shadow-sm ${count > 0 ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-400"}`}>
                   <Icon className="w-5 h-5" />
                 </div>
                 <div className="text-center w-full">
-                  <div className="text-[10px] font-bold text-slate-500 mb-0.5">
-                    {step.name}
-                  </div>
-                  <div
-                    className={`text-sm font-black ${
-                      count > 0 ? "text-blue-700" : "text-slate-300"
-                    }`}
-                  >
-                    {count}
-                  </div>
+                  <div className="text-[10px] font-bold text-slate-500 mb-0.5">{step.name}</div>
+                  <div className={`text-sm font-black ${count > 0 ? "text-blue-700" : "text-slate-300"}`}>{count}</div>
                 </div>
               </div>
             );
@@ -1034,358 +892,101 @@ function DashboardView({
         </div>
       </div>
 
-      {/* 🌟 3번이 아래로 내려갔습니다! 원재료 현황 및 생산 재고 예측 섹션 */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6 space-y-6">
         <div className="flex justify-between items-center">
           <div className="flex items-center gap-2">
-            <svg
-              className="w-5 h-5 text-indigo-500"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 002-2h-2a2 2 0 00-2 2"
-              />
-            </svg>
-            <h3 className="text-lg font-bold text-slate-800">
-              원재료 현황 및 재고 시뮬레이션
-            </h3>
+            <h3 className="text-lg font-bold text-slate-800">소재 창고 현황 및 필요 소요량 예측</h3>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowInvHistory(!showInvHistory)}
-              className={`text-xs font-bold px-3 py-1.5 rounded border transition-colors shadow-sm ${
-                showInvHistory
-                  ? "bg-slate-700 text-white border-slate-700"
-                  : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50"
-              }`}
-            >
-              입출고(소진) 내역 {showInvHistory ? "숨기기" : "보기"}
+            <button onClick={() => setShowInvHistory(!showInvHistory)} className="text-xs font-bold px-3 py-1.5 rounded border transition-colors shadow-sm bg-white text-slate-600 border-slate-300 hover:bg-slate-50">
+              입출고 내역 {showInvHistory ? "숨기기" : "보기"}
             </button>
-            <span className="text-xs font-bold text-red-500 bg-red-50 px-2 py-1 rounded border border-red-100 uppercase">
-              마스터 권한
-            </span>
+            <span className="text-xs font-bold text-red-500 bg-red-50 px-2 py-1 rounded border border-red-100 uppercase">마스터 권한</span>
           </div>
         </div>
 
-        {/* 🌟 종류별 통합 시뮬레이션 카드 그리드 */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {stockForecast.map((item) => (
-            <div
-              key={item.type}
-              onClick={() =>
-                setSelectedMaterial(
-                  selectedMaterial === item.type ? null : item.type
-                )
-              }
-              className={`p-4 rounded-2xl border transition-all cursor-pointer ${
-                selectedMaterial === item.type
-                  ? "ring-2 ring-indigo-500 shadow-md"
-                  : ""
-              } ${
-                item.isShort
-                  ? "bg-red-50 border-red-200"
-                  : "bg-slate-50 border-slate-100 hover:bg-slate-100"
-              }`}
-            >
+            <div key={item.type} onClick={() => setSelectedMaterial(selectedMaterial === item.type ? null : item.type)} className={`p-4 rounded-2xl border transition-all cursor-pointer ${selectedMaterial === item.type ? "ring-2 ring-indigo-500 shadow-md" : ""} ${item.isShort ? "bg-red-50 border-red-200" : "bg-slate-50 border-slate-100 hover:bg-slate-100"}`}>
               <div className="flex justify-between items-center mb-3">
-                <span className="font-black text-slate-700 text-base">
-                  {item.type}
-                </span>
-                {item.isShort ? (
-                  <span className="bg-red-500 text-white text-[10px] px-2 py-0.5 rounded-full font-black animate-pulse">
-                    부족
-                  </span>
-                ) : (
-                  <span className="bg-emerald-500 text-white text-[10px] px-2 py-0.5 rounded-full font-black">
-                    안전
-                  </span>
-                )}
+                <span className="font-black text-slate-700 text-base">{item.type}</span>
+                {item.isShort ? <span className="bg-red-500 text-white text-[10px] px-2 py-0.5 rounded-full font-black animate-pulse">부족</span> : <span className="bg-emerald-500 text-white text-[10px] px-2 py-0.5 rounded-full font-black">안전</span>}
               </div>
               <div className="space-y-1.5">
                 <div className="flex justify-between items-baseline mb-1">
-                  <span className="text-slate-400 font-bold text-[10px]">
-                    현 창고 실재고
-                  </span>
-                  <span className="text-slate-900 font-black text-xl tracking-tighter">
-                    {item.current.toFixed(2)}{" "}
-                    <span className="text-[10px] font-bold text-slate-500 uppercase ml-0.5">
-                      kg
-                    </span>
-                  </span>
+                  <span className="text-slate-400 font-bold text-[10px]">현 창고 실재고</span>
+                  <span className="text-slate-900 font-black text-xl tracking-tighter">{item.current.toFixed(2)} <span className="text-[10px] font-bold text-slate-500 uppercase ml-0.5">kg</span></span>
                 </div>
                 <div className="flex justify-between text-[11px]">
-                  <span className="text-slate-400 font-bold">
-                    발주 소요 예정
-                  </span>
-                  <span className="text-orange-500 font-black">
-                    - {item.required.toFixed(2)} kg
-                  </span>
+                  <span className="text-slate-400 font-bold">생산지시 소요예정</span>
+                  <span className="text-orange-500 font-black">- {item.required.toFixed(2)} kg</span>
                 </div>
                 <div className="pt-2 mt-1 border-t border-slate-200 flex justify-between items-end">
-                  <span className="text-[10px] font-bold text-slate-400">
-                    생산 후 잔량
-                  </span>
-                  <span
-                    className={`text-lg font-black tracking-tighter ${
-                      item.isShort ? "text-red-600" : "text-indigo-700"
-                    }`}
-                  >
-                    {item.expected.toFixed(2)}{" "}
-                    <span className="text-[10px]">kg</span>
-                  </span>
+                  <span className="text-[10px] font-bold text-slate-400">투입 후 잔량</span>
+                  <span className={`text-lg font-black tracking-tighter ${item.isShort ? "text-red-600" : "text-indigo-700"}`}>{item.expected.toFixed(2)} <span className="text-[10px]">kg</span></span>
                 </div>
               </div>
             </div>
           ))}
         </div>
 
-        {/* 하단 상세 로트 테이블 (선택한 카드의 내용 표시) */}
         <div className="overflow-x-auto max-h-[400px] border rounded-lg">
           <table className="w-full text-sm text-left">
             <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0 shadow-sm border-b">
               <tr>
                 <th className="px-4 py-3 text-center">입고일자</th>
-                <th className="px-4 py-3">원재료 종류</th>
-                <th className="px-4 py-3">로트 번호</th>
+                <th className="px-4 py-3">소재 종류</th>
+                <th className="px-4 py-3">공급처 로트</th>
                 <th className="px-4 py-3 text-right">잔여 중량 (kg)</th>
                 <th className="px-4 py-3 text-center text-red-600">관리</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {selectedMaterial
-                ? // 🌟 1. 특정 원재료 카드를 클릭했을 때: 입출고 전체 히스토리(inventoryHistory) 표시
-                  (inventoryHistory || [])
-                    .filter((h) => h.materialType === selectedMaterial)
-                    .sort((a, b) => new Date(b.date) - new Date(a.date)) // 최신순 정렬
-                    .map((item) => (
-                      <tr
-                        key={item.id}
-                        className="bg-slate-50/50 hover:bg-slate-100 transition-colors"
-                      >
-                        <td className="px-4 py-3 text-slate-500 font-medium text-center">
-                          {item.date}
-                          <span
-                            className={`text-[10px] font-bold ml-1 ${
-                              item.type === "IN"
-                                ? "text-blue-500"
-                                : "text-red-400"
-                            }`}
-                          >
-                            ({item.type === "IN" ? "입고" : "출고"})
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 font-black text-slate-800">
-                          {item.materialType}
-                        </td>
-                        <td className="px-4 py-3 font-mono text-indigo-600">
-                          {item.lot}
-                        </td>
-                        <td className="px-4 py-3 text-right font-black">
-                          {item.qty.toLocaleString()}{" "}
-                          <span className="text-[10px] font-normal text-slate-400">
-                            kg
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <button
-                            onClick={() => handleDeleteInvHistory(item.id)}
-                            className="text-red-400 hover:bg-red-500 hover:text-white p-1 bg-white border rounded shadow-sm transition-colors"
-                            title="내역 삭제"
-                          >
-                            <svg
-                              className="w-4 h-4"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                              />
-                            </svg>
-                          </button>
-                        </td>
-                      </tr>
-                    ))
-                : // 🌟 2. 카드를 선택하지 않은 기본 상태: 현재고(Inventory) 로트별 현황 표시
-                  inventory
-                    .filter((i) => (showInvHistory ? true : i.weight > 0))
-                    .map((item) => {
-                      const isEditing = editingInvId === item.id;
-                      const isDrained = item.weight <= 0;
-                      return (
-                        <tr
-                          key={item.id}
-                          className={`transition-colors ${
-                            isDrained
-                              ? "bg-slate-50 opacity-60"
-                              : "hover:bg-slate-50"
-                          }`}
-                        >
-                          <td className="px-4 py-3 text-slate-500 font-medium text-center">
-                            {item.date}{" "}
-                            {isDrained && (
-                              <span className="text-[10px] text-red-400 ml-1">
-                                (소진)
-                              </span>
-                            )}
-                          </td>
-                          <td className="px-4 py-3 font-black text-slate-800">
-                            {item.type}
-                          </td>
-                          <td className="px-4 py-3 font-mono text-indigo-600">
-                            {isEditing ? (
-                              <input
-                                type="text"
-                                value={editInvData.lot}
-                                onChange={(e) =>
-                                  setEditInvData({
-                                    ...editInvData,
-                                    lot: e.target.value,
-                                  })
-                                }
-                                className="border p-1 w-full rounded bg-orange-50 font-bold"
-                              />
-                            ) : (
-                              item.lot
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-right font-black">
-                            {isEditing ? (
-                              <input
-                                type="number"
-                                step="0.001"
-                                value={editInvData.weight}
-                                onChange={(e) =>
-                                  setEditInvData({
-                                    ...editInvData,
-                                    weight: e.target.value,
-                                  })
-                                }
-                                className="border p-1 w-24 text-right rounded bg-orange-50"
-                              />
-                            ) : (
-                              item.weight.toLocaleString()
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-center">
-                            <div className="flex justify-center gap-1.5">
-                              {isEditing ? (
-                                <>
-                                  <button
-                                    onClick={() => handleSaveInv(item)}
-                                    className="bg-orange-500 text-white p-1.5 rounded shadow-sm"
-                                  >
-                                    <svg
-                                      className="w-4 h-4"
-                                      fill="none"
-                                      stroke="currentColor"
-                                      viewBox="0 0 24 24"
-                                    >
-                                      <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        strokeWidth={2}
-                                        d="M5 13l4 4L19 7"
-                                      />
-                                    </svg>
-                                  </button>
-                                  <button
-                                    onClick={() => setEditingInvId(null)}
-                                    className="bg-slate-200 text-slate-700 p-1.5 rounded shadow-sm"
-                                  >
-                                    <svg
-                                      className="w-4 h-4"
-                                      fill="none"
-                                      stroke="currentColor"
-                                      viewBox="0 0 24 24"
-                                    >
-                                      <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        strokeWidth={2}
-                                        d="M6 18L18 6M6 6l12 12"
-                                      />
-                                    </svg>
-                                  </button>
-                                </>
-                              ) : (
-                                <>
-                                  <button
-                                    onClick={() => {
-                                      setEditingInvId(item.id);
-                                      setEditInvData(item);
-                                    }}
-                                    className="text-slate-500 hover:text-indigo-600 p-1 bg-white border rounded shadow-sm"
-                                  >
-                                    <svg
-                                      className="w-4 h-4"
-                                      fill="none"
-                                      stroke="currentColor"
-                                      viewBox="0 0 24 24"
-                                    >
-                                      <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        strokeWidth={2}
-                                        d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"
-                                      />
-                                    </svg>
-                                  </button>
-                                  <button
-                                    onClick={() => handleDeleteInv(item.id)}
-                                    className="text-red-400 hover:bg-red-500 hover:text-white p-1 bg-white border rounded shadow-sm transition-colors"
-                                  >
-                                    <svg
-                                      className="w-4 h-4"
-                                      fill="none"
-                                      stroke="currentColor"
-                                      viewBox="0 0 24 24"
-                                    >
-                                      <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        strokeWidth={2}
-                                        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                                      />
-                                    </svg>
-                                  </button>
-                                </>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
+              {selectedMaterial ? (inventoryHistory || []).filter((h) => h.materialType === selectedMaterial).sort((a, b) => new Date(b.date) - new Date(a.date)).map((item) => (
+                <tr key={item.id} className="bg-slate-50/50 hover:bg-slate-100 transition-colors">
+                  <td className="px-4 py-3 text-slate-500 font-medium text-center">{item.date}<span className={`text-[10px] font-bold ml-1 ${item.type === "IN" ? "text-blue-500" : "text-red-400"}`}>({item.type === "IN" ? "입고" : "출고"})</span></td>
+                  <td className="px-4 py-3 font-black text-slate-800">{item.materialType}</td>
+                  <td className="px-4 py-3 font-mono text-indigo-600">{item.lot}</td>
+                  <td className="px-4 py-3 text-right font-black">{item.qty.toLocaleString()} <span className="text-[10px] font-normal text-slate-400">kg</span></td>
+                  <td className="px-4 py-3 text-center"><button onClick={() => handleDeleteInvHistory(item.id)} className="text-red-400 hover:bg-red-500 hover:text-white p-1 bg-white border rounded shadow-sm transition-colors">삭제</button></td>
+                </tr>
+              )) : inventory.filter((i) => (showInvHistory ? true : i.weight > 0)).map((item) => {
+                const isEditing = editingInvId === item.id;
+                const isDrained = item.weight <= 0;
+                return (
+                  <tr key={item.id} className={`transition-colors ${isDrained ? "bg-slate-50 opacity-60" : "hover:bg-slate-50"}`}>
+                    <td className="px-4 py-3 text-slate-500 font-medium text-center">{item.date} {isDrained && <span className="text-[10px] text-red-400 ml-1">(소진)</span>}</td>
+                    <td className="px-4 py-3 font-black text-slate-800">{item.type}</td>
+                    <td className="px-4 py-3 font-mono text-indigo-600">{isEditing ? <input type="text" value={editInvData.lot} onChange={(e) => setEditInvData({ ...editInvData, lot: e.target.value })} className="border p-1 w-full rounded bg-orange-50 font-bold" /> : item.lot}</td>
+                    <td className="px-4 py-3 text-right font-black">{isEditing ? <input type="number" step="0.001" value={editInvData.weight} onChange={(e) => setEditInvData({ ...editInvData, weight: e.target.value })} className="border p-1 w-24 text-right rounded bg-orange-50" /> : item.weight.toLocaleString()}</td>
+                    <td className="px-4 py-3 text-center">
+                      <div className="flex justify-center gap-1.5">
+                        {isEditing ? (
+                          <><button onClick={() => handleSaveInv(item)} className="bg-orange-500 text-white p-1.5 rounded shadow-sm">저장</button><button onClick={() => setEditingInvId(null)} className="bg-slate-200 text-slate-700 p-1.5 rounded shadow-sm">취소</button></>
+                        ) : (
+                          <><button onClick={() => { setEditingInvId(item.id); setEditInvData(item); }} className="text-slate-500 hover:text-indigo-600 p-1 bg-white border rounded shadow-sm">수정</button><button onClick={() => handleDeleteInv(item.id)} className="text-red-400 hover:bg-red-500 hover:text-white p-1 bg-white border rounded shadow-sm transition-colors">삭제</button></>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       </div>
 
-      {/* 5. 공정 진행 현황 테이블 (기존 유지) */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
         <div className="flex justify-between items-center mb-4">
-          <h3 className="text-lg font-bold flex items-center text-slate-800">
-            <Layers className="w-5 h-5 mr-2 text-slate-400" /> 공정 진행 현황
-            상세 (마스터)
-          </h3>
-          <span className="text-xs font-bold text-red-500 bg-red-50 px-2 py-1 rounded border border-red-100 uppercase">
-            마스터 권한
-          </span>
+          <h3 className="text-lg font-bold flex items-center text-slate-800"><Layers className="w-5 h-5 mr-2 text-slate-400" /> 공정 진행 현황 상세 (마스터)</h3>
+          <span className="text-xs font-bold text-red-500 bg-red-50 px-2 py-1 rounded border border-red-100 uppercase">마스터 권한</span>
         </div>
         <div className="overflow-x-auto max-h-[500px] border rounded-lg">
           <table className="w-full text-sm text-left">
             <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0 shadow-sm border-b">
               <tr>
-                <th className="px-4 py-3">MIX LOT</th>
-                <th className="px-4 py-3">제품</th>
+                <th className="px-4 py-3">내부 LOT</th>
+                <th className="px-4 py-3">분류</th>
                 <th className="px-4 py-3 text-center">수량</th>
                 <th className="px-4 py-3">진행 상태</th>
                 <th className="px-4 py-3 w-1/3 text-center">메모</th>
@@ -1396,107 +997,16 @@ function DashboardView({
               {activeWipList.map((wip) => {
                 const isEditing = editingId === wip.id;
                 return (
-                  <tr
-                    key={wip.id}
-                    className="hover:bg-slate-50 transition-colors"
-                  >
-                    <td className="px-4 py-3 font-medium text-blue-600">
-                      {wip.mixLot}
-                    </td>
-                    <td className="px-4 py-3 font-bold text-slate-800">
-                      {wip.type} {wip.height}T
-                    </td>
-                    <td className="px-4 py-3 text-center font-bold">
-                      {isEditing ? (
-                        <input
-                          type="number"
-                          value={editData.qty}
-                          onChange={(e) =>
-                            setEditData({ ...editData, qty: e.target.value })
-                          }
-                          className="border p-1 w-16 text-center rounded bg-orange-50"
-                        />
-                      ) : (
-                        wip.qty
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={`px-2 py-1 border rounded text-[10px] font-bold ${
-                          wip.currentStep.includes("heating")
-                            ? "bg-orange-50 text-orange-700"
-                            : "bg-white text-slate-600"
-                        }`}
-                      >
-                        {WIP_STEPS.find((s) => s.value === wip.currentStep)
-                          ?.label || "대기중"}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-xs text-slate-500 truncate max-w-[150px] text-center">
-                      {wip.details}
-                    </td>
+                  <tr key={wip.id} className="hover:bg-slate-50 transition-colors">
+                    <td className="px-4 py-3 font-medium text-blue-600">{wip.mixLot}</td>
+                    <td className="px-4 py-3 font-bold text-slate-800">{wip.type} {wip.height}T</td>
+                    <td className="px-4 py-3 text-center font-bold">{isEditing ? <input type="number" value={editData.qty} onChange={(e) => setEditData({ ...editData, qty: e.target.value })} className="border p-1 w-16 text-center rounded bg-orange-50" /> : wip.qty}</td>
+                    <td className="px-4 py-3"><span className={`px-2 py-1 border rounded text-[10px] font-bold ${wip.currentStep.includes("heating") ? "bg-orange-50 text-orange-700" : "bg-white text-slate-600"}`}>{WIP_STEPS.find((s) => s.value === wip.currentStep)?.label || "대기중"}</span></td>
+                    <td className="px-4 py-3 text-xs text-slate-500 truncate max-w-[150px] text-center">{wip.details}</td>
                     <td className="px-4 py-3 text-center">
                       <div className="flex justify-center gap-1.5">
-                        {isEditing ? (
-                          <button
-                            onClick={() => handleSaveWip(wip)}
-                            className="bg-orange-500 text-white p-1 rounded"
-                          >
-                            <svg
-                              className="w-4 h-4"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M5 13l4 4L19 7"
-                              />
-                            </svg>
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => {
-                              setEditingId(wip.id);
-                              setEditData(wip);
-                            }}
-                            className="text-slate-400 hover:text-indigo-600"
-                          >
-                            <svg
-                              className="w-4 h-4"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"
-                              />
-                            </svg>
-                          </button>
-                        )}
-                        <button
-                          onClick={() => handleDeleteWip(wip.id)}
-                          className="text-red-300 hover:text-red-600"
-                        >
-                          <svg
-                            className="w-4 h-4"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                            />
-                          </svg>
-                        </button>
+                        {isEditing ? <button onClick={() => handleSaveWip(wip)} className="bg-orange-500 text-white p-1 rounded">저장</button> : <button onClick={() => { setEditingId(wip.id); setEditData(wip); }} className="text-slate-400 hover:text-indigo-600">수정</button>}
+                        <button onClick={() => handleDeleteWip(wip.id)} className="text-red-300 hover:text-red-600">삭제</button>
                       </div>
                     </td>
                   </tr>
@@ -1507,23 +1017,17 @@ function DashboardView({
         </div>
       </div>
 
-      {/* 6. 발주 현황 테이블 (기존 유지) */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
         <div className="flex justify-between items-center mb-4">
-          <h3 className="text-lg font-bold flex items-center text-slate-800">
-            <ShoppingCart className="w-5 h-5 mr-2 text-slate-400" /> 발주 현황
-            및 마스터 제어
-          </h3>
-          <span className="text-xs font-bold text-red-500 bg-red-50 px-2 py-1 rounded border border-red-100 uppercase">
-            마스터 권한
-          </span>
+          <h3 className="text-lg font-bold flex items-center text-slate-800"><ShoppingCart className="w-5 h-5 mr-2 text-slate-400" /> 생산 지시 (발주) 현황</h3>
+          <span className="text-xs font-bold text-red-500 bg-red-50 px-2 py-1 rounded border border-red-100 uppercase">마스터 권한</span>
         </div>
         <div className="overflow-x-auto max-h-[400px] border rounded-lg">
           <table className="w-full text-sm text-left">
             <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0 shadow-sm border-b">
               <tr>
-                <th className="px-4 py-3">발주일자</th>
-                <th className="px-4 py-3">제품정보</th>
+                <th className="px-4 py-3">지시일자</th>
+                <th className="px-4 py-3">분류</th>
                 <th className="px-4 py-3 text-center">수량</th>
                 <th className="px-4 py-3 text-center">상태</th>
                 <th className="px-4 py-3 text-center text-red-600">관리</th>
@@ -1534,105 +1038,14 @@ function DashboardView({
                 const isEditing = editingOrderId === order.id;
                 return (
                   <tr key={order.id} className="hover:bg-slate-50">
-                    <td className="px-4 py-3 text-slate-500">
-                      <div className="font-bold">{order.orderDate}</div>
-                      <div className="text-xs font-mono text-slate-400">
-                        {order.orderNo}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 font-bold text-slate-800">
-                      {order.color} {order.height}T
-                    </td>
-                    <td className="px-4 py-3 text-center font-black text-indigo-600">
-                      {isEditing ? (
-                        <input
-                          type="number"
-                          value={editOrderData.qty}
-                          onChange={(e) =>
-                            setEditOrderData({
-                              ...editOrderData,
-                              qty: e.target.value,
-                            })
-                          }
-                          className="border p-1 w-20 text-center rounded bg-orange-50"
-                        />
-                      ) : (
-                        order.qty
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <span
-                        className={`px-3 py-1.5 rounded text-xs font-bold ${
-                          order.status === "대기중"
-                            ? "bg-yellow-100 text-yellow-800"
-                            : "bg-blue-100 text-blue-800"
-                        }`}
-                      >
-                        {order.status}
-                      </span>
-                    </td>
+                    <td className="px-4 py-3 text-slate-500"><div className="font-bold">{order.orderDate}</div><div className="text-xs font-mono text-slate-400">{order.orderNo}</div></td>
+                    <td className="px-4 py-3 font-bold text-slate-800">{order.color} {order.height}T</td>
+                    <td className="px-4 py-3 text-center font-black text-indigo-600">{isEditing ? <input type="number" value={editOrderData.qty} onChange={(e) => setEditOrderData({ ...editOrderData, qty: e.target.value })} className="border p-1 w-20 text-center rounded bg-orange-50" /> : order.qty}</td>
+                    <td className="px-4 py-3 text-center"><span className={`px-3 py-1.5 rounded text-xs font-bold ${order.status === "대기중" ? "bg-yellow-100 text-yellow-800" : "bg-blue-100 text-blue-800"}`}>{order.status}</span></td>
                     <td className="px-4 py-3 text-center">
                       <div className="flex justify-center gap-1.5">
-                        {isEditing ? (
-                          <button
-                            onClick={() => handleSaveOrder(order)}
-                            className="bg-orange-500 text-white p-1.5 rounded shadow-sm"
-                          >
-                            <svg
-                              className="w-4 h-4"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M5 13l4 4L19 7"
-                              />
-                            </svg>
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => {
-                              setEditingOrderId(order.id);
-                              setEditOrderData(order);
-                            }}
-                            className="text-slate-500 hover:text-indigo-600 p-1 bg-white border rounded shadow-sm"
-                          >
-                            <svg
-                              className="w-4 h-4"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"
-                              />
-                            </svg>
-                          </button>
-                        )}
-                        <button
-                          onClick={() => handleDeleteOrder(order.id)}
-                          className="text-red-400 hover:bg-red-500 hover:text-white p-1 bg-white border rounded shadow-sm transition-colors"
-                        >
-                          <svg
-                            className="w-4 h-4"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                            />
-                          </svg>
-                        </button>
+                        {isEditing ? <button onClick={() => handleSaveOrder(order)} className="bg-orange-500 text-white p-1.5 rounded shadow-sm">저장</button> : <button onClick={() => { setEditingOrderId(order.id); setEditOrderData(order); }} className="text-slate-500 hover:text-indigo-600 p-1 bg-white border rounded shadow-sm">수정</button>}
+                        <button onClick={() => handleDeleteOrder(order.id)} className="text-red-400 hover:bg-red-500 hover:text-white p-1 bg-white border rounded shadow-sm transition-colors">삭제</button>
                       </div>
                     </td>
                   </tr>
@@ -1642,296 +1055,25 @@ function DashboardView({
           </table>
         </div>
       </div>
-
-      {/* 7. 완제품 현황 및 마스터 제어 (기존 유지) */}
-      <div
-        id="master-finished-goods"
-        className="bg-white rounded-xl shadow-sm border border-slate-100 p-6 scroll-mt-24"
-      >
-        <div className="flex justify-between items-center mb-6">
-          <h3 className="text-lg font-bold flex items-center text-slate-800">
-            <Archive className="w-5 h-5 mr-2 text-slate-400" /> 완제품(출고대기)
-            현황 및 마스터
-          </h3>
-          <button
-            onClick={() => setShowFgHistory(!showFgHistory)}
-            className={`text-xs font-bold px-3 py-1.5 rounded border ${
-              showFgHistory
-                ? "bg-slate-700 text-white"
-                : "bg-white text-slate-600"
-            }`}
-          >
-            출고 내역 {showFgHistory ? "숨기기" : "보기"}
-          </button>
-        </div>
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-6">
-          {Object.values(fgSummary).map((i) => (
-            <div
-              key={`${i.type}_${i.height}`}
-              onClick={() =>
-                setSelectedMaterial(
-                  selectedMaterial === `${i.type}_${i.height}`
-                    ? null
-                    : `${i.type}_${i.height}`
-                )
-              }
-              className={`p-4 rounded-xl border text-center transition-all ${
-                selectedMaterial === `${i.type}_${i.height}`
-                  ? "bg-green-50 border-green-400 shadow-md"
-                  : "bg-slate-50 border-slate-100"
-              }`}
-            >
-              <div className="text-sm font-bold text-slate-500 mb-1">
-                {i.type} {i.height}T
-              </div>
-              <div className="text-2xl font-black text-green-600">
-                {i.qty} EA
-              </div>
-            </div>
-          ))}
-        </div>
-        <div className="overflow-x-auto max-h-[400px] border rounded-lg">
-          <table className="w-full text-sm text-left">
-            <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0 shadow-sm border-b">
-              <tr>
-                <th className="px-4 py-3 w-1/4">포장 LOT</th>
-                <th className="px-4 py-3">제품정보</th>
-                <th className="px-4 py-3 text-center">수량</th>
-                <th className="px-4 py-3 w-1/3">상세/메모</th>
-                <th className="px-4 py-3 text-center text-red-600">관리</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {showFgHistory || selectedMaterial
-                ? (shippingHistory || [])
-                    .filter((h) =>
-                      selectedMaterial
-                        ? String(h.type) + "_" + String(h.height) ===
-                          String(selectedMaterial)
-                        : true
-                    )
-                    .map((item) => (
-                      <tr
-                        key={item.id}
-                        className="bg-slate-50 opacity-70 hover:opacity-100 transition-colors"
-                      >
-                        <td className="px-4 py-3 font-mono font-bold text-slate-700">
-                          {item.lot}{" "}
-                          <span className="text-[10px] text-red-400">
-                            ({item.date.split(" ")[0]} 출고)
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 font-bold text-slate-800">
-                          {item.type} {item.height}T
-                        </td>
-                        <td className="px-4 py-3 text-center font-black text-green-600">
-                          {item.qty}
-                        </td>
-                        <td className="px-4 py-3 text-slate-500 text-xs text-center">
-                          출고처: {item.destination}
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <button
-                            onClick={() => handleDeleteShippingHistory(item.id)}
-                            className="text-red-400 hover:text-white p-1.5 bg-white border rounded"
-                          >
-                            <svg
-                              className="w-4 h-4"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                              />
-                            </svg>
-                          </button>
-                        </td>
-                      </tr>
-                    ))
-                : wipList
-                    .filter((w) => w.currentStep === "done" && w.qty > 0)
-                    .map((fg) => {
-                      const isEditing = editingFgId === fg.id;
-                      return (
-                        <tr
-                          key={fg.id}
-                          className="hover:bg-slate-50 transition-colors"
-                        >
-                          <td className="px-4 py-3 font-mono font-bold text-slate-700">
-                            {isEditing ? (
-                              <input
-                                type="text"
-                                value={editFgData.mixLot}
-                                onChange={(e) =>
-                                  setEditFgData({
-                                    ...editFgData,
-                                    mixLot: e.target.value,
-                                  })
-                                }
-                                className="border p-1 w-full rounded bg-orange-50 font-bold"
-                              />
-                            ) : (
-                              fg.mixLot
-                            )}
-                          </td>
-                          <td className="px-4 py-3 font-bold text-slate-800">
-                            {fg.type} {fg.height}T
-                          </td>
-                          <td className="px-4 py-3 text-center font-black text-green-600">
-                            {isEditing ? (
-                              <input
-                                type="number"
-                                value={editFgData.qty}
-                                onChange={(e) =>
-                                  setEditFgData({
-                                    ...editFgData,
-                                    qty: e.target.value,
-                                  })
-                                }
-                                className="border p-1 w-16 text-center rounded bg-orange-50"
-                              />
-                            ) : (
-                              fg.qty
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-slate-500 text-xs truncate max-w-[200px] text-center">
-                            {isEditing ? (
-                              <input
-                                type="text"
-                                value={editFgData.details}
-                                onChange={(e) =>
-                                  setEditFgData({
-                                    ...editFgData,
-                                    details: e.target.value,
-                                  })
-                                }
-                                className="border p-1 w-full rounded bg-orange-50"
-                              />
-                            ) : (
-                              fg.details
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-center">
-                            <div className="flex justify-center gap-1.5">
-                              {isEditing ? (
-                                <>
-                                  <button
-                                    onClick={() => handleSaveFg(fg)}
-                                    className="bg-orange-500 text-white p-1 rounded shadow-sm"
-                                  >
-                                    <svg
-                                      className="w-4 h-4"
-                                      fill="none"
-                                      stroke="currentColor"
-                                      viewBox="0 0 24 24"
-                                    >
-                                      <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        strokeWidth={2}
-                                        d="M5 13l4 4L19 7"
-                                      />
-                                    </svg>
-                                  </button>
-                                  <button
-                                    onClick={() => setEditingFgId(null)}
-                                    className="bg-slate-200 text-slate-700 p-1 rounded shadow-sm"
-                                  >
-                                    <svg
-                                      className="w-4 h-4"
-                                      fill="none"
-                                      stroke="currentColor"
-                                      viewBox="0 0 24 24"
-                                    >
-                                      <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        strokeWidth={2}
-                                        d="M6 18L18 6M6 6l12 12"
-                                      />
-                                    </svg>
-                                  </button>
-                                </>
-                              ) : (
-                                <>
-                                  <button
-                                    onClick={() => {
-                                      setEditingFgId(fg.id);
-                                      setEditFgData(fg);
-                                    }}
-                                    className="text-slate-500 hover:text-indigo-600 p-1 bg-white border rounded shadow-sm"
-                                  >
-                                    <svg
-                                      className="w-4 h-4"
-                                      fill="none"
-                                      stroke="currentColor"
-                                      viewBox="0 0 24 24"
-                                    >
-                                      <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        strokeWidth={2}
-                                        d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"
-                                      />
-                                    </svg>
-                                  </button>
-                                  <button
-                                    onClick={() => handleDeleteFg(fg.id)}
-                                    className="text-red-400 hover:bg-red-500 hover:text-white p-1 bg-white border rounded shadow-sm transition-colors"
-                                  >
-                                    <svg
-                                      className="w-4 h-4"
-                                      fill="none"
-                                      stroke="currentColor"
-                                      viewBox="0 0 24 24"
-                                    >
-                                      <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        strokeWidth={2}
-                                        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                                      />
-                                    </svg>
-                                  </button>
-                                </>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-            </tbody>
-          </table>
-        </div>
-      </div>
     </div>
   );
 }
+
 // ==========================================
-// Step 0: Order Management (분할 투입 기능 추가 버전)
+// Step 0: Order Management 
 // ==========================================
-function Step0OrderManagement({ orderList, ctx }) {
+function Step0OrderManagement({ orderList, masterSettings, ctx }) {
   const [newOrder, setNewOrder] = useState({
-    date: getKST().split(" ")[0],
-    color: "BL3",
-    height: "25",
-    singleWeight: 628,
-    qty: 100,
+    date: getKST().split(" ")[0], color: "BL3", height: "25", singleWeight: masterSettings.WEIGHT_BY_HEIGHT["25"] || 628, qty: 100,
   });
   const [editingId, setEditingId] = useState(null);
   const [editData, setEditData] = useState({});
-
-  // 분할 투입용 입력 상태 관리
   const [releaseQtyMap, setReleaseQtyMap] = useState({});
 
   const calcBOM = (color, singleWeight, qty) => {
     const baseKg = (singleWeight * parseInt(qty)) / 1000;
     const totalKg = baseKg * 1.01 + 0.2;
-    const ratios = RATIO_BY_COLOR[color] || { "4Y-W": 1.0 };
+    const ratios = masterSettings.RATIO_BY_COLOR[color] || { "4Y-W": 1.0 };
     const reqBOM = {};
     for (const [mat, ratio] of Object.entries(ratios)) {
       if (ratio > 0) reqBOM[mat] = totalKg * ratio;
@@ -1942,278 +1084,123 @@ function Step0OrderManagement({ orderList, ctx }) {
   const handleAdd = async (e) => {
     e.preventDefault();
     if (!newOrder.qty || newOrder.qty <= 0) return;
-    const sWeight =
-      Number(newOrder.singleWeight) || WEIGHT_BY_HEIGHT[newOrder.height];
+    const sWeight = Number(newOrder.singleWeight) || masterSettings.WEIGHT_BY_HEIGHT[newOrder.height];
     const reqBOM = calcBOM(newOrder.color, sWeight, newOrder.qty);
     const newItem = {
       id: Date.now().toString(),
-      orderNo: `ORD-${newOrder.date.replace(/-/g, "").slice(2)}-${Math.floor(
-        Math.random() * 1000
-      )}`,
+      orderNo: `ORD-${newOrder.date.replace(/-/g, "").slice(2)}-${Math.floor(Math.random() * 1000)}`,
       orderDate: newOrder.date,
-      productCode: `AM1100VT${newOrder.color}${newOrder.height}`,
+      productCode: `HR-${newOrder.color}${newOrder.height}`, 
       color: newOrder.color,
       height: newOrder.height,
       singleWeight: sWeight,
       qty: parseInt(newOrder.qty),
-      releasedQty: 0, // 🌟 초기 투입량 0
+      releasedQty: 0,
       reqBOM,
       status: "대기중",
-      createdAt: serverTimestamp(), // 🌟 추가됨: 조작 불가능한 서버 시간 강제 기록
+      createdAt: serverTimestamp(),
     };
     try {
       await setDoc(getDocRef("orderList", newItem.id), newItem);
-      ctx.showToast("발주가 등록되었습니다.", "success");
-    } catch (err) {
-      ctx.showToast("발주 등록 실패", "error");
-    }
+      ctx.showToast("생산 지시가 등록되었습니다.", "success");
+    } catch (err) { ctx.showToast("등록 실패", "error"); }
   };
 
-  // 🌟 [수정본] 분할 공정 투입 핸들러 (시간 기록 추가)
   const handleReleaseToWIP = async (order) => {
     const inputQty = parseInt(releaseQtyMap[order.id]);
     const alreadyReleased = order.releasedQty || 0;
     const remaining = order.qty - alreadyReleased;
+    if (!inputQty || inputQty <= 0) return ctx.showToast("투입할 수량을 입력해주세요.");
+    if (inputQty > remaining) return ctx.showToast(`잔량보다 많이 투입할 수 없습니다.`, "error");
 
-    if (!inputQty || inputQty <= 0)
-      return ctx.showToast("투입할 수량을 입력해주세요.");
-    if (inputQty > remaining)
-      return ctx.showToast(`잔량보다 많이 투입할 수 없습니다.`, "error");
-
-    ctx.showConfirm(
-      `${order.color} ${order.height}T 제품 ${inputQty}개를 원재료 창고로 보내시겠습니까?`,
-      async () => {
-        try {
-          const newWipId = Date.now().toString();
-          const totalReleased = alreadyReleased + inputQty;
-
-          // 1. 발주 상태 업데이트
-          await setDoc(getDocRef("orderList", order.id), {
-            ...order,
-            releasedQty: totalReleased,
-            status: totalReleased >= order.qty ? "생산중" : "부분투입",
-          });
-
-          // 2. 신규 WIP 로트 생성
-          await setDoc(getDocRef("wipList", newWipId), {
-            id: newWipId,
-            orderId: order.id,
-            mixLot: `MIX-${getKSTDateOnly()}-${
-              Math.floor(Math.random() * 900) + 100
-            }`,
-            type: order.color,
-            height: order.height,
-            singleWeight: order.singleWeight,
-            qty: inputQty,
-            currentStep: "step1",
-            // 🌟 시간 기록 추가
-            details: `[${getKST()}] 발주분할투입 (원본:${order.orderNo})`,
-          });
-
-          setReleaseQtyMap({ ...releaseQtyMap, [order.id]: "" });
-      ctx.showToast(`${inputQty}개 원재료 창고로 전송 완료`, "success");
-
-     // 🌟 시트 기록 추가
-logProcessToGoogleSheet("step0", { ...order, qty: inputQty, mixLot: order.orderNo }, "마스터", { 
-  details: "발주 분할 투입" 
-});
-    } catch (e) {
-          ctx.showToast("투입 처리 중 오류 발생", "error");
-        }
-      }
-    );
+    ctx.showConfirm(`${order.color} ${order.height}T 내열 부품 ${inputQty}개를 소재 창고로 보내시겠습니까?`, async () => {
+      try {
+        const newWipId = Date.now().toString();
+        const totalReleased = alreadyReleased + inputQty;
+        await setDoc(getDocRef("orderList", order.id), { ...order, releasedQty: totalReleased, status: totalReleased >= order.qty ? "생산중" : "부분투입" });
+        await setDoc(getDocRef("wipList", newWipId), {
+          id: newWipId, orderId: order.id, mixLot: `MIX-${getKSTDateOnly()}-${Math.floor(Math.random() * 900) + 100}`,
+          type: order.color, height: order.height, singleWeight: order.singleWeight, qty: inputQty, currentStep: "step1",
+          details: `[${getKST()}] 지시분할투입 (원본:${order.orderNo})`,
+        });
+        setReleaseQtyMap({ ...releaseQtyMap, [order.id]: "" });
+        ctx.showToast(`${inputQty}개 소재 창고로 전송 완료`, "success");
+      } catch (e) { ctx.showToast("투입 처리 중 오류 발생", "error"); }
+    });
   };
 
   const handleDel = async (id) => {
     ctx.showConfirm("삭제하시겠습니까?", async () => {
-      try {
-        await deleteDoc(getDocRef("orderList", id));
-        ctx.showToast("삭제됨", "success");
-      } catch (e) {
-        ctx.showToast("삭제 실패", "error");
-      }
+      try { await deleteDoc(getDocRef("orderList", id)); ctx.showToast("삭제됨", "success"); } catch (e) { ctx.showToast("삭제 실패", "error"); }
     });
   };
 
   const handleSave = async (order) => {
     const safeQty = parseInt(editData.qty);
-    if (isNaN(safeQty) || safeQty <= 0)
-      return ctx.showToast("수량을 올바른 숫자로 입력해주세요.", "error");
-
-    const sWeight =
-      Number(editData.singleWeight) || WEIGHT_BY_HEIGHT[editData.height];
-    if (isNaN(sWeight) || sWeight <= 0)
-      return ctx.showToast("단중을 올바른 숫자로 입력해주세요.", "error");
-
+    if (isNaN(safeQty) || safeQty <= 0) return ctx.showToast("수량을 숫자로 입력해주세요.", "error");
+    const sWeight = Number(editData.singleWeight) || masterSettings.WEIGHT_BY_HEIGHT[editData.height];
     const reqBOM = calcBOM(editData.color, sWeight, safeQty);
-    const updated = {
-      ...order,
-      color: editData.color,
-      height: editData.height,
-      singleWeight: sWeight,
-      qty: safeQty,
-      reqBOM,
-      productCode: `AM1100VT${editData.color}${editData.height}`,
-    };
+    const updated = { ...order, color: editData.color, height: editData.height, singleWeight: sWeight, qty: safeQty, reqBOM, productCode: `HR-${editData.color}${editData.height}` };
     try {
       await setDoc(getDocRef("orderList", order.id), updated);
       setEditingId(null);
       ctx.showToast("수정되었습니다.", "success");
-    } catch (e) {
-      ctx.showToast("수정 실패", "error");
-    }
+    } catch (e) { ctx.showToast("수정 실패", "error"); }
   };
 
-  const pbBOM = calcBOM(
-    newOrder.color,
-    newOrder.singleWeight || WEIGHT_BY_HEIGHT[newOrder.height],
-    newOrder.qty || 0
-  );
-
-  // 🌟 완료/취소 뿐만 아니라 전량 투입된 발주도 숨기려면 필터링 수정 가능 (현재는 유지)
-  const activeOrders = orderList.filter(
-    (o) => o.status !== "완료" && o.status !== "취소" && o.status !== "생산중"
-  );
+  const pbBOM = calcBOM(newOrder.color, newOrder.singleWeight || masterSettings.WEIGHT_BY_HEIGHT[newOrder.height], newOrder.qty || 0);
+  const activeOrders = orderList.filter((o) => o.status !== "완료" && o.status !== "취소" && o.status !== "생산중");
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
       <div className="bg-white rounded-xl shadow-sm border p-6 lg:col-span-1 h-fit">
-        <h3 className="text-lg font-bold mb-4 text-slate-800">
-          신규 발주 등록
-        </h3>
+        <h3 className="text-lg font-bold mb-4 text-slate-800">신규 생산 지시 등록</h3>
         <form onSubmit={handleAdd} className="space-y-5">
+          <div><label className="block text-sm font-medium mb-1">지시 일자</label><input type="date" required className="w-full border rounded-md p-2" value={newOrder.date} onChange={(e) => setNewOrder({ ...newOrder, date: e.target.value })} /></div>
           <div>
-            <label className="block text-sm font-medium mb-1">발주 일자</label>
-            <input
-              type="date"
-              required
-              className="w-full border rounded-md p-2"
-              value={newOrder.date}
-              onChange={(e) =>
-                setNewOrder({ ...newOrder, date: e.target.value })
-              }
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-2">제품 색상</label>
+            <label className="block text-sm font-medium mb-2">분류</label>
             <div className="flex flex-wrap gap-2">
-              {PRODUCT_COLORS.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => setNewOrder({ ...newOrder, color: c })}
-                  className={`px-3 py-1.5 rounded-md text-sm font-medium border ${
-                    newOrder.color === c
-                      ? "bg-indigo-600 text-white"
-                      : "bg-white"
-                  }`}
-                >
-                  {c}
-                </button>
+              {masterSettings.PRODUCT_COLORS.map((c) => (
+                <button key={c} type="button" onClick={() => setNewOrder({ ...newOrder, color: c })} className={`px-3 py-1.5 rounded-md text-sm font-medium border ${newOrder.color === c ? "bg-indigo-600 text-white" : "bg-white"}`}>{c}</button>
               ))}
             </div>
           </div>
           <div>
-            <label className="block text-sm font-medium mb-2">
-              제품 높이 (T)
-            </label>
+            <label className="block text-sm font-medium mb-2">내열 두께 (T)</label>
             <div className="flex flex-wrap gap-2">
-              {PRODUCT_HEIGHTS.map((h) => (
-                <button
-                  key={h}
-                  type="button"
-                  onClick={() =>
-                    setNewOrder({
-                      ...newOrder,
-                      height: h,
-                      singleWeight: WEIGHT_BY_HEIGHT[h],
-                    })
-                  }
-                  className={`px-3 py-1.5 rounded-md text-sm font-medium border ${
-                    newOrder.height === h
-                      ? "bg-indigo-600 text-white"
-                      : "bg-white"
-                  }`}
-                >
-                  {h}T
-                </button>
+              {masterSettings.PRODUCT_HEIGHTS.map((h) => (
+                <button key={h} type="button" onClick={() => setNewOrder({ ...newOrder, height: h, singleWeight: masterSettings.WEIGHT_BY_HEIGHT[h] })} className={`px-3 py-1.5 rounded-md text-sm font-medium border ${newOrder.height === h ? "bg-indigo-600 text-white" : "bg-white"}`}>{h}T</button>
               ))}
             </div>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium mb-1">단중 (g)</label>
-              <div className="relative">
-                <input
-                  type="number"
-                  required
-                  min="1"
-                  className="w-full border rounded-md p-2 font-bold text-indigo-700 bg-indigo-50"
-                  value={newOrder.singleWeight || ""}
-                  onChange={(e) =>
-                    setNewOrder({ ...newOrder, singleWeight: e.target.value })
-                  }
-                />
-                <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
-                  <span className="text-slate-400 text-xs font-bold">g</span>
-                </div>
-              </div>
+              <input type="number" required min="1" className="w-full border rounded-md p-2 font-bold text-indigo-700 bg-indigo-50" value={newOrder.singleWeight || ""} onChange={(e) => setNewOrder({ ...newOrder, singleWeight: e.target.value })} />
             </div>
             <div>
-              <label className="block text-sm font-medium mb-1">
-                수량 (EA)
-              </label>
-              <input
-                type="number"
-                required
-                min="1"
-                className="w-full border rounded-md p-2"
-                value={newOrder.qty}
-                onChange={(e) =>
-                  setNewOrder({ ...newOrder, qty: e.target.value })
-                }
-              />
+              <label className="block text-sm font-medium mb-1">수량 (EA)</label>
+              <input type="number" required min="1" className="w-full border rounded-md p-2" value={newOrder.qty} onChange={(e) => setNewOrder({ ...newOrder, qty: e.target.value })} />
             </div>
           </div>
           <div className="p-4 bg-indigo-50 rounded-lg border mt-4">
-            <div className="text-xs font-semibold mb-2">
-              예상 총 소요량 (BOM)
-            </div>
+            <div className="text-xs font-semibold mb-2">예상 소재 소요량 (BOM)</div>
             <div className="flex flex-wrap gap-2">
               {Object.entries(pbBOM).map(([mat, kg]) => (
-                <div
-                  key={mat}
-                  className="flex justify-between px-3 py-2 bg-white rounded border flex-1"
-                >
-                  <span className="font-bold text-xs">{mat}</span>
-                  <span className="font-black text-indigo-700">
-                    {kg.toFixed(3)}kg
-                  </span>
-                </div>
+                <div key={mat} className="flex justify-between px-3 py-2 bg-white rounded border flex-1"><span className="font-bold text-xs">{mat}</span><span className="font-black text-indigo-700">{kg.toFixed(3)}kg</span></div>
               ))}
             </div>
           </div>
-          <button
-            type="submit"
-            className="w-full bg-indigo-600 text-white py-2.5 rounded-md font-bold"
-          >
-            발주 등록
-          </button>
+          <button type="submit" className="w-full bg-indigo-600 text-white py-2.5 rounded-md font-bold">생산 지시 등록</button>
         </form>
       </div>
 
       <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border p-6">
-        <h3 className="text-lg font-bold mb-4">발주 현황 및 분할 투입 관리</h3>
+        <h3 className="text-lg font-bold mb-4">생산 지시 현황 및 공정 투입 관리</h3>
         <div className="overflow-x-auto max-h-[650px]">
           <table className="w-full text-sm text-left border-collapse">
             <thead className="bg-slate-50 sticky top-0 text-xs text-slate-500 uppercase border-b">
-              <tr>
-                <th className="px-4 py-3">발주정보</th>
-                <th className="px-4 py-3">전체/남은수량</th>
-                <th className="px-4 py-3">투입 진행률</th>
-                <th className="px-4 py-3 text-center">분할 공정 투입</th>
-                <th className="px-4 py-3 text-center">관리</th>
-              </tr>
+              <tr><th className="px-4 py-3">지시정보</th><th className="px-4 py-3">전체/남은수량</th><th className="px-4 py-3">투입 진행률</th><th className="px-4 py-3 text-center">공정 투입</th><th className="px-4 py-3 text-center">관리</th></tr>
             </thead>
             <tbody>
               {activeOrders.map((order) => {
@@ -2221,98 +1208,38 @@ logProcessToGoogleSheet("step0", { ...order, qty: inputQty, mixLot: order.orderN
                 const released = order.releasedQty || 0;
                 const remaining = order.qty - released;
                 const percent = Math.floor((released / order.qty) * 100);
-
                 return (
-                  <tr
-                    key={order.id}
-                    className="border-b hover:bg-slate-50 transition-colors"
-                  >
+                  <tr key={order.id} className="border-b hover:bg-slate-50 transition-colors">
                     <td className="px-4 py-4">
-                      <div className="text-[10px] text-slate-400 font-mono mb-1">
-                        {order.orderNo}
-                      </div>
-                      <div className="font-black text-slate-800 text-base">
-                        {order.color} {order.height}T
-                      </div>
+                      <div className="text-[10px] text-slate-400 font-mono mb-1">{order.orderNo}</div>
+                      <div className="font-black text-slate-800 text-base">{order.color} {order.height}T</div>
                     </td>
                     <td className="px-4 py-4">
-                      <div className="font-bold text-slate-700">
-                        {order.qty} EA
-                      </div>
-                      <div className="text-xs font-black text-orange-600">
-                        잔량: {remaining} EA
-                      </div>
+                      <div className="font-bold text-slate-700">{order.qty} EA</div>
+                      <div className="text-xs font-black text-orange-600">잔량: {remaining} EA</div>
                     </td>
                     <td className="px-4 py-4 min-w-[120px]">
                       <div className="flex items-center gap-2">
-                        <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-indigo-500 transition-all"
-                            style={{ width: `${percent}%` }}
-                          ></div>
-                        </div>
-                        <span className="text-[10px] font-black text-slate-500">
-                          {percent}%
-                        </span>
+                        <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-indigo-500 transition-all" style={{ width: `${percent}%` }}></div></div>
+                        <span className="text-[10px] font-black text-slate-500">{percent}%</span>
                       </div>
-                      <div className="text-[10px] font-bold text-slate-400 mt-1">
-                        {order.status}
-                      </div>
+                      <div className="text-[10px] font-bold text-slate-400 mt-1">{order.status}</div>
                     </td>
                     <td className="px-4 py-4">
                       <div className="flex items-center justify-center gap-2">
-                        <input
-                          type="number"
-                          placeholder="수량"
-                          value={releaseQtyMap[order.id] || ""}
-                          onChange={(e) =>
-                            setReleaseQtyMap({
-                              ...releaseQtyMap,
-                              [order.id]: e.target.value,
-                            })
-                          }
-                          className="w-20 border rounded p-1.5 text-center font-bold text-indigo-600 outline-none focus:border-indigo-400"
-                        />
-                        <button
-                          onClick={() => handleReleaseToWIP(order)}
-                          className="bg-indigo-600 text-white px-3 py-1.5 rounded font-bold text-xs hover:bg-indigo-700 whitespace-nowrap"
-                        >
-                          공정 투입
-                        </button>
+                        <input type="number" placeholder="수량" value={releaseQtyMap[order.id] || ""} onChange={(e) => setReleaseQtyMap({ ...releaseQtyMap, [order.id]: e.target.value })} className="w-20 border rounded p-1.5 text-center font-bold text-indigo-600 outline-none focus:border-indigo-400" />
+                        <button onClick={() => handleReleaseToWIP(order)} className="bg-indigo-600 text-white px-3 py-1.5 rounded font-bold text-xs hover:bg-indigo-700 whitespace-nowrap">공정 투입</button>
                       </div>
                     </td>
                     <td className="px-4 py-4 text-center">
                       <div className="flex justify-center gap-2">
-                        <button
-                          onClick={() => {
-                            setEditingId(order.id);
-                            setEditData(order);
-                          }}
-                          className="text-slate-400 hover:text-indigo-600"
-                        >
-                          <Edit2 className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => handleDel(order.id)}
-                          className="text-red-300 hover:text-red-600"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        <button onClick={() => { setEditingId(order.id); setEditData(order); }} className="text-slate-400 hover:text-indigo-600"><Edit2 className="w-4 h-4" /></button>
+                        <button onClick={() => handleDel(order.id)} className="text-red-300 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
                       </div>
                     </td>
                   </tr>
                 );
               })}
-              {activeOrders.length === 0 && (
-                <tr>
-                  <td
-                    colSpan="5"
-                    className="text-center py-20 text-slate-400 font-bold"
-                  >
-                    진행 중인 발주가 없습니다.
-                  </td>
-                </tr>
-              )}
             </tbody>
           </table>
         </div>
@@ -2322,30 +1249,21 @@ logProcessToGoogleSheet("step0", { ...order, qty: inputQty, mixLot: order.orderN
 }
 
 // ==========================================
-// Step 1: Material Warehouse (WIP 로트 기반 출고 + 하단 입고내역 및 모달 복구)
+// Step 1: Material Warehouse 
 // ==========================================
-function Step1MaterialWarehouse({
-  inventory,
-  inventoryHistory,
-  wipList, // 🌟 이제 공정 리스트(wipList)를 받습니다.
-  ctx,
-}) {
-  const [inboundItems, setInboundItems] = useState(
-    MATERIAL_TYPES.map((t) => ({ type: t, lot: "", weight: "" }))
-  );
+function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSettings, ctx }) {
+  const [inboundItems, setInboundItems] = useState(masterSettings.MATERIAL_TYPES.map((t) => ({ type: t, lot: "", weight: "" })));
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [operators, setOperators] = useState({});
   const [detailModalType, setDetailModalType] = useState(null);
   const [detailModalTab, setDetailModalTab] = useState("lots");
 
-  // 🌟 Step 0에서 [공정 투입] 버튼을 눌러 넘어온 로트들만 필터링 (step1 상태인 것들)
   const pendingLots = (wipList || []).filter((w) => w.currentStep === "step1");
 
-  // 🌟 투입량에 맞게 BOM(소요량)을 계산하는 함수
   const calcPartialBOM = (color, singleWeight, qty) => {
     const baseKg = (Number(singleWeight) * Number(qty)) / 1000;
     const totalKg = baseKg * 1.01 + 0.2;
-    const ratios = RATIO_BY_COLOR[color] || { "4Y-W": 1.0 };
+    const ratios = masterSettings.RATIO_BY_COLOR[color] || { "4Y-W": 1.0 };
     const reqBOM = {};
     for (const [mat, ratio] of Object.entries(ratios)) {
       if (ratio > 0) reqBOM[mat] = totalKg * ratio;
@@ -2356,18 +1274,11 @@ function Step1MaterialWarehouse({
   const handleAdd = async (e) => {
     e.preventDefault();
     const validItems = inboundItems.filter((item) => item.lot && item.weight);
-    if (validItems.length === 0)
-      return ctx.showToast("입고 데이터를 입력해주세요.", "error");
+    if (validItems.length === 0) return ctx.showToast("입고 데이터를 입력해주세요.", "error");
 
-    // 🌟 NaN 검증: 입력된 항목 중 중량이 숫자가 아니거나 0 이하인 것이 있는지 먼저 검사
     for (let item of validItems) {
       const checkVal = parseFloat(item.weight);
-      if (isNaN(checkVal) || checkVal <= 0) {
-        return ctx.showToast(
-          `[${item.type}] 올바른 중량(숫자)을 입력해주세요.`,
-          "error"
-        );
-      }
+      if (isNaN(checkVal) || checkVal <= 0) return ctx.showToast(`[${item.type}] 숫자를 입력해주세요.`, "error");
     }
 
     const dStr = getKST().split(" ")[0];
@@ -2375,58 +1286,27 @@ function Step1MaterialWarehouse({
     try {
       for (let item of validItems) {
         const wVal = parseFloat(item.weight);
-        const newId =
-          Date.now().toString() + Math.random().toString().slice(2, 7);
-        const histId =
-          Date.now().toString() + Math.random().toString().slice(2, 7);
-        await setDoc(getDocRef("inventory", newId), {
-          id: newId,
-          lot: item.lot,
-          type: item.type,
-          weight: wVal,
-          date: dStr,
-          status: "입고완료",
-          createdAt: serverTimestamp(), // 🌟 1~4단계 적용 유지
-        });
-        await setDoc(getDocRef("inventoryHistory", histId), {
-          id: histId,
-          date: timeStr,
-          type: "IN",
-          materialType: item.type,
-          lot: item.lot,
-          qty: wVal,
-          note: "일괄입고",
-          createdAt: serverTimestamp(), // 🌟 1~4단계 적용 유지
-        });
+        const newId = Date.now().toString() + Math.random().toString().slice(2, 7);
+        const histId = Date.now().toString() + Math.random().toString().slice(2, 7);
+        await setDoc(getDocRef("inventory", newId), { id: newId, lot: item.lot, type: item.type, weight: wVal, date: dStr, status: "입고완료", createdAt: serverTimestamp() });
+        await setDoc(getDocRef("inventoryHistory", histId), { id: histId, date: timeStr, type: "IN", materialType: item.type, lot: item.lot, qty: wVal, note: "일괄입고", createdAt: serverTimestamp() });
       }
-      setInboundItems(
-        MATERIAL_TYPES.map((t) => ({ type: t, lot: "", weight: "" }))
-      );
+      setInboundItems(masterSettings.MATERIAL_TYPES.map((t) => ({ type: t, lot: "", weight: "" })));
       setIsModalOpen(false);
-      ctx.showToast("입고 완료", "success");
-    } catch (err) {
-      ctx.showToast("입고 실패", "error");
-    }
+      ctx.showToast("소재 입고 완료", "success");
+    } catch (err) { ctx.showToast("입고 실패", "error"); }
   };
 
-  // 🌟 [수정본] 원클릭 출고 처리 (시간 기록 추가)
   const handleOutboundLot = async (lot) => {
     const op = operators[lot.id];
     if (!op) return ctx.showToast("작업자 성명을 입력해주세요.", "error");
-
     const neededBOM = calcPartialBOM(lot.type, lot.singleWeight, lot.qty);
-    let currentInv = [...inventory].sort(
-      (a, b) => new Date(a.date) - new Date(b.date)
-    );
-    let invUpdates = [];
-    let invDeletes = [];
-    let historyToStore = [];
+    let currentInv = [...inventory].sort((a, b) => new Date(a.date) - new Date(b.date));
+    let invUpdates = [], invDeletes = [], historyToStore = [];
 
     for (const [mat, needed] of Object.entries(neededBOM)) {
-      const avail = currentInv
-        .filter((i) => i.type === mat)
-        .reduce((s, i) => s + i.weight, 0);
-      if (avail < needed) return ctx.showToast(`[${mat}] 재고 부족!`, "error");
+      const avail = currentInv.filter((i) => i.type === mat).reduce((s, i) => s + i.weight, 0);
+      if (avail < needed) return ctx.showToast(`[${mat}] 소재 부족!`, "error");
     }
 
     for (const [mat, needed] of Object.entries(neededBOM)) {
@@ -2436,17 +1316,8 @@ function Step1MaterialWarehouse({
           const deduct = Math.min(currentInv[i].weight, remain);
           currentInv[i].weight -= deduct;
           remain -= deduct;
-          historyToStore.push({
-            id: Date.now() + Math.random().toString(),
-            date: getKST().slice(0, 16),
-            type: "OUT",
-            materialType: mat,
-            lot: currentInv[i].lot,
-            qty: Number(deduct.toFixed(3)),
-            note: `분할출고(${lot.mixLot})`,
-          });
-          if (currentInv[i].weight <= 0) invDeletes.push(currentInv[i].id);
-          else invUpdates.push(currentInv[i]);
+          historyToStore.push({ id: Date.now() + Math.random().toString(), date: getKST().slice(0, 16), type: "OUT", materialType: mat, lot: currentInv[i].lot, qty: Number(deduct.toFixed(3)), note: `분할출고(${lot.mixLot})` });
+          if (currentInv[i].weight <= 0) invDeletes.push(currentInv[i].id); else invUpdates.push(currentInv[i]);
           if (remain <= 0) break;
         }
       }
@@ -2455,282 +1326,91 @@ function Step1MaterialWarehouse({
     try {
       for (let u of invUpdates) await setDoc(getDocRef("inventory", u.id), u);
       for (let d of invDeletes) await deleteDoc(getDocRef("inventory", d));
-      for (let h of historyToStore)
-        await setDoc(getDocRef("inventoryHistory", h.id), h);
-
+      for (let h of historyToStore) await setDoc(getDocRef("inventoryHistory", h.id), h);
       const totalW = Object.values(neededBOM).reduce((a, b) => a + b, 0);
-      await setDoc(getDocRef("wipList", lot.id), {
-        ...lot,
-        weight: totalW.toFixed(3),
-        currentStep: "step2",
-        // 🌟 시간 기록 추가
-        details: `${
-          lot.details
-        }\n[${getKST()}] [원재료창고] 출고완료 (담당:${op})`,
-     });
-    ctx.showToast(`로트 ${lot.mixLot} 출고 및 혼합 이관 완료`, "success");
-
-// 🌟 시트 기록 추가 (수량은 EA 유지 + 사용된 원재료와 세부 무게 기록)
-    const materialsStr = Object.entries(neededBOM).map(([mat, kg]) => `${mat}(${kg.toFixed(3)}kg)`).join(", ");
-    logProcessToGoogleSheet("step1", { ...lot, qty: lot.qty }, op, { 
-      measurements: `투입: ${materialsStr}`,
-      details: "원재료 혼합 공정으로 출고" 
-    });
-  } catch (e) {
-      ctx.showToast("오류 발생", "error");
-    }
+      await setDoc(getDocRef("wipList", lot.id), { ...lot, weight: totalW.toFixed(3), currentStep: "step2", details: `${lot.details}\n[${getKST()}] [소재창고] 출고완료 (담당:${op})` });
+      ctx.showToast(`로트 ${lot.mixLot} 출고 완료`, "success");
+    } catch (e) { ctx.showToast("오류 발생", "error"); }
   };
 
-  const inboundHistory = (inventoryHistory || []).filter(
-    (h) => h.type === "IN"
-  );
+  const inboundHistory = (inventoryHistory || []).filter((h) => h.type === "IN");
   const groupedInbound = inboundHistory.reduce((acc, curr) => {
     const dateDate = curr.date.split(" ")[0];
     if (!acc[dateDate]) acc[dateDate] = [];
     acc[dateDate].push(curr);
     return acc;
   }, {});
-  const sortedInboundDates = Object.keys(groupedInbound).sort(
-    (a, b) => new Date(b) - new Date(a)
-  );
+  const sortedInboundDates = Object.keys(groupedInbound).sort((a, b) => new Date(b) - new Date(a));
 
   return (
     <div className="space-y-8 relative">
       <div className="flex justify-between items-center mb-4">
-        <h3 className="text-lg font-bold text-slate-800 flex items-center">
-          <Package className="w-5 h-5 mr-2 text-indigo-600" /> 분말 재고 요약
-        </h3>
-        {!isModalOpen && (
-          <button
-            onClick={() => setIsModalOpen(true)}
-            className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center hover:bg-indigo-700 transition-colors"
-          >
-            <Plus className="w-4 h-4 mr-1" /> 일괄 입고 등록
-          </button>
-        )}
+        <h3 className="text-lg font-bold text-slate-800 flex items-center"><Package className="w-5 h-5 mr-2 text-indigo-600" /> 소재 재고 요약</h3>
+        {!isModalOpen && <button onClick={() => setIsModalOpen(true)} className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center hover:bg-indigo-700 transition-colors"><Plus className="w-4 h-4 mr-1" /> 일괄 입고 등록</button>}
       </div>
 
       {isModalOpen && (
         <div className="bg-white p-6 rounded-2xl shadow-md border border-slate-200 mb-6 relative">
           <div className="flex justify-between items-center mb-6">
-            <h4 className="font-black text-lg text-slate-800 flex items-center">
-              <Plus className="w-5 h-5 mr-2 text-indigo-500" /> 원재료 일괄 입고
-              등록
-            </h4>
-            <button
-              onClick={() => setIsModalOpen(false)}
-              className="text-slate-400 hover:text-slate-600 bg-slate-100 p-1.5 rounded-full"
-            >
-              <X className="w-4 h-4" />
-            </button>
+            <h4 className="font-black text-lg text-slate-800 flex items-center"><Plus className="w-5 h-5 mr-2 text-indigo-500" /> 소재 일괄 입고</h4>
+            <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-slate-600 bg-slate-100 p-1.5 rounded-full"><X className="w-4 h-4" /></button>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {inboundItems.map((item, idx) => (
-              <div
-                key={item.type}
-                className="flex gap-3 items-center bg-slate-50 p-3 rounded-xl border border-slate-200 shadow-sm"
-              >
-                <span className="w-16 font-black text-indigo-700 text-center">
-                  {item.type}
-                </span>
-                <input
-                  type="text"
-                  placeholder="로트번호"
-                  className="flex-1 border border-slate-300 p-2.5 rounded-lg text-sm font-mono focus:border-indigo-400"
-                  value={item.lot}
-                  onChange={(e) => {
-                    const newItems = [...inboundItems];
-                    newItems[idx].lot = e.target.value;
-                    setInboundItems(newItems);
-                  }}
-                />
+              <div key={item.type} className="flex gap-3 items-center bg-slate-50 p-3 rounded-xl border border-slate-200 shadow-sm">
+                <span className="w-16 font-black text-indigo-700 text-center">{item.type}</span>
+                <input type="text" placeholder="로트번호" className="flex-1 border border-slate-300 p-2.5 rounded-lg text-sm font-mono focus:border-indigo-400" value={item.lot} onChange={(e) => { const newItems = [...inboundItems]; newItems[idx].lot = e.target.value; setInboundItems(newItems); }} />
                 <div className="relative w-28">
-                  <input
-                    type="number"
-                    step="0.001"
-                    placeholder="중량"
-                    className="w-full border border-slate-300 p-2.5 rounded-lg text-sm text-right font-bold pr-7 focus:border-indigo-400"
-                    value={item.weight}
-                    onChange={(e) => {
-                      const newItems = [...inboundItems];
-                      newItems[idx].weight = e.target.value;
-                      setInboundItems(newItems);
-                    }}
-                  />
-                  <span className="absolute right-2 top-2.5 text-xs font-bold text-slate-400">
-                    kg
-                  </span>
+                  <input type="number" step="0.001" placeholder="중량" className="w-full border border-slate-300 p-2.5 rounded-lg text-sm text-right font-bold pr-7 focus:border-indigo-400" value={item.weight} onChange={(e) => { const newItems = [...inboundItems]; newItems[idx].weight = e.target.value; setInboundItems(newItems); }} />
+                  <span className="absolute right-2 top-2.5 text-xs font-bold text-slate-400">kg</span>
                 </div>
               </div>
             ))}
           </div>
-          <div className="mt-6 flex justify-end">
-            <button
-              onClick={handleAdd}
-              className="bg-indigo-600 text-white px-8 py-3 rounded-xl font-black shadow-md hover:bg-indigo-700 transition-transform flex items-center"
-            >
-              <CheckCircle2 className="w-5 h-5 mr-2" /> 일괄 입고 처리
-            </button>
-          </div>
+          <div className="mt-6 flex justify-end"><button onClick={handleAdd} className="bg-indigo-600 text-white px-8 py-3 rounded-xl font-black shadow-md hover:bg-indigo-700 transition-transform flex items-center"><CheckCircle2 className="w-5 h-5 mr-2" /> 입고 처리</button></div>
         </div>
       )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
-        {MATERIAL_TYPES.map((type) => {
-          const totalW = inventory
-            .filter((i) => i.type === type)
-            .reduce((s, i) => s + i.weight, 0);
-          let safetyThreshold =
-            type === "4Y-W"
-              ? 500
-              : type === "4Y-Y"
-              ? 50
-              : type === "5E-P"
-              ? 20
-              : 10;
-          let maxCapacity =
-            type === "4Y-W"
-              ? 2000
-              : type === "4Y-Y"
-              ? 200
-              : type === "5E-P"
-              ? 100
-              : 50;
+        {masterSettings.MATERIAL_TYPES.map((type) => {
+          const totalW = inventory.filter((i) => i.type === type).reduce((s, i) => s + i.weight, 0);
+          let safetyThreshold = 50;
           const isWarning = totalW <= safetyThreshold;
           return (
-            <div
-              key={type}
-              onClick={() => {
-                setDetailModalType(type);
-                setDetailModalTab("lots");
-              }}
-              className={`rounded-2xl shadow-sm border bg-white p-6 cursor-pointer transition-all ${
-                isWarning
-                  ? "border-red-300 bg-red-50/50"
-                  : "hover:border-indigo-400 hover:shadow-md"
-              }`}
-            >
-              <div className="text-sm font-bold text-slate-500 mb-3 flex justify-between items-center">
-                <span>{type}</span>
-                {isWarning && (
-                  <span className="text-[10px] text-red-500 bg-red-100 border border-red-200 px-1.5 py-0.5 rounded font-black animate-pulse">
-                    재고부족
-                  </span>
-                )}
-              </div>
-              <div
-                className={`text-3xl font-black mb-4 ${
-                  isWarning ? "text-red-600" : "text-slate-800"
-                }`}
-              >
-                {totalW.toLocaleString()}{" "}
-                <span className="text-base font-bold text-slate-500">kg</span>
-              </div>
-              <div className="w-full bg-slate-100 rounded-full h-2">
-                <div
-                  className={`h-2 rounded-full ${
-                    isWarning ? "bg-red-500" : "bg-green-500"
-                  }`}
-                  style={{
-                    width: `${Math.min((totalW / maxCapacity) * 100, 100)}%`,
-                  }}
-                ></div>
-              </div>
+            <div key={type} onClick={() => { setDetailModalType(type); setDetailModalTab("lots"); }} className={`rounded-2xl shadow-sm border bg-white p-6 cursor-pointer transition-all ${isWarning ? "border-red-300 bg-red-50/50" : "hover:border-indigo-400 hover:shadow-md"}`}>
+              <div className="text-sm font-bold text-slate-500 mb-3 flex justify-between items-center"><span>{type}</span>{isWarning && <span className="text-[10px] text-red-500 bg-red-100 border border-red-200 px-1.5 py-0.5 rounded font-black animate-pulse">부족</span>}</div>
+              <div className={`text-3xl font-black mb-4 ${isWarning ? "text-red-600" : "text-slate-800"}`}>{totalW.toLocaleString()} <span className="text-base font-bold text-slate-500">kg</span></div>
             </div>
           );
         })}
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
-        <div className="px-6 py-5 bg-slate-50 border-b">
-          <h3 className="font-bold text-lg text-slate-800">
-            생산 투입 로트 (출고 대기)
-          </h3>
-        </div>
+        <div className="px-6 py-5 bg-slate-50 border-b"><h3 className="font-bold text-lg text-slate-800">생산 투입 로트 (출고 대기)</h3></div>
         <table className="w-full text-sm text-left">
           <thead className="bg-white border-b text-xs text-slate-500 uppercase tracking-wider">
-            <tr>
-              <th className="px-6 py-4">로트 번호</th>
-              <th className="px-6 py-4">제품 정보</th>
-              <th className="px-4 py-4 text-center">투입 수량</th>
-              <th className="px-6 py-4">소요 원재료 (BOM)</th>
-              <th className="px-6 py-4 text-center">작업</th>
-            </tr>
+            <tr><th className="px-6 py-4">로트 번호</th><th className="px-6 py-4">분류</th><th className="px-4 py-4 text-center">수량</th><th className="px-6 py-4">소요 소재 (BOM)</th><th className="px-6 py-4 text-center">작업</th></tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {pendingLots.length === 0 && (
-              <tr>
-                <td
-                  colSpan="5"
-                  className="text-center py-20 text-slate-400 font-medium italic"
-                >
-                  Step 0에서 투입된 로트가 없습니다.
-                </td>
-              </tr>
-            )}
+            {pendingLots.length === 0 && <tr><td colSpan="5" className="text-center py-20 text-slate-400 font-medium italic">대기 중인 로트가 없습니다.</td></tr>}
             {pendingLots.map((lot) => {
-              const neededBOM = calcPartialBOM(
-                lot.type,
-                lot.singleWeight,
-                lot.qty
-              );
-              // 🌟 1. 총 합산 무게 계산 로직 추가
-              const totalBOMWeight = Object.values(neededBOM).reduce(
-                (a, b) => a + b,
-                0
-              );
-
+              const neededBOM = calcPartialBOM(lot.type, lot.singleWeight, lot.qty);
+              const totalBOMWeight = Object.values(neededBOM).reduce((a, b) => a + b, 0);
               return (
-                <tr
-                  key={lot.id}
-                  className="hover:bg-slate-50 transition-colors"
-                >
-                  <td className="px-6 py-4 font-mono font-bold text-indigo-600">
-                    {lot.mixLot}
-                  </td>
-                  <td className="px-6 py-4 font-black">
-                    {lot.type} {lot.height}T
-                  </td>
-                  <td className="px-4 py-4 font-black text-blue-600 text-center text-lg">
-                    {lot.qty} EA
-                  </td>
+                <tr key={lot.id} className="hover:bg-slate-50 transition-colors">
+                  <td className="px-6 py-4 font-mono font-bold text-indigo-600">{lot.mixLot}</td>
+                  <td className="px-6 py-4 font-black">{lot.type} {lot.height}T</td>
+                  <td className="px-4 py-4 font-black text-blue-600 text-center text-lg">{lot.qty} EA</td>
                   <td className="px-6 py-4">
-                    {/* 🌟 2. items-center 클래스 추가 및 녹색 합계 뱃지 추가 */}
                     <div className="flex flex-wrap gap-1.5 items-center">
-                      {Object.entries(neededBOM).map(([m, k]) => (
-                        <div
-                          key={m}
-                          className="px-2 py-1 bg-indigo-50 border border-indigo-100 rounded text-[10px] font-bold text-indigo-700"
-                        >
-                          {m}: {k.toFixed(3)}kg
-                        </div>
-                      ))}
-                      {/* 🌟 추가된 합계 뱃지 UI */}
-                      <div className="px-2.5 py-1 bg-emerald-100 border border-emerald-300 rounded text-[10px] font-black text-emerald-800 shadow-sm">
-                        합계: {totalBOMWeight.toFixed(3)} kg
-                      </div>
+                      {Object.entries(neededBOM).map(([m, k]) => <div key={m} className="px-2 py-1 bg-indigo-50 border border-indigo-100 rounded text-[10px] font-bold text-indigo-700">{m}: {k.toFixed(3)}kg</div>)}
+                      <div className="px-2.5 py-1 bg-emerald-100 border border-emerald-300 rounded text-[10px] font-black text-emerald-800 shadow-sm">합계: {totalBOMWeight.toFixed(3)} kg</div>
                     </div>
                   </td>
                   <td className="px-6 py-4">
                     <div className="flex flex-col gap-2 items-center">
-                      <input
-                        type="text"
-                        placeholder="작업자"
-                        value={operators[lot.id] || ""}
-                        onChange={(e) =>
-                          setOperators({
-                            ...operators,
-                            [lot.id]: e.target.value,
-                          })
-                        }
-                        className="border p-2 text-xs text-center font-bold rounded-lg w-24 outline-none focus:border-indigo-500"
-                      />
-                      <button
-                        onClick={() => handleOutboundLot(lot)}
-                        className="bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-black hover:bg-blue-700 shadow-md"
-                      >
-                        출고 실행
-                      </button>
+                      <input type="text" placeholder="작업자" value={operators[lot.id] || ""} onChange={(e) => setOperators({ ...operators, [lot.id]: e.target.value })} className="border p-2 text-xs text-center font-bold rounded-lg w-24 outline-none focus:border-indigo-500" />
+                      <button onClick={() => handleOutboundLot(lot)} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-black hover:bg-blue-700 shadow-md">출고 실행</button>
                     </div>
                   </td>
                 </tr>
@@ -2740,204 +1420,33 @@ function Step1MaterialWarehouse({
         </table>
       </div>
 
-      {/* 🌟 여기서부터 사라졌던 입고 내역 테이블 및 상세 모달 창 완벽 복구 🌟 */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden mt-8">
-        <div className="px-6 py-5 bg-slate-50 border-b border-slate-100 flex items-center">
-          <History className="w-5 h-5 mr-2 text-slate-500" />
-          <h3 className="font-bold text-lg">최근 분말 입고 내역</h3>
-        </div>
-        <div className="p-6 overflow-x-auto max-h-[400px]">
-          {sortedInboundDates.length === 0 ? (
-            <div className="text-center py-8 text-slate-400">
-              최근 입고 내역이 없습니다.
-            </div>
-          ) : (
-            <div className="space-y-8">
-              {sortedInboundDates.map((date) => (
-                <div key={date}>
-                  <h4 className="font-black text-slate-700 mb-3 flex items-center">
-                    <span className="w-2 h-2 rounded-full bg-indigo-500 mr-2"></span>{" "}
-                    {date}
-                  </h4>
-                  <table className="w-full text-sm text-left border rounded-lg overflow-hidden">
-                    <thead className="bg-slate-50 border-b text-xs text-slate-500">
-                      <tr>
-                        <th className="px-4 py-3">시간</th>
-                        <th className="px-4 py-3">원재료 종류</th>
-                        <th className="px-4 py-3">로트 번호</th>
-                        <th className="px-4 py-3 text-right">입고 중량</th>
-                        <th className="px-4 py-3">비고</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {groupedInbound[date].map((h) => (
-                        <tr key={h.id} className="hover:bg-slate-50">
-                          <td className="px-4 py-3 text-xs text-slate-500 font-mono">
-                            {h.date.split(" ")[1] || h.date}
-                          </td>
-                          <td className="px-4 py-3 font-black text-slate-800">
-                            {h.materialType}
-                          </td>
-                          <td className="px-4 py-3 font-mono font-bold text-indigo-600">
-                            {h.lot}
-                          </td>
-                          <td className="px-4 py-3 text-right font-black">
-                            {h.qty.toLocaleString()}{" "}
-                            <span className="text-xs font-bold text-slate-400">
-                              kg
-                            </span>
-                          </td>
-                          <td className="px-4 py-3 text-xs text-slate-500">
-                            {h.note}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
       {detailModalType && (
         <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl max-h-[80vh] flex flex-col overflow-hidden">
-            <div className="flex justify-between items-center p-6 border-b border-slate-200 bg-slate-50">
-              <h3 className="text-xl font-black text-slate-800">
-                {detailModalType} 상세 정보
-              </h3>
-              <button
-                onClick={() => setDetailModalType(null)}
-                className="text-slate-400 hover:text-slate-600"
-              >
-                <X className="w-6 h-6" />
-              </button>
-            </div>
-
+            <div className="flex justify-between items-center p-6 border-b border-slate-200 bg-slate-50"><h3 className="text-xl font-black text-slate-800">{detailModalType} 상세 정보</h3><button onClick={() => setDetailModalType(null)} className="text-slate-400 hover:text-slate-600"><X className="w-6 h-6" /></button></div>
             <div className="flex border-b px-6 bg-white">
-              <button
-                onClick={() => setDetailModalTab("lots")}
-                className={`py-3 px-4 font-bold text-sm border-b-2 transition-colors ${
-                  detailModalTab === "lots"
-                    ? "border-indigo-600 text-indigo-700"
-                    : "border-transparent text-slate-500 hover:text-slate-700"
-                }`}
-              >
-                로트별 잔여량
-              </button>
-              <button
-                onClick={() => setDetailModalTab("history")}
-                className={`py-3 px-4 font-bold text-sm border-b-2 transition-colors ${
-                  detailModalTab === "history"
-                    ? "border-indigo-600 text-indigo-700"
-                    : "border-transparent text-slate-500 hover:text-slate-700"
-                }`}
-              >
-                입출고 내역
-              </button>
+              <button onClick={() => setDetailModalTab("lots")} className={`py-3 px-4 font-bold text-sm border-b-2 transition-colors ${detailModalTab === "lots" ? "border-indigo-600 text-indigo-700" : "border-transparent text-slate-500 hover:text-slate-700"}`}>로트별 잔여량</button>
+              <button onClick={() => setDetailModalTab("history")} className={`py-3 px-4 font-bold text-sm border-b-2 transition-colors ${detailModalTab === "history" ? "border-indigo-600 text-indigo-700" : "border-transparent text-slate-500 hover:text-slate-700"}`}>입출고 내역</button>
             </div>
-
             <div className="p-6 overflow-y-auto flex-1 bg-slate-50">
               {detailModalTab === "lots" && (
                 <table className="w-full text-sm text-left bg-white border rounded-lg overflow-hidden shadow-sm">
-                  <thead className="bg-slate-100 text-slate-500 text-xs uppercase">
-                    <tr>
-                      <th className="p-3">입고일자</th>
-                      <th className="p-3">로트 번호</th>
-                      <th className="p-3 text-right">잔여 중량</th>
-                      <th className="p-3 text-center">상태</th>
-                    </tr>
-                  </thead>
+                  <thead className="bg-slate-100 text-slate-500 text-xs uppercase"><tr><th className="p-3">입고일자</th><th className="p-3">로트 번호</th><th className="p-3 text-right">잔여 중량</th><th className="p-3 text-center">상태</th></tr></thead>
                   <tbody className="divide-y divide-slate-100">
-                    {inventory
-                      .filter((i) => i.type === detailModalType && i.weight > 0)
-                      .map((item) => (
-                        <tr key={item.id} className="hover:bg-slate-50">
-                          <td className="p-3">{item.date}</td>
-                          <td className="p-3 font-mono font-bold text-indigo-600">
-                            {item.lot}
-                          </td>
-                          <td className="p-3 text-right font-black">
-                            {item.weight.toLocaleString()} kg
-                          </td>
-                          <td className="p-3 text-center">
-                            <span className="bg-green-100 text-green-700 px-2 py-1 rounded text-[10px] font-bold">
-                              {item.status}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    {inventory.filter(
-                      (i) => i.type === detailModalType && i.weight > 0
-                    ).length === 0 && (
-                      <tr>
-                        <td
-                          colSpan="4"
-                          className="text-center p-6 text-slate-400"
-                        >
-                          잔여 로트가 없습니다.
-                        </td>
-                      </tr>
-                    )}
+                    {inventory.filter((i) => i.type === detailModalType && i.weight > 0).map((item) => (
+                      <tr key={item.id} className="hover:bg-slate-50"><td className="p-3">{item.date}</td><td className="p-3 font-mono font-bold text-indigo-600">{item.lot}</td><td className="p-3 text-right font-black">{item.weight.toLocaleString()} kg</td><td className="p-3 text-center"><span className="bg-green-100 text-green-700 px-2 py-1 rounded text-[10px] font-bold">{item.status}</span></td></tr>
+                    ))}
+                    {inventory.filter((i) => i.type === detailModalType && i.weight > 0).length === 0 && <tr><td colSpan="4" className="text-center p-6 text-slate-400">잔여 로트가 없습니다.</td></tr>}
                   </tbody>
                 </table>
               )}
-
               {detailModalTab === "history" && (
                 <table className="w-full text-sm text-left bg-white border rounded-lg overflow-hidden shadow-sm">
-                  <thead className="bg-slate-100 text-slate-500 text-xs uppercase">
-                    <tr>
-                      <th className="p-3">일시</th>
-                      <th className="p-3 text-center">구분</th>
-                      <th className="p-3">로트 번호</th>
-                      <th className="p-3 text-right">수량</th>
-                      <th className="p-3">비고</th>
-                    </tr>
-                  </thead>
+                  <thead className="bg-slate-100 text-slate-500 text-xs uppercase"><tr><th className="p-3">일시</th><th className="p-3 text-center">구분</th><th className="p-3">로트 번호</th><th className="p-3 text-right">수량</th><th className="p-3">비고</th></tr></thead>
                   <tbody className="divide-y divide-slate-100">
-                    {(inventoryHistory || [])
-                      .filter((h) => h.materialType === detailModalType)
-                      .map((h) => (
-                        <tr key={h.id} className="hover:bg-slate-50">
-                          <td className="p-3 text-xs text-slate-500">
-                            {h.date}
-                          </td>
-                          <td className="p-3 text-center">
-                            <span
-                              className={`px-2 py-1 rounded text-[10px] font-bold ${
-                                h.type === "IN"
-                                  ? "bg-blue-100 text-blue-700"
-                                  : "bg-red-100 text-red-700"
-                              }`}
-                            >
-                              {h.type === "IN" ? "입고" : "출고"}
-                            </span>
-                          </td>
-                          <td className="p-3 font-mono font-bold text-slate-700">
-                            {h.lot}
-                          </td>
-                          <td className="p-3 text-right font-black">
-                            {h.qty.toLocaleString()} kg
-                          </td>
-                          <td className="p-3 text-xs text-slate-600">
-                            {h.note}
-                          </td>
-                        </tr>
-                      ))}
-                    {(inventoryHistory || []).filter(
-                      (h) => h.materialType === detailModalType
-                    ).length === 0 && (
-                      <tr>
-                        <td
-                          colSpan="5"
-                          className="text-center p-6 text-slate-400"
-                        >
-                          입출고 내역이 없습니다.
-                        </td>
-                      </tr>
-                    )}
+                    {(inventoryHistory || []).filter((h) => h.materialType === detailModalType).map((h) => (
+                      <tr key={h.id} className="hover:bg-slate-50"><td className="p-3 text-xs text-slate-500">{h.date}</td><td className="p-3 text-center"><span className={`px-2 py-1 rounded text-[10px] font-bold ${h.type === "IN" ? "bg-blue-100 text-blue-700" : "bg-red-100 text-red-700"}`}>{h.type === "IN" ? "입고" : "출고"}</span></td><td className="p-3 font-mono font-bold text-slate-700">{h.lot}</td><td className="p-3 text-right font-black">{h.qty.toLocaleString()} kg</td><td className="p-3 text-xs text-slate-600">{h.note}</td></tr>
+                    ))}
                   </tbody>
                 </table>
               )}
@@ -2952,7 +1461,7 @@ function Step1MaterialWarehouse({
 // ==========================================
 // Step 2: Mixing
 // ==========================================
-function Step2Mixing({ wipList, ctx }) {
+function Step2Mixing({ wipList, masterSettings, ctx }) {
   const pendingWip = wipList.filter((w) => w.currentStep === "step2");
   const [activeMixId, setActiveMixId] = useState(null);
   const [isSplitMode, setIsSplitMode] = useState(false);
@@ -2962,29 +1471,16 @@ function Step2Mixing({ wipList, ctx }) {
   const [specialNote, setSpecialNote] = useState("");
 
   useEffect(() => {
-    if (!activeMixId && pendingWip.length > 0) {
-      setActiveMixId(pendingWip[0].id);
-      setIsSplitMode(false);
-    } else if (activeMixId && !pendingWip.find((w) => w.id === activeMixId)) {
-      setActiveMixId(pendingWip.length > 0 ? pendingWip[0].id : null);
-      setIsSplitMode(false);
-    }
+    if (!activeMixId && pendingWip.length > 0) { setActiveMixId(pendingWip[0].id); setIsSplitMode(false); }
+    else if (activeMixId && !pendingWip.find((w) => w.id === activeMixId)) { setActiveMixId(pendingWip.length > 0 ? pendingWip[0].id : null); setIsSplitMode(false); }
   }, [pendingWip, activeMixId]);
 
   const activeJob = pendingWip.find((w) => w.id === activeMixId);
-  const ratios = activeJob
-    ? RATIO_BY_COLOR[activeJob.type] || { "4Y-W": 1.0 }
-    : {};
+  const ratios = activeJob ? masterSettings.RATIO_BY_COLOR[activeJob.type] || { "4Y-W": 1.0 } : {};
   const activeMaterials = Object.keys(ratios).filter((m) => ratios[m] > 0);
 
   useEffect(() => {
-    if (
-      activeMaterials.length > 0 &&
-      !activeMaterials.includes(splitMaterial)
-    ) {
-      setSplitMaterial(activeMaterials[0]);
-      setSplitWeightStr("");
-    }
+    if (activeMaterials.length > 0 && !activeMaterials.includes(splitMaterial)) { setSplitMaterial(activeMaterials[0]); setSplitWeightStr(""); }
   }, [activeJob, activeMaterials, splitMaterial]);
 
   const splitWeight = parseFloat(splitWeightStr) || 0;
@@ -2993,89 +1489,27 @@ function Step2Mixing({ wipList, ctx }) {
   const origTotal = activeJob ? parseFloat(activeJob.weight) : 0;
   const isValidSplit = subTotal > 0 && subTotal < origTotal;
   const remainTotal = origTotal - subTotal;
-  const subQty = activeJob
-    ? Math.round((subTotal / origTotal) * activeJob.qty)
-    : 0;
+  const subQty = activeJob ? Math.round((subTotal / origTotal) * activeJob.qty) : 0;
   const remainQty = activeJob ? activeJob.qty - subQty : 0;
 
-  // 🌟 [수정본] 일반 혼합 및 분할 혼합 (시간 기록 추가)
   const handleMix = async () => {
     if (!operator) return ctx.showToast("작업자 필수");
     try {
-      await setDoc(getDocRef("wipList", activeJob.id), {
-        ...activeJob,
-        currentStep: "step3",
-        // 🌟 시간 기록 추가
-        details: `${
-          activeJob.details
-        }\n[${getKST()}] [혼합] 담당: ${operator} ${
-          specialNote ? `[메모:${specialNote}]` : ""
-        }`,
-      });
-      setOperator("");
-    setSpecialNote("");
-    ctx.showToast("혼합 완료", "success");
-
-// 🌟 시트 기록 추가 (수량은 EA 유지 + 원재료별 세부 배합량 기록)
-    const materialsStr = activeMaterials.map((m) => `${m}(${(parseFloat(activeJob.weight) * ratios[m]).toFixed(3)}kg)`).join(", ");
-    logProcessToGoogleSheet("step2", { ...activeJob, qty: activeJob.qty }, operator, { 
-      measurements: `총 ${activeJob.weight}kg [${materialsStr}]`,
-      details: specialNote || "일반 혼합" 
-    });
-  } catch (err) {
-      ctx.showToast("오류 발생", "error");
-    }
+      await setDoc(getDocRef("wipList", activeJob.id), { ...activeJob, currentStep: "step3", details: `${activeJob.details}\n[${getKST()}] [배합] 담당: ${operator} ${specialNote ? `[메모:${specialNote}]` : ""}` });
+      setOperator(""); setSpecialNote(""); ctx.showToast("배합 완료", "success");
+    } catch (err) { ctx.showToast("오류 발생", "error"); }
   };
 
   const handleSplitMix = async () => {
     if (!operator) return ctx.showToast("작업자 필수");
     if (!isValidSplit) return ctx.showToast("잔여 중량 오류", "error");
-
-    const id1 = Date.now().toString();
-    const id2 = (Date.now() + 1).toString();
-
+    const id1 = Date.now().toString(); const id2 = (Date.now() + 1).toString();
     try {
       await deleteDoc(getDocRef("wipList", activeJob.id));
-      await setDoc(getDocRef("wipList", id1), {
-        ...activeJob,
-        id: id1,
-        mixLot: `${activeJob.mixLot}-R`,
-        weight: subTotal.toFixed(3),
-        qty: subQty,
-        currentStep: "step3",
-        // 🌟 시간 기록 추가
-        details: `${
-          activeJob.details
-        }\n[${getKST()}] [혼합] 잔량 분할 혼합 (담당:${operator})`,
-      });
-      await setDoc(getDocRef("wipList", id2), {
-        ...activeJob,
-        id: id2,
-        mixLot: `MIX-${getKSTDateOnly()}-${Math.floor(Math.random() * 100)}`,
-        weight: remainTotal.toFixed(3),
-        qty: remainQty,
-        currentStep: "step2",
-        // 🌟 시간 기록 추가
-        details: `${
-          activeJob.details
-        }\n[${getKST()}] [혼합] 이전 로트 잔량 분리 생성`,
-      });
-
-      setIsSplitMode(false);
-      setSplitWeightStr("");
-      setOperator("");
-    setSpecialNote("");
-    ctx.showToast("잔량 분할 완료", "success");
-
-// 🌟 시트 기록 추가 (수량은 EA 유지 + 원재료별 세부 배합량 기록)
-    const splitMaterialsStr = activeMaterials.map((m) => `${m}(${(subTotal * ratios[m]).toFixed(3)}kg)`).join(", ");
-    logProcessToGoogleSheet("step2", { ...activeJob, qty: subQty }, operator, { 
-      measurements: `총 ${subTotal.toFixed(3)}kg [${splitMaterialsStr}]`,
-      details: specialNote || "잔량 분할 소진" 
-    });
-  } catch (err) {
-      ctx.showToast("오류 발생", "error");
-    }
+      await setDoc(getDocRef("wipList", id1), { ...activeJob, id: id1, mixLot: `${activeJob.mixLot}-R`, weight: subTotal.toFixed(3), qty: subQty, currentStep: "step3", details: `${activeJob.details}\n[${getKST()}] [배합] 잔량 분할 배합 (담당:${operator})` });
+      await setDoc(getDocRef("wipList", id2), { ...activeJob, id: id2, mixLot: `MIX-${getKSTDateOnly()}-${Math.floor(Math.random() * 100)}`, weight: remainTotal.toFixed(3), qty: remainQty, currentStep: "step2", details: `${activeJob.details}\n[${getKST()}] [배합] 이전 로트 잔량 분리 생성` });
+      setIsSplitMode(false); setSplitWeightStr(""); setOperator(""); setSpecialNote(""); ctx.showToast("잔량 분할 완료", "success");
+    } catch (err) { ctx.showToast("오류 발생", "error"); }
   };
 
   return (
@@ -3083,285 +1517,88 @@ function Step2Mixing({ wipList, ctx }) {
       {activeJob ? (
         (() => {
           const fullBatches = Math.floor(parseFloat(activeJob.weight) / 15);
-          const remainder = Number(
-            (parseFloat(activeJob.weight) % 15).toFixed(3)
-          );
-
+          const remainder = Number((parseFloat(activeJob.weight) % 15).toFixed(3));
           return (
             <div className="bg-white rounded-2xl shadow-md border overflow-hidden">
               <div className="bg-indigo-600 px-6 py-4 flex justify-between items-center text-white">
-                <h3 className="text-xl font-black flex items-center">
-                  <Beaker className="w-6 h-6 mr-2 opacity-80" /> 혼합 작업
-                  지시서
-                </h3>
-                <span className="bg-indigo-800 text-sm px-4 py-1.5 rounded-full font-mono font-bold shadow-inner">
-                  {activeJob.mixLot}
-                </span>
+                <h3 className="text-xl font-black flex items-center"><Beaker className="w-6 h-6 mr-2 opacity-80" /> 소재 배합 지시서</h3>
+                <span className="bg-indigo-800 text-sm px-4 py-1.5 rounded-full font-mono font-bold shadow-inner">{activeJob.mixLot}</span>
               </div>
-
               <div className="flex border-b bg-slate-50">
-                <button
-                  onClick={() => setIsSplitMode(false)}
-                  className={`flex-1 py-4 text-sm font-bold flex items-center justify-center ${
-                    !isSplitMode
-                      ? "bg-white text-indigo-700 border-b-2 border-indigo-600"
-                      : "text-slate-500"
-                  }`}
-                >
-                  <Cylinder className="w-4 h-4 mr-2" /> 일반 혼합 (15kg 기준)
-                </button>
-                <button
-                  onClick={() => setIsSplitMode(true)}
-                  className={`flex-1 py-4 text-sm font-bold flex items-center justify-center ${
-                    isSplitMode
-                      ? "bg-orange-50 text-orange-700 border-b-2 border-orange-600"
-                      : "text-slate-500"
-                  }`}
-                >
-                  <Split className="w-4 h-4 mr-2" /> 로트 잔량 분할 (잔량 소진)
-                </button>
+                <button onClick={() => setIsSplitMode(false)} className={`flex-1 py-4 text-sm font-bold flex items-center justify-center ${!isSplitMode ? "bg-white text-indigo-700 border-b-2 border-indigo-600" : "text-slate-500"}`}><Cylinder className="w-4 h-4 mr-2" /> 일반 배합 (15kg 기준)</button>
+                <button onClick={() => setIsSplitMode(true)} className={`flex-1 py-4 text-sm font-bold flex items-center justify-center ${isSplitMode ? "bg-orange-50 text-orange-700 border-b-2 border-orange-600" : "text-slate-500"}`}><Split className="w-4 h-4 mr-2" /> 잔량 분할 배합</button>
               </div>
-
               <div className="p-8">
                 <div className="flex justify-between mb-8 pb-6 border-b gap-6">
                   <div>
-                    <div className="text-sm font-bold text-slate-500 mb-1">
-                      작업 제품
-                    </div>
-                    <div className="text-3xl font-black flex items-center">
-                      {activeJob.type}{" "}
-                      <span className="text-indigo-600 ml-2">
-                        {activeJob.height}T
-                      </span>{" "}
-                      <span className="text-xl font-bold text-indigo-600 ml-3 bg-indigo-50 px-3 py-1 rounded-lg">
-                        {activeJob.qty} EA
-                      </span>
-                    </div>
+                    <div className="text-sm font-bold text-slate-500 mb-1">작업 제품</div>
+                    <div className="text-3xl font-black flex items-center">{activeJob.type} <span className="text-indigo-600 ml-2">{activeJob.height}T</span> <span className="text-xl font-bold text-indigo-600 ml-3 bg-indigo-50 px-3 py-1 rounded-lg">{activeJob.qty} EA</span></div>
                   </div>
                   <div className="text-right">
-                    <div className="text-sm font-bold text-slate-500 mb-1">
-                      총 혼합 중량
-                    </div>
-                    <div className="text-4xl font-black">
-                      {parseFloat(activeJob.weight).toFixed(3)}{" "}
-                      <span className="text-xl font-medium text-slate-400">
-                        kg
-                      </span>
-                    </div>
+                    <div className="text-sm font-bold text-slate-500 mb-1">총 배합 중량</div>
+                    <div className="text-4xl font-black">{parseFloat(activeJob.weight).toFixed(3)} <span className="text-xl font-medium text-slate-400">kg</span></div>
                   </div>
                 </div>
 
                 {!isSplitMode ? (
                   <>
                     <div className="bg-slate-50 rounded-2xl p-6 border mb-8 flex justify-center gap-12">
-                      <div className="text-center">
-                        <Cylinder className="w-12 h-12 text-indigo-500 mb-3 mx-auto" />
-                        <div className="font-bold text-slate-600">
-                          15kg 꽉 찬 통
-                        </div>
-                        <div className="text-3xl font-black text-indigo-700 mt-1">
-                          {fullBatches} 통
-                        </div>
-                      </div>
-                      <div className="text-4xl font-black text-slate-300 mt-6">
-                        +
-                      </div>
-                      <div
-                        className={`text-center ${
-                          remainder > 0 ? "" : "opacity-30 grayscale"
-                        }`}
-                      >
-                        <Cylinder className="w-12 h-12 text-orange-400 mb-3 mx-auto" />
-                        <div className="font-bold text-slate-600">
-                          나머지 미달 통
-                        </div>
-                        <div className="text-3xl font-black text-orange-600 mt-1">
-                          {remainder > 0 ? 1 : 0} 통
-                        </div>
-                        {remainder > 0 && (
-                          <div className="text-sm font-black text-orange-700 mt-2">
-                            {remainder.toFixed(3)} kg
-                          </div>
-                        )}
-                      </div>
+                      <div className="text-center"><Cylinder className="w-12 h-12 text-indigo-500 mb-3 mx-auto" /><div className="font-bold text-slate-600">15kg 꽉 찬 통</div><div className="text-3xl font-black text-indigo-700 mt-1">{fullBatches} 통</div></div>
+                      <div className="text-4xl font-black text-slate-300 mt-6">+</div>
+                      <div className={`text-center ${remainder > 0 ? "" : "opacity-30 grayscale"}`}><Cylinder className="w-12 h-12 text-orange-400 mb-3 mx-auto" /><div className="font-bold text-slate-600">나머지 미달 통</div><div className="text-3xl font-black text-orange-600 mt-1">{remainder > 0 ? 1 : 0} 통</div>{remainder > 0 && <div className="text-sm font-black text-orange-700 mt-2">{remainder.toFixed(3)} kg</div>}</div>
                     </div>
-
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
                       <div className="border-2 border-indigo-100 bg-indigo-50/40 rounded-2xl p-6 relative overflow-hidden shadow-sm">
                         <div className="absolute top-0 left-0 w-2 h-full bg-indigo-500"></div>
-                        <h4 className="text-xl font-black text-indigo-900 mb-5 flex items-center">
-                          <span className="bg-indigo-600 text-white w-8 h-8 rounded-full inline-flex items-center justify-center text-base mr-3 shadow-md">
-                            {fullBatches}
-                          </span>
-                          15kg 통 1개당 투입량
-                        </h4>
+                        <h4 className="text-xl font-black text-indigo-900 mb-5 flex items-center"><span className="bg-indigo-600 text-white w-8 h-8 rounded-full inline-flex items-center justify-center text-base mr-3 shadow-md">{fullBatches}</span> 15kg 통 1개당 투입량</h4>
                         <div className="space-y-3">
-                          {Object.entries(ratios).map(([mat, ratio]) => {
-                            if (ratio > 0) {
-                              return (
-                                <div
-                                  key={mat}
-                                  className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-indigo-100"
-                                >
-                                  <span className="font-black text-slate-700 text-lg">
-                                    {mat}
-                                  </span>
-                                  <span className="font-black text-indigo-700 text-2xl">
-                                    {(15 * ratio).toFixed(3)}{" "}
-                                    <span className="text-sm text-slate-400">
-                                      kg
-                                    </span>
-                                  </span>
-                                </div>
-                              );
-                            }
-                            return null;
-                          })}
+                          {Object.entries(ratios).map(([mat, ratio]) => ratio > 0 ? (
+                            <div key={mat} className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-indigo-100"><span className="font-black text-slate-700 text-lg">{mat}</span><span className="font-black text-indigo-700 text-2xl">{(15 * ratio).toFixed(3)} <span className="text-sm text-slate-400">kg</span></span></div>
+                          ) : null)}
                         </div>
                       </div>
-
                       {remainder > 0 ? (
                         <div className="border-2 border-orange-100 bg-orange-50/40 rounded-2xl p-6 relative overflow-hidden shadow-sm">
                           <div className="absolute top-0 left-0 w-2 h-full bg-orange-400"></div>
-                          <h4 className="text-xl font-black text-orange-900 mb-5 flex items-center">
-                            <span className="bg-orange-500 text-white w-8 h-8 rounded-full inline-flex items-center justify-center text-base mr-3 shadow-md">
-                              1
-                            </span>
-                            최종 미달 통 ({remainder.toFixed(3)}kg) 투입량
-                          </h4>
+                          <h4 className="text-xl font-black text-orange-900 mb-5 flex items-center"><span className="bg-orange-500 text-white w-8 h-8 rounded-full inline-flex items-center justify-center text-base mr-3 shadow-md">1</span> 최종 미달 통 ({remainder.toFixed(3)}kg) 투입량</h4>
                           <div className="space-y-3">
-                            {Object.entries(ratios).map(([mat, ratio]) => {
-                              if (ratio > 0) {
-                                return (
-                                  <div
-                                    key={mat}
-                                    className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-orange-100"
-                                  >
-                                    <span className="font-black text-slate-700 text-lg">
-                                      {mat}
-                                    </span>
-                                    <span className="font-black text-orange-600 text-2xl">
-                                      {(remainder * ratio).toFixed(3)}{" "}
-                                      <span className="text-sm text-slate-400">
-                                        kg
-                                      </span>
-                                    </span>
-                                  </div>
-                                );
-                              }
-                              return null;
-                            })}
+                            {Object.entries(ratios).map(([mat, ratio]) => ratio > 0 ? (
+                              <div key={mat} className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-orange-100"><span className="font-black text-slate-700 text-lg">{mat}</span><span className="font-black text-orange-600 text-2xl">{(remainder * ratio).toFixed(3)} <span className="text-sm text-slate-400">kg</span></span></div>
+                            ) : null)}
                           </div>
                         </div>
-                      ) : (
-                        <div className="border-2 border-dashed border-slate-200 bg-slate-50/80 rounded-2xl p-6 flex flex-col items-center justify-center text-slate-400 min-h-[250px]">
-                          <CheckCircle2 className="w-16 h-16 mb-3 opacity-30 text-indigo-500" />
-                          <div className="font-black text-lg text-slate-500">
-                            나머지 미달 통 없음
-                          </div>
-                        </div>
-                      )}
+                      ) : <div className="border-2 border-dashed border-slate-200 bg-slate-50/80 rounded-2xl p-6 flex flex-col items-center justify-center text-slate-400 min-h-[250px]"><CheckCircle2 className="w-16 h-16 mb-3 opacity-30 text-indigo-500" /><div className="font-black text-lg text-slate-500">나머지 미달 통 없음</div></div>}
                     </div>
-
                     <div className="mt-8 flex justify-end gap-4 border-t pt-6">
-                      <input
-                        type="text"
-                        placeholder="메모"
-                        className="border rounded-lg p-3 text-sm w-64"
-                        value={specialNote}
-                        onChange={(e) => setSpecialNote(e.target.value)}
-                      />
-                      <input
-                        type="text"
-                        placeholder="작업자"
-                        className="border rounded-lg p-3 text-sm w-40 text-center font-bold"
-                        value={operator}
-                        onChange={(e) => setOperator(e.target.value)}
-                      />
-                      <button
-                        onClick={handleMix}
-                        className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-xl font-black shadow flex items-center"
-                      >
-                        <CheckCircle2 className="w-5 h-5 mr-2" /> 혼합 완료
-                      </button>
+                      <input type="text" placeholder="메모" className="border rounded-lg p-3 text-sm w-64" value={specialNote} onChange={(e) => setSpecialNote(e.target.value)} />
+                      <input type="text" placeholder="작업자" className="border rounded-lg p-3 text-sm w-40 text-center font-bold" value={operator} onChange={(e) => setOperator(e.target.value)} />
+                      <button onClick={handleMix} className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-xl font-black shadow flex items-center"><CheckCircle2 className="w-5 h-5 mr-2" /> 배합 완료</button>
                     </div>
                   </>
                 ) : (
                   <div className="bg-orange-50 border border-orange-200 rounded-2xl p-6">
-                    <div className="mb-6">
-                      <h4 className="text-lg font-black text-orange-800 flex items-center mb-2">
-                        <AlertCircle className="w-5 h-5 mr-2 text-orange-500" />{" "}
-                        잔량 소진 부분 혼합
-                      </h4>
-                    </div>
+                    <div className="mb-6"><h4 className="text-lg font-black text-orange-800 flex items-center mb-2"><AlertCircle className="w-5 h-5 mr-2 text-orange-500" /> 잔량 소진 부분 배합</h4></div>
                     <div className="grid grid-cols-2 gap-6 bg-white p-6 rounded border border-orange-200 mb-6">
                       <div>
-                        <label className="block text-sm font-bold text-slate-700 mb-2">
-                          잔량을 소진할 원재료
-                        </label>
-                        <select
-                          className="w-full border rounded p-3 font-bold text-indigo-700 bg-slate-50"
-                          value={splitMaterial}
-                          onChange={(e) => setSplitMaterial(e.target.value)}
-                        >
-                          {activeMaterials.map((m) => (
-                            <option key={m}>{m}</option>
-                          ))}
+                        <label className="block text-sm font-bold text-slate-700 mb-2">잔량을 소진할 소재</label>
+                        <select className="w-full border rounded p-3 font-bold text-indigo-700 bg-slate-50" value={splitMaterial} onChange={(e) => setSplitMaterial(e.target.value)}>
+                          {activeMaterials.map((m) => <option key={m}>{m}</option>)}
                         </select>
                       </div>
                       <div>
-                        <label className="block text-sm font-bold text-slate-700 mb-2">
-                          남은 중량 (kg)
-                        </label>
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.001"
-                          className="w-full border rounded p-3 font-black text-orange-600"
-                          value={splitWeightStr}
-                          onChange={(e) => setSplitWeightStr(e.target.value)}
-                        />
+                        <label className="block text-sm font-bold text-slate-700 mb-2">남은 중량 (kg)</label>
+                        <input type="number" min="0" step="0.001" className="w-full border rounded p-3 font-black text-orange-600" value={splitWeightStr} onChange={(e) => setSplitWeightStr(e.target.value)} />
                       </div>
                     </div>
                     {isValidSplit && (
                       <div className="grid grid-cols-2 gap-6 mb-6">
-                        <div className="bg-white border-2 border-orange-300 rounded-xl p-5">
-                          <div className="text-sm font-black text-orange-600 bg-orange-100 px-2 py-1 rounded inline-block mb-3">
-                            부분 혼합 지시
-                          </div>
-                          <div className="text-2xl font-black">
-                            {subTotal.toFixed(3)} kg ({subQty} EA)
-                          </div>
-                        </div>
-                        <div className="bg-white border-2 border-slate-200 rounded-xl p-5">
-                          <div className="text-sm font-black text-slate-500 bg-slate-100 px-2 py-1 rounded inline-block mb-3">
-                            잔여 혼합 대기 (새 로트)
-                          </div>
-                          <div className="text-2xl font-black">
-                            {remainTotal.toFixed(3)} kg ({remainQty} EA)
-                          </div>
-                        </div>
+                        <div className="bg-white border-2 border-orange-300 rounded-xl p-5"><div className="text-sm font-black text-orange-600 bg-orange-100 px-2 py-1 rounded inline-block mb-3">부분 배합 지시</div><div className="text-2xl font-black">{subTotal.toFixed(3)} kg ({subQty} EA)</div></div>
+                        <div className="bg-white border-2 border-slate-200 rounded-xl p-5"><div className="text-sm font-black text-slate-500 bg-slate-100 px-2 py-1 rounded inline-block mb-3">잔여 대기 (새 로트)</div><div className="text-2xl font-black">{remainTotal.toFixed(3)} kg ({remainQty} EA)</div></div>
                       </div>
                     )}
                     <div className="flex justify-end gap-4 border-t border-orange-200 pt-6">
-                      <input
-                        type="text"
-                        placeholder="작업자"
-                        className="border rounded-lg p-3 text-sm w-40 text-center font-bold"
-                        value={operator}
-                        onChange={(e) => setOperator(e.target.value)}
-                      />
-                      <button
-                        onClick={handleSplitMix}
-                        disabled={!isValidSplit}
-                        className={`px-8 py-3 rounded-xl font-black flex items-center ${
-                          isValidSplit
-                            ? "bg-orange-500 text-white"
-                            : "bg-slate-200 text-slate-400"
-                        }`}
-                      >
-                        <Split className="w-5 h-5 mr-2" /> 분할 생성
-                      </button>
+                      <input type="text" placeholder="작업자" className="border rounded-lg p-3 text-sm w-40 text-center font-bold" value={operator} onChange={(e) => setOperator(e.target.value)} />
+                      <button onClick={handleSplitMix} disabled={!isValidSplit} className={`px-8 py-3 rounded-xl font-black flex items-center ${isValidSplit ? "bg-orange-500 text-white" : "bg-slate-200 text-slate-400"}`}><Split className="w-5 h-5 mr-2" /> 분할 생성</button>
                     </div>
                   </div>
                 )}
@@ -3370,67 +1607,23 @@ function Step2Mixing({ wipList, ctx }) {
           );
         })()
       ) : (
-        <div className="bg-white rounded-2xl shadow-sm border p-12 text-center text-slate-400">
-          <Beaker className="w-16 h-16 mx-auto mb-4" />
-          <h3 className="text-xl font-bold">진행할 작업이 없습니다.</h3>
-        </div>
+        <div className="bg-white rounded-2xl shadow-sm border p-12 text-center text-slate-400"><Beaker className="w-16 h-16 mx-auto mb-4" /><h3 className="text-xl font-bold">진행할 작업이 없습니다.</h3></div>
       )}
 
       {pendingWip.length > 0 && (
         <div className="bg-white rounded-xl shadow-sm border p-6">
-          <h3 className="text-lg font-bold mb-4 flex items-center">
-            <Layers className="w-5 h-5 mr-2 text-indigo-500" /> 대기 중인 작업
-          </h3>
+          <h3 className="text-lg font-bold mb-4 flex items-center"><Layers className="w-5 h-5 mr-2 text-indigo-500" /> 대기 중인 작업</h3>
           <div className="overflow-x-auto max-h-64 border rounded">
             <table className="w-full text-sm text-left">
-              <thead className="bg-slate-50 sticky top-0 text-xs text-slate-500 uppercase">
-                <tr>
-                  <th className="px-5 py-4">MIX LOT</th>
-                  <th className="px-5 py-4">제품</th>
-                  <th className="px-5 py-4">수량</th>
-                  <th className="px-5 py-4">총중량</th>
-                  <th className="px-5 py-4">선택</th>
-                </tr>
-              </thead>
+              <thead className="bg-slate-50 sticky top-0 text-xs text-slate-500 uppercase"><tr><th className="px-5 py-4">MIX LOT</th><th className="px-5 py-4">분류</th><th className="px-5 py-4">수량</th><th className="px-5 py-4">총중량</th><th className="px-5 py-4">선택</th></tr></thead>
               <tbody className="divide-y divide-slate-100">
                 {pendingWip.map((w) => (
-                  <tr
-                    key={w.id}
-                    className={`cursor-pointer ${
-                      activeMixId === w.id
-                        ? "bg-indigo-50/60"
-                        : "hover:bg-slate-50"
-                    }`}
-                    onClick={() => setActiveMixId(w.id)}
-                  >
-                    <td
-                      className={`px-5 py-3 font-mono font-bold ${
-                        activeMixId === w.id ? "text-indigo-700" : ""
-                      }`}
-                    >
-                      {w.mixLot}
-                    </td>
-                    <td className="px-5 py-3 font-bold">
-                      {w.type}{" "}
-                      <span className="text-indigo-600">{w.height}T</span>
-                    </td>
-                    <td className="px-5 py-3 font-bold text-slate-600">
-                      {w.qty}
-                    </td>
-                    <td className="px-5 py-3 font-black text-slate-700">
-                      {w.weight} kg
-                    </td>
-                    <td className="px-5 py-3">
-                      <button
-                        className={`px-3 py-1.5 rounded text-xs font-black ${
-                          activeMixId === w.id
-                            ? "bg-indigo-600 text-white"
-                            : "bg-white border text-slate-500"
-                        }`}
-                      >
-                        {activeMixId === w.id ? "확인중" : "보기"}
-                      </button>
-                    </td>
+                  <tr key={w.id} className={`cursor-pointer ${activeMixId === w.id ? "bg-indigo-50/60" : "hover:bg-slate-50"}`} onClick={() => setActiveMixId(w.id)}>
+                    <td className={`px-5 py-3 font-mono font-bold ${activeMixId === w.id ? "text-indigo-700" : ""}`}>{w.mixLot}</td>
+                    <td className="px-5 py-3 font-bold">{w.type} <span className="text-indigo-600">{w.height}T</span></td>
+                    <td className="px-5 py-3 font-bold text-slate-600">{w.qty}</td>
+                    <td className="px-5 py-3 font-black text-slate-700">{w.weight} kg</td>
+                    <td className="px-5 py-3"><button className={`px-3 py-1.5 rounded text-xs font-black ${activeMixId === w.id ? "bg-indigo-600 text-white" : "bg-white border text-slate-500"}`}>{activeMixId === w.id ? "확인중" : "보기"}</button></td>
                   </tr>
                 ))}
               </tbody>
@@ -3441,11 +1634,10 @@ function Step2Mixing({ wipList, ctx }) {
     </div>
   );
 }
-
 // ==========================================
 // Step 3: First Molding (원본 UI + 이력 누적 로직)
 // ==========================================
-function Step3FirstMolding({ wipList, ctx }) {
+function Step3FirstMolding({ wipList, masterSettings, ctx }) { // 🌟 masterSettings 추가
   const pendingWip = wipList.filter((w) => w.currentStep === "step3");
   const [formData, setFormData] = useState({});
   const handleDataChange = (id, f, v) =>
@@ -3606,14 +1798,18 @@ logProcessToGoogleSheet("step3", { ...wItem, qty: aQty - defQty }, d.operator, {
               </div>
 
               <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-                <div className="xl:col-span-2 bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-center space-y-4">
+               <div className="xl:col-span-2 bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-center space-y-4">
                   <div>
-                    <label className="text-xs font-bold text-slate-500 mb-2 flex items-center">
-                      <Cylinder className="w-3.5 h-3.5 mr-1" /> 성형 압력
+                    <label className="text-xs font-bold text-slate-500 mb-2 flex items-center justify-between">
+                      <div className="flex items-center"><Cylinder className="w-3.5 h-3.5 mr-1" /> 성형 압력</div>
+                      {/* 🌟 [추가] 마스터가 설정한 목표 압력 표시 */}
+                      <span className="text-[10px] text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100">
+                        목표: {masterSettings?.TARGET_PRESSURE?.step3 || "70"}ton
+                      </span>
                     </label>
                     <input
                       type="text"
-                      placeholder="예: 70ton"
+                      placeholder="실제 압력 기입" // 🌟 placeholder 텍스트 변경
                       value={d.pressure || ""}
                       onChange={(e) =>
                         handleDataChange(wip.id, "pressure", e.target.value)
@@ -3814,7 +2010,7 @@ logProcessToGoogleSheet("step3", { ...wItem, qty: aQty - defQty }, d.operator, {
 // ==========================================
 // Step 4: Second Molding (제공 원본 UI + 이력 누적 로직)
 // ==========================================
-function Step4SecondMolding({ wipList, ctx }) {
+function Step4SecondMolding({ wipList, masterSettings, ctx }) { // 🌟 masterSettings 추가
   const pendingWip = wipList.filter((w) => w.currentStep === "step4");
   const [formData, setFormData] = useState({});
   const handleDataChange = (id, f, v) =>
@@ -4077,12 +2273,14 @@ if (qtyB > 0) {
                     }`}
                   >
                     <div className="flex items-center space-x-2">
-                      <span className="text-xs font-bold text-slate-500 w-12">
-                        압력
+                      <span className="text-xs font-bold text-slate-500 w-12 flex flex-col">
+                        <span>압력</span>
+                        {/* 🌟 [추가] A호기 목표 압력 표시 */}
+                        <span className="text-[9px] text-blue-500 mt-0.5">목표:{masterSettings?.TARGET_PRESSURE?.step4A || "2360"}</span>
                       </span>
                       <input
                         type="text"
-                        placeholder="예: 2360 bar"
+                        placeholder="실제 압력" // 🌟 placeholder 텍스트 변경
                         value={d.pressureA || ""}
                         onChange={(e) =>
                           handleDataChange(wip.id, "pressureA", e.target.value)
@@ -4239,13 +2437,15 @@ if (qtyB > 0) {
                         : "opacity-40 grayscale pointer-events-none"
                     }`}
                   >
-                    <div className="flex items-center space-x-2">
-                      <span className="text-xs font-bold text-slate-500 w-12">
-                        압력
+                  <div className="flex items-center space-x-2">
+                      <span className="text-xs font-bold text-slate-500 w-12 flex flex-col">
+                        <span>압력</span>
+                        {/* 🌟 [추가] B호기 목표 압력 표시 */}
+                        <span className="text-[9px] text-blue-500 mt-0.5">목표:{masterSettings?.TARGET_PRESSURE?.step4B || "2360"}</span>
                       </span>
                       <input
                         type="text"
-                        placeholder="예: 2360 bar"
+                        placeholder="실제 압력" // 🌟 placeholder 텍스트 변경
                         value={d.pressureB || ""}
                         onChange={(e) =>
                           handleDataChange(wip.id, "pressureB", e.target.value)
@@ -6502,4 +4702,155 @@ function StepTracking({
       </div>
     </div>
   );
+}
+// ==========================================
+// [신규] Step 10: Master Settings (환경설정 제어판)
+// ==========================================
+function Step10Settings({ masterSettings, ctx }) {
+    const [settings, setSettings] = useState(masterSettings);
+    
+    // 객체 깊은 복사를 통해 로컬 상태를 수정합니다.
+    const handleRatioChange = (color, material, value) => {
+        const newSettings = cloneDeep(settings);
+        newSettings.RATIO_BY_COLOR[color][material] = parseFloat(value) || 0;
+        setSettings(newSettings);
+    };
+
+   const handleWeightChange = (height, value) => {
+        const newSettings = cloneDeep(settings);
+        newSettings.WEIGHT_BY_HEIGHT[height] = parseInt(value) || 0;
+        setSettings(newSettings);
+    };
+
+    // 🌟 [추가] 압력 변경 저장 함수
+    const handlePressureChange = (stepKey, value) => {
+        const newSettings = cloneDeep(settings);
+        if (!newSettings.TARGET_PRESSURE) newSettings.TARGET_PRESSURE = { step3: "70", step4A: "2360", step4B: "2360" };
+        newSettings.TARGET_PRESSURE[stepKey] = value;
+        setSettings(newSettings);
+    };
+
+    const handleSave = async () => {
+        try {
+            await setDoc(getDocRef("equipment", "settings"), settings);
+            ctx.showToast("마스터 설정이 클라우드에 성공적으로 저장되었습니다.", "success");
+        } catch(e) {
+            ctx.showToast("설정 저장 실패", "error");
+        }
+    };
+
+    return (
+        <div className="max-w-5xl mx-auto space-y-6">
+            <div className="bg-red-50 p-6 rounded-2xl shadow-sm border border-red-200 flex items-start gap-4">
+                <div className="bg-red-500 p-3 rounded-full text-white mt-1">
+                    <Settings className="w-6 h-6" />
+                </div>
+                <div>
+                    <h2 className="text-xl font-black text-red-800 tracking-tight">공정 마스터 제어판</h2>
+                    <p className="text-red-600/80 text-sm mt-1 font-bold">
+                        이곳에서 변경된 기준 수치(단중, 배합비율 등)는 저장 즉시 전체 태블릿과 생산 현장에 동기화됩니다. 변경에 주의하시기 바랍니다.
+                    </p>
+                </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="bg-white rounded-xl shadow-sm border p-6">
+                    <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">규격별 기본 단중 (g)</h3>
+                    <div className="space-y-3">
+                        {settings.PRODUCT_HEIGHTS.map(height => (
+                            <div key={height} className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
+                                <span className="font-black text-indigo-700 w-20">{height}T 규격</span>
+                                <div className="relative">
+                                    <input 
+                                        type="number" 
+                                        value={settings.WEIGHT_BY_HEIGHT[height] || ""} 
+                                        onChange={(e) => handleWeightChange(height, e.target.value)}
+                                        className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-indigo-500 outline-none pr-8"
+                                    />
+                                    <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">g</span>
+                                </div>
+                            </div>
+                        ))}
+                  </div>
+                </div>
+
+                {/* 🌟 [추가] 성형 목표 압력 가이드 세팅 박스 */}
+                <div className="bg-white rounded-xl shadow-sm border p-6">
+                    <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">성형 목표 압력 가이드</h3>
+                    <div className="space-y-3">
+                        <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
+                            <span className="font-black text-indigo-700 w-28">1차 성형 (건식)</span>
+                            <div className="relative">
+                                <input 
+                                    type="text" 
+                                    value={settings.TARGET_PRESSURE?.step3 || ""} 
+                                    onChange={(e) => handlePressureChange("step3", e.target.value)}
+                                    className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-indigo-500 outline-none pr-10"
+                                />
+                                <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">ton</span>
+                            </div>
+                        </div>
+                        <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
+                            <span className="font-black text-blue-700 w-28">2차 A호기 (CIP)</span>
+                            <div className="relative">
+                                <input 
+                                    type="text" 
+                                    value={settings.TARGET_PRESSURE?.step4A || ""} 
+                                    onChange={(e) => handlePressureChange("step4A", e.target.value)}
+                                    className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-indigo-500 outline-none pr-10"
+                                />
+                                <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">bar</span>
+                            </div>
+                        </div>
+                        <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
+                            <span className="font-black text-blue-700 w-28">2차 B호기 (CIP)</span>
+                            <div className="relative">
+                                <input 
+                                    type="text" 
+                                    value={settings.TARGET_PRESSURE?.step4B || ""} 
+                                    onChange={(e) => handlePressureChange("step4B", e.target.value)}
+                                    className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-indigo-500 outline-none pr-10"
+                                />
+                                <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">bar</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="bg-white rounded-xl shadow-sm border p-6">
+                    <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">분류별 소재 배합 비율 (BOM)</h3>
+                    <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2">
+                        {settings.PRODUCT_COLORS.map(color => (
+                            <div key={color} className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                                <div className="font-black text-lg text-slate-800 mb-3">{color} 배합비율</div>
+                                <div className="grid grid-cols-2 gap-3">
+                                    {settings.MATERIAL_TYPES.map(mat => (
+                                        <div key={mat} className="flex flex-col">
+                                            <label className="text-[10px] font-bold text-slate-500 mb-1 pl-1">{mat}</label>
+                                            <input 
+                                                type="number"
+                                                step="0.001"
+                                                value={settings.RATIO_BY_COLOR[color][mat]}
+                                                onChange={(e) => handleRatioChange(color, mat, e.target.value)}
+                                                className="border rounded p-2 text-sm text-right font-mono"
+                                            />
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl shadow-sm border flex justify-end">
+                <button 
+                    onClick={handleSave}
+                    className="bg-red-600 hover:bg-red-700 text-white px-8 py-3 rounded-xl font-black text-lg shadow-md transition-all flex items-center"
+                >
+                    <Save className="w-5 h-5 mr-2" /> 마스터 설정 전체 저장 (시스템 동기화)
+                </button>
+            </div>
+        </div>
+    );
 }
