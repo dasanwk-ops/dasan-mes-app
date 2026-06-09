@@ -271,7 +271,7 @@ const DEFAULT_MASTER_SETTINGS = {
    B1: { "4Y-W": 0.869, "4Y-Y": 0.12, "5E-P": 0.011, "4Y-G": 0.0 },
  },
  // 🌟 [추가] 1, 2차 성형 목표 압력 가이드 기본값
-  TARGET_PRESSURE: { step3: "70", step4A: "2360", step4B: "2360" },
+  TARGET_PRESSURE: { step3: "70", step4A: "250", step4B: "250" },
   // 🌟 전기로 목표 온도 가이드 기본값
   TARGET_TEMPERATURE: { furnace1: "1060", furnace2: "1060" },
   // 🌟 [수정] 원재료 창고 분말 종류별 개별 안전 재고 알람 기준 기본값 세팅
@@ -2130,7 +2130,7 @@ if (qtyA > 0) {
     defects: defA,
     defectReason: d.defectReasonA || "-",
     equipment: "A호기",
-    conditions: `압력:${d.pressureA || 0}bar`,
+    conditions: `압력:${d.pressureA || 0}MPa`,
     measurements: `직경:${dAvgA}mm, 높이:${hAvgA}mm`,
     details: d.specialNote || "-"
   });
@@ -2140,7 +2140,7 @@ if (qtyB > 0) {
     defects: defB,
     defectReason: d.defectReasonB || "-",
     equipment: "B호기",
-    conditions: `압력:${d.pressureB || 0}bar`,
+    conditions: `압력:${d.pressureB || 0}MPa`,
     measurements: `직경:${dAvgB}mm, 높이:${hAvgB}mm`,
     details: d.specialNote || "-"
   });
@@ -2281,7 +2281,7 @@ if (qtyB > 0) {
                       <span className="text-xs font-bold text-slate-500 w-12 flex flex-col">
                         <span>압력</span>
                         {/* 🌟 [추가] A호기 목표 압력 표시 */}
-                        <span className="text-[9px] text-blue-500 mt-0.5">목표:{masterSettings?.TARGET_PRESSURE?.step4A || "2360"}</span>
+                        <span className="text-[9px] text-blue-500 mt-0.5">목표:{masterSettings?.TARGET_PRESSURE?.step4A || "250"}</span>
                       </span>
                       <input
                         type="text"
@@ -2446,7 +2446,7 @@ if (qtyB > 0) {
                       <span className="text-xs font-bold text-slate-500 w-12 flex flex-col">
                         <span>압력</span>
                         {/* 🌟 [추가] B호기 목표 압력 표시 */}
-                        <span className="text-[9px] text-blue-500 mt-0.5">목표:{masterSettings?.TARGET_PRESSURE?.step4B || "2360"}</span>
+                        <span className="text-[9px] text-blue-500 mt-0.5">목표:{masterSettings?.TARGET_PRESSURE?.step4B || "250"}</span>
                       </span>
                       <input
                         type="text"
@@ -4732,7 +4732,7 @@ function Step10Settings({ masterSettings, ctx }) {
 // 🌟 [추가] 압력 변경 저장 함수
     const handlePressureChange = (stepKey, value) => {
         const newSettings = cloneDeep(settings);
-        if (!newSettings.TARGET_PRESSURE) newSettings.TARGET_PRESSURE = { step3: "70", step4A: "2360", step4B: "2360" };
+        if (!newSettings.TARGET_PRESSURE) newSettings.TARGET_PRESSURE = { step3: "70", step4A: "250", step4B: "250" };
         newSettings.TARGET_PRESSURE[stepKey] = value;
         setSettings(newSettings);
     };
@@ -4825,7 +4825,7 @@ function Step10Settings({ masterSettings, ctx }) {
                                         onChange={(e) => handlePressureChange("step4A", e.target.value)}
                                         className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-indigo-500 outline-none pr-10"
                                     />
-                                    <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">bar</span>
+                                    <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">MPa</span>
                                 </div>
                             </div>
                             <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
@@ -4837,7 +4837,7 @@ function Step10Settings({ masterSettings, ctx }) {
                                         onChange={(e) => handlePressureChange("step4B", e.target.value)}
                                         className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-indigo-500 outline-none pr-10"
                                     />
-                                    <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">bar</span>
+                                    <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">MPa</span>
                                 </div>
                             </div>
                         </div>
