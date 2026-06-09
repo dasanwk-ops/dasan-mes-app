@@ -269,9 +269,11 @@ const DEFAULT_MASTER_SETTINGS = {
     A1: { "4Y-W": 0.83, "4Y-Y": 0.15, "5E-P": 0.02, "4Y-G": 0.0 },
     A2: { "4Y-W": 0.786, "4Y-Y": 0.174, "5E-P": 0.02, "4Y-G": 0.02 },
    B1: { "4Y-W": 0.869, "4Y-Y": 0.12, "5E-P": 0.011, "4Y-G": 0.0 },
-  },
+ },
   // 🌟 [추가] 1, 2차 성형 목표 압력 가이드 기본값
-  TARGET_PRESSURE: { step3: "70", step4A: "2360", step4B: "2360" }
+  TARGET_PRESSURE: { step3: "70", step4A: "2360", step4B: "2360" },
+  // 🌟 [추가] 전기로 목표 온도 가이드 기본값
+  TARGET_TEMPERATURE: { furnace1: "1060", furnace2: "1060" }
 };
 
 const MATERIAL_TYPES = ["4Y-W", "4Y-Y", "5E-P", "4Y-G"];
@@ -2588,7 +2590,7 @@ if (qtyB > 0) {
 // ==========================================
 // Step 5: Heat Treatment (수축률 3회 기본+추가 복구 및 레이아웃 최적화)
 // ==========================================
-function Step5HeatTreatment({ wipList, furnaces, ctx }) {
+function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) { // 🌟 masterSettings 추가
   const pendingWip = wipList.filter((w) => w.currentStep === "step5");
   const [tempSelection, setTempSelection] = useState({});
   const [tempQty, setTempQty] = useState({});
@@ -3351,9 +3353,11 @@ try {
                         </div>
 
                         <div className="grid grid-cols-2 gap-2 mt-auto">
-                          <div>
-                            <label className="text-[9px] font-bold text-slate-400 block ml-1">
-                              가동 온도(°C)
+                         <div>
+                            <label className="text-[9px] font-bold text-slate-400 flex justify-between items-center ml-1 mb-0.5">
+                              <span>가동 온도(°C)</span>
+                              {/* 🌟 [추가] 목표 온도 가이드 추가 */}
+                              <span className="text-[8px] text-orange-500 bg-orange-50 border border-orange-200 px-1 rounded">목표:{masterSettings?.TARGET_TEMPERATURE?.[`furnace${id}`] || "1060"}</span>
                             </label>
                             <SyncInput
                               type="text"
@@ -4722,11 +4726,19 @@ function Step10Settings({ masterSettings, ctx }) {
         setSettings(newSettings);
     };
 
-    // 🌟 [추가] 압력 변경 저장 함수
+// 🌟 [추가] 압력 변경 저장 함수
     const handlePressureChange = (stepKey, value) => {
         const newSettings = cloneDeep(settings);
         if (!newSettings.TARGET_PRESSURE) newSettings.TARGET_PRESSURE = { step3: "70", step4A: "2360", step4B: "2360" };
         newSettings.TARGET_PRESSURE[stepKey] = value;
+        setSettings(newSettings);
+    };
+
+    // 🌟 [추가] 온도 변경 저장 함수
+    const handleTemperatureChange = (furnaceKey, value) => {
+        const newSettings = cloneDeep(settings);
+        if (!newSettings.TARGET_TEMPERATURE) newSettings.TARGET_TEMPERATURE = { furnace1: "1060", furnace2: "1060" };
+        newSettings.TARGET_TEMPERATURE[furnaceKey] = value;
         setSettings(newSettings);
     };
 
@@ -4811,7 +4823,38 @@ function Step10Settings({ masterSettings, ctx }) {
                                     onChange={(e) => handlePressureChange("step4B", e.target.value)}
                                     className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-indigo-500 outline-none pr-10"
                                 />
-                                <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">bar</span>
+                               <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">bar</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* 🌟 [추가] 전기로 목표 온도 가이드 박스 */}
+                <div className="bg-white rounded-xl shadow-sm border p-6">
+                    <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">전기로 목표 온도 가이드</h3>
+                    <div className="space-y-3">
+                        <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
+                            <span className="font-black text-orange-700 w-28 flex items-center"><Flame className="w-4 h-4 mr-1"/> 1호기 온도</span>
+                            <div className="relative">
+                                <input 
+                                    type="text" 
+                                    value={settings.TARGET_TEMPERATURE?.furnace1 || ""} 
+                                    onChange={(e) => handleTemperatureChange("furnace1", e.target.value)}
+                                    className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-orange-500 outline-none pr-10"
+                                />
+                                <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">°C</span>
+                            </div>
+                        </div>
+                        <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
+                            <span className="font-black text-orange-700 w-28 flex items-center"><Flame className="w-4 h-4 mr-1"/> 2호기 온도</span>
+                            <div className="relative">
+                                <input 
+                                    type="text" 
+                                    value={settings.TARGET_TEMPERATURE?.furnace2 || ""} 
+                                    onChange={(e) => handleTemperatureChange("furnace2", e.target.value)}
+                                    className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-orange-500 outline-none pr-10"
+                                />
+                                <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">°C</span>
                             </div>
                         </div>
                     </div>
