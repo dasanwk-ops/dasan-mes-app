@@ -270,13 +270,12 @@ const DEFAULT_MASTER_SETTINGS = {
     A2: { "4Y-W": 0.786, "4Y-Y": 0.174, "5E-P": 0.02, "4Y-G": 0.02 },
    B1: { "4Y-W": 0.869, "4Y-Y": 0.12, "5E-P": 0.011, "4Y-G": 0.0 },
  },
-  // 🌟 [추가] 1, 2차 성형 목표 압력 가이드 기본값
+ // 🌟 [추가] 1, 2차 성형 목표 압력 가이드 기본값
   TARGET_PRESSURE: { step3: "70", step4A: "2360", step4B: "2360" },
-  // 🌟 [추가] 전기로 목표 온도 가이드 기본값
   // 🌟 전기로 목표 온도 가이드 기본값
   TARGET_TEMPERATURE: { furnace1: "1060", furnace2: "1060" },
-  // 🌟 [추가] 원재료 창고 안전 재고 알람 기준 기본값 (50kg)
-  SAFETY_THRESHOLD: "50"
+  // 🌟 [수정] 원재료 창고 분말 종류별 개별 안전 재고 알람 기준 기본값 세팅
+  SAFETY_THRESHOLD: { "4Y-W": "50", "4Y-Y": "50", "5E-P": "50", "4Y-G": "50" }
 };
 
 const MATERIAL_TYPES = ["4Y-W", "4Y-Y", "5E-P", "4Y-G"];
@@ -1376,11 +1375,11 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
         </div>
       )}
 
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
+   <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
         {masterSettings.MATERIAL_TYPES.map((type) => {
           const totalW = inventory.filter((i) => i.type === type).reduce((s, i) => s + i.weight, 0);
-          // 🌟 [수정] 마스터가 설정한 안전 재고 값을 가져오고, 없으면 기본값 50을 씁니다.
-          const safetyThreshold = Number(masterSettings?.SAFETY_THRESHOLD) || 50;
+          // 🌟 [수정] 분말 종류별(type) 마스터 설정을 개별 매핑합니다. (데이터 미 유입시 50 기본값)
+          const safetyThreshold = Number(masterSettings?.SAFETY_THRESHOLD?.[type]) || 50;
           const isWarning = totalW <= safetyThreshold;
           return (
             <div key={type} onClick={() => { setDetailModalType(type); setDetailModalTab("lots"); }} className={`rounded-2xl shadow-sm border bg-white p-6 cursor-pointer transition-all ${isWarning ? "border-red-300 bg-red-50/50" : "hover:border-indigo-400 hover:shadow-md"}`}>
@@ -4746,10 +4745,13 @@ function Step10Settings({ masterSettings, ctx }) {
         setSettings(newSettings);
     };
 
-    // 🌟 [추가] 안전 재고 알람 기준 변경 저장 함수
-    const handleSafetyThresholdChange = (value) => {
+   // 🌟 [수정] 분말 종류별 개별 안전 재고 상태 관리 함수로 고도화
+    const handleSafetyThresholdChange = (type, value) => {
         const newSettings = cloneDeep(settings);
-        newSettings.SAFETY_THRESHOLD = value;
+        if (!newSettings.SAFETY_THRESHOLD || typeof newSettings.SAFETY_THRESHOLD !== "object") {
+            newSettings.SAFETY_THRESHOLD = { "4Y-W": "50", "4Y-Y": "50", "5E-P": "50", "4Y-G": "50" };
+        }
+        newSettings.SAFETY_THRESHOLD[type] = value;
         setSettings(newSettings);
     };
 
@@ -4762,7 +4764,7 @@ function Step10Settings({ masterSettings, ctx }) {
         }
     };
 
-    return (
+ return (
         <div className="max-w-5xl mx-auto space-y-6">
             <div className="bg-red-50 p-6 rounded-2xl shadow-sm border border-red-200 flex items-start gap-4">
                 <div className="bg-red-500 p-3 rounded-full text-white mt-1">
@@ -4771,173 +4773,153 @@ function Step10Settings({ masterSettings, ctx }) {
                 <div>
                     <h2 className="text-xl font-black text-red-800 tracking-tight">공정 마스터 제어판</h2>
                     <p className="text-red-600/80 text-sm mt-1 font-bold">
-                        이곳에서 변경된 기준 수치(단중, 배합비율 등)는 저장 즉시 전체 태블릿과 생산 현장에 동기화됩니다. 변경에 주의하시기 바랍니다.
+                        이곳에서 변경된 기준 수치(단중, 압력, 온도, 배합비율, 종류별 안전재고)는 저장 즉시 전체 태블릿과 생산 현장에 동기화됩니다. 변경에 주의하시기 바랍니다.
                     </p>
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div className="bg-white rounded-xl shadow-sm border p-6">
-                    <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">규격별 기본 단중 (g)</h3>
-                    <div className="space-y-3">
-                        {settings.PRODUCT_HEIGHTS.map(height => (
-                            <div key={height} className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
-                                <span className="font-black text-indigo-700 w-20">{height}T 규격</span>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+                {/* 🔽 왼쪽 열 (단중 설정 / 압력 가이드 / 전기로 온도 가이드 / 분말별 안전 재고 가이드) */}
+                <div className="space-y-6">
+                    <div className="bg-white rounded-xl shadow-sm border p-6">
+                        <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">규격별 기본 단중 (g)</h3>
+                        <div className="space-y-3">
+                            {settings.PRODUCT_HEIGHTS.map(height => (
+                                <div key={height} className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
+                                    <span className="font-black text-indigo-700 w-20">{height}T 규격</span>
+                                    <div className="relative">
+                                        <input 
+                                            type="number" 
+                                            value={settings.WEIGHT_BY_HEIGHT[height] || ""} 
+                                            onChange={(e) => handleWeightChange(height, e.target.value)}
+                                            className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-indigo-500 outline-none pr-8"
+                                        />
+                                        <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">g</span>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="bg-white rounded-xl shadow-sm border p-6">
+                        <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">성형 목표 압력 가이드</h3>
+                        <div className="space-y-3">
+                            <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
+                                <span className="font-black text-indigo-700 w-28">1차 성형 (건식)</span>
                                 <div className="relative">
                                     <input 
-                                        type="number" 
-                                        value={settings.WEIGHT_BY_HEIGHT[height] || ""} 
-                                        onChange={(e) => handleWeightChange(height, e.target.value)}
-                                        className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-indigo-500 outline-none pr-8"
+                                        type="text" 
+                                        value={settings.TARGET_PRESSURE?.step3 || ""} 
+                                        onChange={(e) => handlePressureChange("step3", e.target.value)}
+                                        className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-indigo-500 outline-none pr-10"
                                     />
-                                    <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">g</span>
+                                    <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">ton</span>
                                 </div>
                             </div>
-                        ))}
-                  </div>
-                </div>
-
-                {/* 🌟 [추가] 성형 목표 압력 가이드 세팅 박스 */}
-                <div className="bg-white rounded-xl shadow-sm border p-6">
-                    <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">성형 목표 압력 가이드</h3>
-                    <div className="space-y-3">
-                        <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
-                            <span className="font-black text-indigo-700 w-28">1차 성형 (건식)</span>
-                            <div className="relative">
-                                <input 
-                                    type="text" 
-                                    value={settings.TARGET_PRESSURE?.step3 || ""} 
-                                    onChange={(e) => handlePressureChange("step3", e.target.value)}
-                                    className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-indigo-500 outline-none pr-10"
-                                />
-                                <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">ton</span>
+                            <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
+                                <span className="font-black text-blue-700 w-28">2차 A호기 (CIP)</span>
+                                <div className="relative">
+                                    <input 
+                                        type="text" 
+                                        value={settings.TARGET_PRESSURE?.step4A || ""} 
+                                        onChange={(e) => handlePressureChange("step4A", e.target.value)}
+                                        className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-indigo-500 outline-none pr-10"
+                                    />
+                                    <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">bar</span>
+                                </div>
                             </div>
-                        </div>
-                        <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
-                            <span className="font-black text-blue-700 w-28">2차 A호기 (CIP)</span>
-                            <div className="relative">
-                                <input 
-                                    type="text" 
-                                    value={settings.TARGET_PRESSURE?.step4A || ""} 
-                                    onChange={(e) => handlePressureChange("step4A", e.target.value)}
-                                    className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-indigo-500 outline-none pr-10"
-                                />
-                                <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">bar</span>
-                            </div>
-                        </div>
-                        <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
-                            <span className="font-black text-blue-700 w-28">2차 B호기 (CIP)</span>
-                            <div className="relative">
-                                <input 
-                                    type="text" 
-                                    value={settings.TARGET_PRESSURE?.step4B || ""} 
-                                    onChange={(e) => handlePressureChange("step4B", e.target.value)}
-                                    className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-indigo-500 outline-none pr-10"
-                                />
-                               <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">bar</span>
+                            <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
+                                <span className="font-black text-blue-700 w-28">2차 B호기 (CIP)</span>
+                                <div className="relative">
+                                    <input 
+                                        type="text" 
+                                        value={settings.TARGET_PRESSURE?.step4B || ""} 
+                                        onChange={(e) => handlePressureChange("step4B", e.target.value)}
+                                        className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-indigo-500 outline-none pr-10"
+                                    />
+                                    <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">bar</span>
+                                </div>
                             </div>
                         </div>
                     </div>
-                </div>
-</div>
-                    </div>
 
-                    {/* 🌟 [추가] 원재료 안전 재고 알람 기준 세팅 박스 */}
                     <div className="bg-white rounded-xl shadow-sm border p-6">
-                        <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">원재료 안전 재고 알람 기준</h3>
-                        <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
-                            <span className="font-black text-red-700 w-40 flex items-center">⚠️ 경고 발생 기준 중량</span>
-                            <div className="relative">
-                                <input 
-                                    type="number" 
-                                    value={settings.SAFETY_THRESHOLD || ""} 
-                                    onChange={(e) => handleSafetyThresholdChange(e.target.value)}
-                                    className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-red-500 outline-none pr-10"
-                                />
-                                <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">kg</span>
-                            </div>
-                        </div>
-                        <p className="text-slate-400 text-[11px] mt-2 font-medium pl-1">
-                          * 창고 실재고가 설정된 중량 이하로 떨어지면 현장 화면에 [부족] 알람이 발생합니다.
-                        </p>
-                    </div>
-                </div>
-                {/* 🔼 왼쪽 열 끝 */}
-
-                {/* 🌟 [추가] 전기로 목표 온도 가이드 박스 */}
-                <div className="bg-white rounded-xl shadow-sm border p-6">
-                    <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">전기로 목표 온도 가이드</h3>
-                    <div className="space-y-3">
-                        <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
-                            <span className="font-black text-orange-700 w-28 flex items-center"><Flame className="w-4 h-4 mr-1"/> 1호기 온도</span>
-                            <div className="relative">
-                                <input 
-                                    type="text" 
-                                    value={settings.TARGET_TEMPERATURE?.furnace1 || ""} 
-                                    onChange={(e) => handleTemperatureChange("furnace1", e.target.value)}
-                                    className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-orange-500 outline-none pr-10"
-                                />
-                                <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">°C</span>
-                            </div>
-                        </div>
-                        <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
-                            <span className="font-black text-orange-700 w-28 flex items-center"><Flame className="w-4 h-4 mr-1"/> 2호기 온도</span>
-                           <div className="relative">
-                                <input 
-                                    type="text" 
-                                    value={settings.TARGET_TEMPERATURE?.furnace2 || ""} 
-                                    onChange={(e) => handleTemperatureChange("furnace2", e.target.value)}
-                                    className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-orange-500 outline-none pr-10"
-                                />
-                                <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">°C</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                {/* 🌟 [추가] 여기에 안전 재고 알람 기준 박스가 들어갑니다! */}
-                <div className="bg-white rounded-xl shadow-sm border p-6 mt-6">
-                    <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">원재료 안전 재고 알람 기준</h3>
-                    <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
-                        <span className="font-black text-red-700 w-40 flex items-center">⚠️ 경고 발생 기준 중량</span>
-                        <div className="relative">
-                            <input 
-                                type="number" 
-                                value={settings.SAFETY_THRESHOLD || ""} 
-                                onChange={(e) => handleSafetyThresholdChange(e.target.value)}
-                                className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-red-500 outline-none pr-10"
-                            />
-                            <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">kg</span>
-                        </div>
-                    </div>
-                    <p className="text-slate-400 text-[11px] mt-2 font-medium pl-1">
-                      * 창고 실재고가 설정된 중량 이하로 떨어지면 현장 화면에 [부족] 알람이 발생합니다.
-                    </p>
-                </div>
-                {/* 🌟 추가 끝 */}
-
-                <div className="bg-white rounded-xl shadow-sm border p-6 mt-6">
-                    <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">분류별 소재 배합 비율 (BOM)</h3>
-                    <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2">
-                        {settings.PRODUCT_COLORS.map(color => (
-                            <div key={color} className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                                <div className="font-black text-lg text-slate-800 mb-3">{color} 배합비율</div>
-                                <div className="grid grid-cols-2 gap-3">
-                                    {settings.MATERIAL_TYPES.map(mat => (
-                                        <div key={mat} className="flex flex-col">
-                                            <label className="text-[10px] font-bold text-slate-500 mb-1 pl-1">{mat}</label>
-                                            <input 
-                                                type="number"
-                                                step="0.001"
-                                                value={settings.RATIO_BY_COLOR[color][mat]}
-                                                onChange={(e) => handleRatioChange(color, mat, e.target.value)}
-                                                className="border rounded p-2 text-sm text-right font-mono"
-                                            />
-                                        </div>
-                                    ))}
+                        <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">전기로 목표 온도 가이드</h3>
+                        <div className="space-y-3">
+                            <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
+                                <span className="font-black text-orange-700 w-28 flex items-center"><Flame className="w-4 h-4 mr-1"/> 1호기 온도</span>
+                                <div className="relative">
+                                    <input 
+                                        type="text" 
+                                        value={settings.TARGET_TEMPERATURE?.furnace1 || ""} 
+                                        onChange={(e) => handleTemperatureChange("furnace1", e.target.value)}
+                                        className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-orange-500 outline-none pr-10"
+                                    />
+                                    <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">°C</span>
                                 </div>
                             </div>
-                        ))}
+                            <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
+                                <span className="font-black text-orange-700 w-28 flex items-center"><Flame className="w-4 h-4 mr-1"/> 2호기 온도</span>
+                                <div className="relative">
+                                    <input 
+                                        type="text" 
+                                        value={settings.TARGET_TEMPERATURE?.furnace2 || ""} 
+                                        onChange={(e) => handleTemperatureChange("furnace2", e.target.value)}
+                                        className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-orange-500 outline-none pr-10"
+                                    />
+                                    <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">°C</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* 🌟 분말 종류별 개별 안전 재고 설정 UI */}
+                    <div className="bg-white rounded-xl shadow-sm border p-6">
+                        <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">분말 종류별 안전 재고 기준</h3>
+                        <div className="space-y-3">
+                            {settings.MATERIAL_TYPES.map(mat => (
+                                <div key={mat} className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
+                                    <span className="font-black text-red-700 w-32 flex items-center">⚠️ {mat} 경고 기준</span>
+                                    <div className="relative">
+                                        <input 
+                                            type="number" 
+                                            value={settings.SAFETY_THRESHOLD?.[mat] || ""} 
+                                            onChange={(e) => handleSafetyThresholdChange(mat, e.target.value)}
+                                            className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-red-500 outline-none pr-10"
+                                        />
+                                        <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">kg</span>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+
+                {/* 🔽 오른쪽 열 (BOM 배합 비율) */}
+                <div className="space-y-6">
+                    <div className="bg-white rounded-xl shadow-sm border p-6">
+                        <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">분류별 소재 배합 비율 (BOM)</h3>
+                        <div className="space-y-4 max-h-[700px] overflow-y-auto pr-2">
+                            {settings.PRODUCT_COLORS.map(color => (
+                                <div key={color} className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                                    <div className="font-black text-lg text-slate-800 mb-3">{color} 배합비율</div>
+                                    <div className="grid grid-cols-2 gap-3">
+                                        {settings.MATERIAL_TYPES.map(mat => (
+                                            <div key={mat} className="flex flex-col">
+                                                <label className="text-[10px] font-bold text-slate-500 mb-1 pl-1">{mat}</label>
+                                                <input 
+                                                    type="number"
+                                                    step="0.001"
+                                                    value={settings.RATIO_BY_COLOR[color][mat]}
+                                                    onChange={(e) => handleRatioChange(color, mat, e.target.value)}
+                                                    className="border rounded p-2 text-sm text-right font-mono"
+                                                />
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
                     </div>
                 </div>
             </div>
