@@ -278,7 +278,6 @@ const DEFAULT_MASTER_SETTINGS = {
   // 🌟 [추가] 원재료 창고 안전 재고 알람 기준 기본값 (50kg)
   SAFETY_THRESHOLD: "50"
 };
-};
 
 const MATERIAL_TYPES = ["4Y-W", "4Y-Y", "5E-P", "4Y-G"];
 const PRODUCT_COLORS = ["BL0", "BL1", "BL2", "BL3", "A1", "A2", "B1"];
@@ -4883,7 +4882,7 @@ function Step10Settings({ masterSettings, ctx }) {
                         </div>
                         <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
                             <span className="font-black text-orange-700 w-28 flex items-center"><Flame className="w-4 h-4 mr-1"/> 2호기 온도</span>
-                            <div className="relative">
+                           <div className="relative">
                                 <input 
                                     type="text" 
                                     value={settings.TARGET_TEMPERATURE?.furnace2 || ""} 
@@ -4896,7 +4895,28 @@ function Step10Settings({ masterSettings, ctx }) {
                     </div>
                 </div>
 
-                <div className="bg-white rounded-xl shadow-sm border p-6">
+                {/* 🌟 [추가] 여기에 안전 재고 알람 기준 박스가 들어갑니다! */}
+                <div className="bg-white rounded-xl shadow-sm border p-6 mt-6">
+                    <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">원재료 안전 재고 알람 기준</h3>
+                    <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
+                        <span className="font-black text-red-700 w-40 flex items-center">⚠️ 경고 발생 기준 중량</span>
+                        <div className="relative">
+                            <input 
+                                type="number" 
+                                value={settings.SAFETY_THRESHOLD || ""} 
+                                onChange={(e) => handleSafetyThresholdChange(e.target.value)}
+                                className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-red-500 outline-none pr-10"
+                            />
+                            <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">kg</span>
+                        </div>
+                    </div>
+                    <p className="text-slate-400 text-[11px] mt-2 font-medium pl-1">
+                      * 창고 실재고가 설정된 중량 이하로 떨어지면 현장 화면에 [부족] 알람이 발생합니다.
+                    </p>
+                </div>
+                {/* 🌟 추가 끝 */}
+
+                <div className="bg-white rounded-xl shadow-sm border p-6 mt-6">
                     <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">분류별 소재 배합 비율 (BOM)</h3>
                     <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2">
                         {settings.PRODUCT_COLORS.map(color => (
