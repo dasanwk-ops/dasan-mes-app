@@ -4470,18 +4470,19 @@ logProcessToGoogleSheet("step9", { ...wip, qty: safeQty }, d.operator, {
                   <td className="p-3 font-bold text-slate-600">{h.operator}</td>
                 </tr>
               ))}
-              {shippingHistory.length === 0 && (
+            {shippingHistory.length === 0 && (
                 <tr>
                   <td colSpan="6" className="text-center py-6 text-slate-400">
                     출고 이력이 없습니다.
                   </td>
                 </tr>
-             );
-            })}
+             )}
           </tbody>
         </table>
       </div>
-
+    </div>
+  );
+}
       {/* ======================================================= */}
       {/* 🌟 [추가] 부분 재출력 팝업창 UI */}
       {/* ======================================================= */}
