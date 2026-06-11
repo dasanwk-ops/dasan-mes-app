@@ -3909,17 +3909,16 @@ logProcessToGoogleSheet("step7", { ...w, qty: remainQty }, room?.operator, {
 // ==========================================
 function Step8Packaging({ wipList, orderList, ctx }) {
   const pendingWip = wipList.filter((w) => w.currentStep === "step8");
-const [formData, setFormData] = useState({});
-  const [printedStatus, setPrintedStatus] = useState({}); // 🌟 인쇄 상태 저장소 추가
+  const [formData, setFormData] = useState({});
+  const [printedStatus, setPrintedStatus] = useState({});
 
-// ==========================================
-  // 🌟 [신규 추가] 재출력 팝업 제어용 상태 및 함수
-  // ==========================================
+  // 🌟 [신규 추가] 재출력 팝업 제어용 상태
   const [showReprintModal, setShowReprintModal] = useState(false);
   const [reprintItem, setReprintItem] = useState(null);
   const [reprintTarget, setReprintTarget] = useState("both");
   const [reprintQty, setReprintQty] = useState(1);
 
+  // 🌟 재출력 팝업 열기
   const handleOpenReprint = (wip) => {
     setReprintItem(wip);
     setReprintTarget("both"); 
@@ -3927,6 +3926,7 @@ const [formData, setFormData] = useState({});
     setShowReprintModal(true);
   };
 
+  // 🌟 재출력 명령 파이어베이스 전송
   const handleSendReprint = async () => {
     if (!reprintItem) return;
     const s = Number(reprintItem.shrinkageRate);
@@ -3944,8 +3944,8 @@ const [formData, setFormData] = useState({});
         scaleFactor: calculatedScaleFactor,
         mfgDate: getKST().split(" ")[0],
         size: `Φ98 x ${reprintItem.height}mm`,
-        quantity: parseInt(reprintQty, 10), // 🌟 팝업에서 입력한 수량
-        target: reprintTarget,              // 🌟 팝업에서 선택한 프린터 타겟
+        quantity: parseInt(reprintQty, 10),
+        target: reprintTarget,
         status: "pending",
         createdAt: serverTimestamp(),
       });
@@ -3957,7 +3957,7 @@ const [formData, setFormData] = useState({});
     }
   };
 
-  // 🌟 [임시 추가] 실재고 차감 없이 8단계에만 나타나는 테스트용 가짜 데이터 생성
+  // 🌟 [임시 추가] 테스트용 가짜 데이터 생성
   const handleCreateTestLot = async () => {
     try {
       const database = getFirestore();
@@ -3977,8 +3977,7 @@ const [formData, setFormData] = useState({});
       ctx.showToast("테스트 로트 생성 실패", "error");
     }
   };
-  // ==========================================
-  
+
   const handleDataChange = (id, field, val) =>
     setFormData((prev) => ({
       ...prev,
@@ -3990,10 +3989,7 @@ const [formData, setFormData] = useState({});
     const wip = wipList.find((w) => w.id === wipId);
 
     if (!data.operator || !wip?.shrinkageRate) {
-      return ctx.showToast(
-        "작업자 성명 입력 혹은 열처리 단계 수축률 데이터가 필요합니다.",
-        "error"
-      );
+      return ctx.showToast("작업자 성명 입력 혹은 열처리 단계 수축률 데이터가 필요합니다.", "error");
     }
 
     const defectQty = parseInt(data.defects) || 0;
@@ -4034,26 +4030,23 @@ const [formData, setFormData] = useState({});
     }
   };
 
-const handlePrintLabel = async (wipId) => {
-    const data = formData[wipId] || {};
+  const handlePrintLabel = async (wipId) => {
     const wip = wipList.find((w) => w.id === wipId);
-
     if (!wip?.shrinkageRate) {
       return ctx.showToast("열처리 단계 수축률 데이터가 없습니다.", "error");
     }
 
+    const data = formData[wipId] || {};
     const defectQty = parseInt(data.defects) || 0;
     const finalQty = Math.max(0, wip.qty - defectQty);
     const finalLot = `F${getKSTDateOnly().slice(-5)}${wip.id.slice(-2)}`;
     const productName = `Z1100VT${wip.type}${wip.height}`;
     const sizeDisplay = `Φ98 x ${wip.height}mm`;
     
-    // 확대율 계산
     const s = Number(wip.shrinkageRate);
     const calculatedScaleFactor = (1 / (1 - s / 100)).toFixed(4);
 
     try {
-      // 🌟 db 변수 대신 getFirestore() 직접 호출로 에러 방지
       const database = getFirestore();
       await addDoc(collection(database, "print-queue"), {
         productName,
@@ -4061,7 +4054,7 @@ const handlePrintLabel = async (wipId) => {
         height: wip.height,
         lotNumber: finalLot,
         shrinkage: wip.shrinkageRate,
-        scaleFactor: calculatedScaleFactor, // 확대율 추가
+        scaleFactor: calculatedScaleFactor, 
         mfgDate: getKST().split(" ")[0],
         size: sizeDisplay,
         quantity: finalQty,
@@ -4070,24 +4063,24 @@ const handlePrintLabel = async (wipId) => {
       });
 
       ctx.showToast("라벨 출력 명령 전송 완료! 🖨️", "success");
-      setPrintedStatus(prev => ({ ...prev, [wipId]: true })); // 버튼 색상 변경용
+      setPrintedStatus(prev => ({ ...prev, [wipId]: true })); 
 
     } catch (err) {
       console.error("전송 에러:", err);
-      ctx.showToast(`전송 실패: ${err.message}`, "error"); // 에러 내용 구체적 표시
+      ctx.showToast(`전송 실패: ${err.message}`, "error"); 
     }
   };
 
- return (
-    <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
-      {/* 🌟 [수정] 제목 옆에 테스트 버튼 추가 */}
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6 relative">
       <div className="flex justify-between items-center mb-2">
         <h3 className="text-lg font-bold">포장 및 라벨링</h3>
-        <button onClick={handleCreateTestLot} className="bg-yellow-400 text-yellow-900 px-3 py-1.5 rounded-lg text-xs font-black shadow-sm hover:bg-yellow-500 transition-colors">
+        <button onClick={handleCreateTestLot} className="bg-yellow-400 text-yellow-900 px-3 py-1.5 rounded-lg text-xs font-black shadow-sm hover:bg-yellow-500 transition-colors cursor-pointer z-10 relative">
           🧪 테스트 가짜 로트 생성
         </button>
       </div>
       <p className="text-sm text-slate-500 mb-6">최종 수축률(Scaling Factor)을 입력하고 라벨을 발행합니다.</p>
+      
       <div className="overflow-x-auto">
         <table className="w-full text-sm text-left">
           <thead className="text-xs text-slate-500 uppercase bg-slate-50 border-y border-slate-200">
@@ -4137,21 +4130,20 @@ const handlePrintLabel = async (wipId) => {
                       <input type="text" placeholder="작업자" value={data.operator || ""} onChange={(e) => handleDataChange(wip.id, "operator", e.target.value)} className="border rounded p-1.5 text-xs text-center font-bold" />
                     </div>
                   </td>
-           <td className="px-4 py-4">
-  <div className="flex flex-col space-y-2">
-    <button 
-      // 🌟 [수정] 출력 기록이 있으면 팝업 열기, 없으면 원본 전체 인쇄 실행
-      onClick={() => printedStatus[wip.id] ? handleOpenReprint(wip) : handlePrintLabel(wip.id)} 
-      className={`text-[10px] px-2 py-1.5 rounded font-bold flex items-center justify-center shadow-sm border transition-colors ${
-    printedStatus[wip.id] 
-      ? "bg-green-50 text-green-600 border-green-200 hover:bg-green-100" // 🟢 출력 후 스타일
-      : "bg-slate-100 text-slate-600 border-slate-200 hover:bg-indigo-50 hover:text-indigo-600" // ⚪ 처음 상태 스타일
-  }`}
->
-  <Printer className="w-3 h-3 mr-1" />
-  {printedStatus[wip.id] ? "재출력" : "라벨출력"} 
-</button>
-                      <button onClick={() => moveNext(wip.id)} className="text-[10px] bg-indigo-600 text-white px-2 py-1.5 rounded font-bold hover:bg-indigo-700 flex items-center justify-center shadow-sm">
+                  <td className="px-4 py-4">
+                    <div className="flex flex-col space-y-2">
+                      <button 
+                        onClick={() => printedStatus[wip.id] ? handleOpenReprint(wip) : handlePrintLabel(wip.id)} 
+                        className={`text-[10px] px-2 py-1.5 rounded font-bold flex items-center justify-center shadow-sm border transition-colors cursor-pointer ${
+                          printedStatus[wip.id] 
+                            ? "bg-green-50 text-green-600 border-green-200 hover:bg-green-100"
+                            : "bg-slate-100 text-slate-600 border-slate-200 hover:bg-indigo-50 hover:text-indigo-600"
+                        }`}
+                      >
+                        <Printer className="w-3 h-3 mr-1" />
+                        {printedStatus[wip.id] ? "재출력" : "라벨출력"} 
+                      </button>
+                      <button onClick={() => moveNext(wip.id)} className="text-[10px] bg-indigo-600 text-white px-2 py-1.5 rounded font-bold hover:bg-indigo-700 flex items-center justify-center shadow-sm cursor-pointer">
                         <CheckCircle2 className="w-3 h-3 mr-1" /> 포장완료
                       </button>
                     </div>
@@ -4162,10 +4154,66 @@ const handlePrintLabel = async (wipId) => {
           </tbody>
         </table>
       </div>
+
+      {/* 🌟 부분 재출력 팝업창 UI */}
+      {showReprintModal && (
+        <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", backgroundColor: "rgba(0,0,0,0.5)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 9999 }}>
+          <div style={{ backgroundColor: "white", padding: "24px", borderRadius: "12px", width: "360px", boxShadow: "0 10px 25px rgba(0,0,0,0.2)" }}>
+            <h3 style={{ marginTop: 0, marginBottom: "15px", borderBottom: "2px solid #f1f5f9", paddingBottom: "10px", fontSize:"18px", fontWeight:"900", color:"#1e293b" }}>
+              🖨️ 부분 재출력 설정
+            </h3>
+            
+            <div style={{ marginBottom: "15px", padding: "10px", backgroundColor: "#f8fafc", borderRadius: "8px" }}>
+              <div style={{ fontSize: "12px", color: "#64748b", fontWeight: "bold" }}>재출력 대상 로트</div>
+              <div style={{ fontSize: "16px", fontWeight: "900", color: "#4338ca", fontFamily: "monospace" }}>
+                F{getKSTDateOnly().slice(-5)}{reprintItem?.id.slice(-2)}
+              </div>
+            </div>
+            
+            <div style={{ marginBottom: "15px" }}>
+              <label style={{ display: "block", marginBottom: "6px", fontWeight: "bold", fontSize: "13px", color:"#475569" }}>출력 대상 라벨</label>
+              <select 
+                value={reprintTarget} 
+                onChange={(e) => setReprintTarget(e.target.value)}
+                style={{ width: "100%", padding: "10px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "14px", outline:"none" }}
+              >
+                <option value="both">전체 세트 (박스 + 블록)</option>
+                <option value="box_only">박스 라벨만 (Godex)</option>
+                <option value="block_only">블록 라벨만 (TSC)</option>
+              </select>
+            </div>
+
+            <div style={{ marginBottom: "25px" }}>
+              <label style={{ display: "block", marginBottom: "6px", fontWeight: "bold", fontSize: "13px", color:"#475569" }}>재출력 수량 (장)</label>
+              <input 
+                type="number" 
+                min="1" 
+                value={reprintQty} 
+                onChange={(e) => setReprintQty(e.target.value)}
+                style={{ width: "100%", padding: "10px", borderRadius: "8px", border: "1px solid #cbd5e1", boxSizing: "border-box", fontSize: "14px", fontWeight:"bold", outline:"none" }}
+              />
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "10px" }}>
+              <button 
+                onClick={() => setShowReprintModal(false)}
+                style={{ flex: 1, padding: "12px", backgroundColor: "#f1f5f9", color: "#475569", border: "none", borderRadius: "8px", cursor: "pointer", fontWeight: "bold" }}
+              >
+                취소
+              </button>
+              <button 
+                onClick={handleSendReprint}
+                style={{ flex: 1, padding: "12px", backgroundColor: "#4f46e5", color: "white", border: "none", borderRadius: "8px", cursor: "pointer", fontWeight: "black" }}
+              >
+                인쇄 명령 전송
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
-
 // ==========================================
 // Step 9: Finished Goods (출고처 드롭다운 및 직접입력 추가 + 이력 보존 수정)
 // ==========================================
