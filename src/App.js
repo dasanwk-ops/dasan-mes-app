@@ -3956,6 +3956,27 @@ const [formData, setFormData] = useState({});
       ctx.showToast("재출력 전송 실패", "error");
     }
   };
+
+  // 🌟 [임시 추가] 실재고 차감 없이 8단계에만 나타나는 테스트용 가짜 데이터 생성
+  const handleCreateTestLot = async () => {
+    try {
+      const database = getFirestore();
+      const testId = "TEST_" + Date.now().toString().slice(-5);
+      await setDoc(doc(database, "wipList", testId), {
+        id: testId,
+        mixLot: `TEST-LOT-${testId}`,
+        type: "BL2",
+        height: "25",
+        qty: 10,
+        shrinkageRate: "19.3997",
+        currentStep: "step8",
+        details: "[테스트] 라벨 인쇄 테스트용 가짜 데이터입니다.",
+      });
+      ctx.showToast("🧪 테스트용 가짜 로트가 생성되었습니다!", "success");
+    } catch (err) {
+      ctx.showToast("테스트 로트 생성 실패", "error");
+    }
+  };
   // ==========================================
   
   const handleDataChange = (id, field, val) =>
@@ -4057,9 +4078,15 @@ const handlePrintLabel = async (wipId) => {
     }
   };
 
-  return (
+ return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
-      <h3 className="text-lg font-bold mb-2">포장 및 라벨링</h3>
+      {/* 🌟 [수정] 제목 옆에 테스트 버튼 추가 */}
+      <div className="flex justify-between items-center mb-2">
+        <h3 className="text-lg font-bold">포장 및 라벨링</h3>
+        <button onClick={handleCreateTestLot} className="bg-yellow-400 text-yellow-900 px-3 py-1.5 rounded-lg text-xs font-black shadow-sm hover:bg-yellow-500 transition-colors">
+          🧪 테스트 가짜 로트 생성
+        </button>
+      </div>
       <p className="text-sm text-slate-500 mb-6">최종 수축률(Scaling Factor)을 입력하고 라벨을 발행합니다.</p>
       <div className="overflow-x-auto">
         <table className="w-full text-sm text-left">
