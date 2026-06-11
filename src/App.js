@@ -3962,7 +3962,7 @@ function Step8Packaging({ wipList, orderList, ctx }) {
     try {
       const database = getFirestore();
       const testId = "TEST_" + Date.now().toString().slice(-5);
-      await setDoc(doc(database, "wipList", testId), {
+    await setDoc(getDocRef("wipList", testId), {
         id: testId,
         mixLot: `TEST-LOT-${testId}`,
         type: "BL2",
