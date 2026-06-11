@@ -3912,6 +3912,52 @@ function Step8Packaging({ wipList, orderList, ctx }) {
 const [formData, setFormData] = useState({});
   const [printedStatus, setPrintedStatus] = useState({}); // 🌟 인쇄 상태 저장소 추가
 
+// ==========================================
+  // 🌟 [신규 추가] 재출력 팝업 제어용 상태 및 함수
+  // ==========================================
+  const [showReprintModal, setShowReprintModal] = useState(false);
+  const [reprintItem, setReprintItem] = useState(null);
+  const [reprintTarget, setReprintTarget] = useState("both");
+  const [reprintQty, setReprintQty] = useState(1);
+
+  const handleOpenReprint = (wip) => {
+    setReprintItem(wip);
+    setReprintTarget("both"); 
+    setReprintQty(1);         
+    setShowReprintModal(true);
+  };
+
+  const handleSendReprint = async () => {
+    if (!reprintItem) return;
+    const s = Number(reprintItem.shrinkageRate);
+    const calculatedScaleFactor = (1 / (1 - s / 100)).toFixed(4);
+    const finalLot = `F${getKSTDateOnly().slice(-5)}${reprintItem.id.slice(-2)}`;
+
+    try {
+      const database = getFirestore();
+      await addDoc(collection(database, "print-queue"), {
+        productName: `Z1100VT${reprintItem.type}${reprintItem.height}`,
+        color: reprintItem.type,
+        height: reprintItem.height,
+        lotNumber: finalLot,
+        shrinkage: reprintItem.shrinkageRate,
+        scaleFactor: calculatedScaleFactor,
+        mfgDate: getKST().split(" ")[0],
+        size: `Φ98 x ${reprintItem.height}mm`,
+        quantity: parseInt(reprintQty, 10), // 🌟 팝업에서 입력한 수량
+        target: reprintTarget,              // 🌟 팝업에서 선택한 프린터 타겟
+        status: "pending",
+        createdAt: serverTimestamp(),
+      });
+
+      ctx.showToast("부분 재출력 명령 전송 완료! 🖨️", "success");
+      setShowReprintModal(false);
+    } catch (err) {
+      ctx.showToast("재출력 전송 실패", "error");
+    }
+  };
+  // ==========================================
+  
   const handleDataChange = (id, field, val) =>
     setFormData((prev) => ({
       ...prev,
@@ -4064,11 +4110,12 @@ const handlePrintLabel = async (wipId) => {
                       <input type="text" placeholder="작업자" value={data.operator || ""} onChange={(e) => handleDataChange(wip.id, "operator", e.target.value)} className="border rounded p-1.5 text-xs text-center font-bold" />
                     </div>
                   </td>
-                  <td className="px-4 py-4">
-                    <div className="flex flex-col space-y-2">
-                     <button 
-  onClick={() => handlePrintLabel(wip.id)} 
-  className={`text-[10px] px-2 py-1.5 rounded font-bold flex items-center justify-center shadow-sm border transition-colors ${
+           <td className="px-4 py-4">
+  <div className="flex flex-col space-y-2">
+    <button 
+      // 🌟 [수정] 출력 기록이 있으면 팝업 열기, 없으면 원본 전체 인쇄 실행
+      onClick={() => printedStatus[wip.id] ? handleOpenReprint(wip) : handlePrintLabel(wip.id)} 
+      className={`text-[10px] px-2 py-1.5 rounded font-bold flex items-center justify-center shadow-sm border transition-colors ${
     printedStatus[wip.id] 
       ? "bg-green-50 text-green-600 border-green-200 hover:bg-green-100" // 🟢 출력 후 스타일
       : "bg-slate-100 text-slate-600 border-slate-200 hover:bg-indigo-50 hover:text-indigo-600" // ⚪ 처음 상태 스타일
@@ -4354,11 +4401,75 @@ logProcessToGoogleSheet("step9", { ...wip, qty: safeQty }, d.operator, {
                     출고 이력이 없습니다.
                   </td>
                 </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+             );
+            })}
+          </tbody>
+        </table>
       </div>
+
+      {/* ======================================================= */}
+      {/* 🌟 [추가] 부분 재출력 팝업창 UI */}
+      {/* ======================================================= */}
+      {showReprintModal && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, width: "100%", height: "100%", 
+          backgroundColor: "rgba(0,0,0,0.5)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 9999
+        }}>
+          <div style={{ backgroundColor: "white", padding: "24px", borderRadius: "12px", width: "360px", boxShadow: "0 10px 25px rgba(0,0,0,0.2)" }}>
+            <h3 style={{ marginTop: 0, marginBottom: "15px", borderBottom: "2px solid #f1f5f9", paddingBottom: "10px", fontSize:"18px", fontWeight:"900", color:"#1e293b" }}>
+              🖨️ 부분 재출력 설정
+            </h3>
+            
+            <div style={{ marginBottom: "15px", padding: "10px", backgroundColor: "#f8fafc", borderRadius: "8px" }}>
+              <div style={{ fontSize: "12px", color: "#64748b", fontWeight: "bold" }}>재출력 대상 로트</div>
+              <div style={{ fontSize: "16px", fontWeight: "900", color: "#4338ca", fontFamily: "monospace" }}>
+                F{getKSTDateOnly().slice(-5)}{reprintItem?.id.slice(-2)}
+              </div>
+            </div>
+            
+            <div style={{ marginBottom: "15px" }}>
+              <label style={{ display: "block", marginBottom: "6px", fontWeight: "bold", fontSize: "13px", color:"#475569" }}>출력 대상 라벨</label>
+              <select 
+                value={reprintTarget} 
+                onChange={(e) => setReprintTarget(e.target.value)}
+                style={{ width: "100%", padding: "10px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "14px", outline:"none" }}
+              >
+                <option value="both">전체 세트 (박스 + 블록)</option>
+                <option value="box_only">박스 라벨만 (Godex)</option>
+                <option value="block_only">블록 라벨만 (TSC)</option>
+              </select>
+            </div>
+
+            <div style={{ marginBottom: "25px" }}>
+              <label style={{ display: "block", marginBottom: "6px", fontWeight: "bold", fontSize: "13px", color:"#475569" }}>재출력 수량 (장)</label>
+              <input 
+                type="number" 
+                min="1" 
+                value={reprintQty} 
+                onChange={(e) => setReprintQty(e.target.value)}
+                style={{ width: "100%", padding: "10px", borderRadius: "8px", border: "1px solid #cbd5e1", boxSizing: "border-box", fontSize: "14px", fontWeight:"bold", outline:"none" }}
+              />
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "10px" }}>
+              <button 
+                onClick={() => setShowReprintModal(false)}
+                style={{ flex: 1, padding: "12px", backgroundColor: "#f1f5f9", color: "#475569", border: "none", borderRadius: "8px", cursor: "pointer", fontWeight: "bold" }}
+              >
+                취소
+              </button>
+              <button 
+                onClick={handleSendReprint}
+                style={{ flex: 1, padding: "12px", backgroundColor: "#4f46e5", color: "white", border: "none", borderRadius: "8px", cursor: "pointer", fontWeight: "black" }}
+              >
+                인쇄 명령 전송
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* ======================================================= */}
+
     </div>
   );
 }
