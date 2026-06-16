@@ -1127,8 +1127,14 @@ function Step0OrderManagement({ orderList, masterSettings, ctx }) {
           type: order.color, height: order.height, singleWeight: order.singleWeight, qty: inputQty, currentStep: "step1",
           details: `[${getKST()}] 지시분할투입 (원본:${order.orderNo})`,
         });
-        setReleaseQtyMap({ ...releaseQtyMap, [order.id]: "" });
+       setReleaseQtyMap({ ...releaseQtyMap, [order.id]: "" });
         ctx.showToast(`${inputQty}개 소재 창고로 전송 완료`, "success");
+        
+        // 🌟 [추가] 0단계 발주 투입 기록 시트 전송
+        logProcessToGoogleSheet("step0", { mixLot: `투입-${order.orderNo}`, type: order.color, height: order.height, qty: inputQty }, "시스템", { 
+          details: `[발주 투입] 원본번호: ${order.orderNo}` 
+        });
+
       } catch (e) { ctx.showToast("투입 처리 중 오류 발생", "error"); }
     });
   };
@@ -1334,6 +1340,12 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
       const totalW = Object.values(neededBOM).reduce((a, b) => a + b, 0);
       await setDoc(getDocRef("wipList", lot.id), { ...lot, weight: totalW.toFixed(3), currentStep: "step2", details: `${lot.details}\n[${getKST()}] [소재창고] 출고완료 (담당:${op})` });
       ctx.showToast(`로트 ${lot.mixLot} 출고 완료`, "success");
+
+      // 🌟 [추가] 1단계 소재 출고 기록 시트 전송
+      logProcessToGoogleSheet("step1", lot, op, { 
+        details: "소재 출고 및 칭량 완료" 
+      });
+
     } catch (e) { ctx.showToast("오류 발생", "error"); }
   };
 
@@ -1502,6 +1514,12 @@ function Step2Mixing({ wipList, masterSettings, ctx }) {
     try {
       await setDoc(getDocRef("wipList", activeJob.id), { ...activeJob, currentStep: "step3", details: `${activeJob.details}\n[${getKST()}] [배합] 담당: ${operator} ${specialNote ? `[메모:${specialNote}]` : ""}` });
       setOperator(""); setSpecialNote(""); ctx.showToast("배합 완료", "success");
+
+      // 🌟 [추가] 2단계 일반 배합 기록 시트 전송
+      logProcessToGoogleSheet("step2", activeJob, operator, { 
+        details: specialNote || "일반 배합 완료" 
+      });
+
     } catch (err) { ctx.showToast("오류 발생", "error"); }
   };
 
@@ -1514,6 +1532,12 @@ function Step2Mixing({ wipList, masterSettings, ctx }) {
       await setDoc(getDocRef("wipList", id1), { ...activeJob, id: id1, mixLot: `${activeJob.mixLot}-R`, weight: subTotal.toFixed(3), qty: subQty, currentStep: "step3", details: `${activeJob.details}\n[${getKST()}] [배합] 잔량 분할 배합 (담당:${operator})` });
       await setDoc(getDocRef("wipList", id2), { ...activeJob, id: id2, mixLot: `MIX-${getKSTDateOnly()}-${Math.floor(Math.random() * 100)}`, weight: remainTotal.toFixed(3), qty: remainQty, currentStep: "step2", details: `${activeJob.details}\n[${getKST()}] [배합] 이전 로트 잔량 분리 생성` });
       setIsSplitMode(false); setSplitWeightStr(""); setOperator(""); setSpecialNote(""); ctx.showToast("잔량 분할 완료", "success");
+
+      // 🌟 [추가] 2단계 분할 배합 기록 시트 전송
+      logProcessToGoogleSheet("step2", { ...activeJob, qty: subQty }, operator, { 
+        details: "잔량 분할 배합 완료" 
+      });
+
     } catch (err) { ctx.showToast("오류 발생", "error"); }
   };
 
