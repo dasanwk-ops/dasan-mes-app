@@ -1027,17 +1027,17 @@ function DashboardView({
                       </span>
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-500 truncate max-w-[150px] text-center">{wip.details}</td>
-                    <td className="px-4 py-3 text-center">
+                   <td className="px-4 py-3 text-center">
                       <div className="flex justify-center gap-1.5">
                         {isEditing ? (
                           <>
-                            <button onClick={() => handleSaveWip(wip)} className="bg-orange-500 text-white p-1 px-2 rounded">저장</button>
-                            <button onClick={() => setEditingId(null)} className="bg-slate-200 text-slate-700 p-1 px-2 rounded">취소</button>
+                            <button onClick={() => handleSaveWip(wip)} className="bg-orange-500 text-white p-1.5 rounded shadow-sm">저장</button>
+                            <button onClick={() => setEditingId(null)} className="bg-slate-200 text-slate-700 p-1.5 rounded shadow-sm">취소</button>
                           </>
                         ) : (
                           <>
-                            <button onClick={() => { setEditingId(wip.id); setEditData(wip); }} className="text-slate-400 hover:text-indigo-600">수정</button>
-                            <button onClick={() => handleDeleteWip(wip.id)} className="text-red-300 hover:text-red-600">삭제</button>
+                            <button onClick={() => { setEditingId(wip.id); setEditData(wip); }} className="text-slate-500 hover:text-indigo-600 p-1 bg-white border rounded shadow-sm">수정</button>
+                            <button onClick={() => handleDeleteWip(wip.id)} className="text-red-400 hover:bg-red-500 hover:text-white p-1 bg-white border rounded shadow-sm transition-colors">삭제</button>
                           </>
                         )}
                       </div>
