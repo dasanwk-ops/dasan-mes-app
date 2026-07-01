@@ -788,8 +788,15 @@ function DashboardView({
   const handleSaveWip = async (wip) => {
     const safeQty = Number(editData.qty);
     if (isNaN(safeQty) || safeQty < 0) return ctx.showToast("올바른 숫자를 입력해주세요.", "error");
+    
     try {
-      await setDoc(getDocRef("wipList", wip.id), { ...wip, qty: safeQty, currentStep: editData.currentStep });
+      // 🌟 shrinkageRate도 함께 업데이트하도록 로직 반영
+      await setDoc(getDocRef("wipList", wip.id), { 
+        ...wip, 
+        qty: safeQty, 
+        currentStep: editData.currentStep,
+        shrinkageRate: editData.shrinkageRate || wip.shrinkageRate // 추가된 부분
+      });
       setEditingId(null);
       ctx.showToast("수정 완료", "success");
     } catch (e) { ctx.showToast("실패", "error"); }
@@ -1005,8 +1012,21 @@ function DashboardView({
                     <td className="px-4 py-3 font-medium text-blue-600">{wip.mixLot}</td>
                     <td className="px-4 py-3 font-bold text-slate-800">{wip.type} {wip.height}T</td>
                     <td className="px-4 py-3 text-center font-bold">{isEditing ? <input type="number" value={editData.qty} onChange={(e) => setEditData({ ...editData, qty: e.target.value })} className="border p-1 w-16 text-center rounded bg-orange-50" /> : wip.qty}</td>
-                    <td className="px-4 py-3"><span className={`px-2 py-1 border rounded text-[10px] font-bold ${wip.currentStep.includes("heating") ? "bg-orange-50 text-orange-700" : "bg-white text-slate-600"}`}>{WIP_STEPS.find((s) => s.value === wip.currentStep)?.label || "대기중"}</span></td>
-                    <td className="px-4 py-3 text-xs text-slate-500 truncate max-w-[150px] text-center">{wip.details}</td>
+                    // 🌟 수축률(shrinkageRate) 필드를 추가하고 수정 모드일 때 input으로 변경
+<td className="px-4 py-3 font-medium text-blue-600">
+  {isEditing ? (
+    <input 
+      type="number" 
+      step="0.01"
+      value={editData.shrinkageRate || ""} 
+      onChange={(e) => setEditData({ ...editData, shrinkageRate: e.target.value })} 
+      className="border p-1 w-20 rounded bg-orange-50 font-bold" 
+    />
+  ) : (
+    wip.shrinkageRate || "0.00"
+  )}
+</td>
+<td className="px-4 py-3"><span className={`px-2 py-1 border rounded text-[10px] font-bold ${wip.currentStep.includes("heating") ? "bg-orange-50 text-orange-700" : "bg-white text-slate-600"}`}>{WIP_STEPS.find((s) => s.value === wip.currentStep)?.label || "대기중"}</span></td>
                     <td className="px-4 py-3 text-center">
                       <div className="flex justify-center gap-1.5">
                         {isEditing ? <button onClick={() => handleSaveWip(wip)} className="bg-orange-500 text-white p-1 rounded">저장</button> : <button onClick={() => { setEditingId(wip.id); setEditData(wip); }} className="text-slate-400 hover:text-indigo-600">수정</button>}
