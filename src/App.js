@@ -785,18 +785,17 @@ function DashboardView({
     await syncToGoogleSheets(orderList, wipList, inventoryHistory, shippingHistory, ctx);
   };
 
-  const handleSaveWip = async (wip) => {
+ const handleSaveWip = async (wip) => {
     const safeQty = Number(editData.qty);
     if (isNaN(safeQty) || safeQty < 0) return ctx.showToast("올바른 숫자를 입력해주세요.", "error");
     
     try {
-      // 🌟 shrinkageRate도 함께 업데이트하도록 로직 반영
-     await setDoc(getDocRef("wipList", wip.id), { 
-  ...wip, 
-  qty: safeQty, 
-  currentStep: editData.currentStep,
-  shrinkageRate: editData.shrinkageRate || wip.shrinkageRate // 🌟 이 줄만 추가
-});
+      await setDoc(getDocRef("wipList", wip.id), { 
+        ...wip, 
+        qty: safeQty, 
+        currentStep: editData.currentStep,
+        shrinkageRate: editData.shrinkageRate || wip.shrinkageRate // 이 줄이 추가되었습니다
+      });
       setEditingId(null);
       ctx.showToast("수정 완료", "success");
     } catch (e) { ctx.showToast("실패", "error"); }
@@ -995,11 +994,12 @@ function DashboardView({
         <div className="overflow-x-auto max-h-[500px] border rounded-lg">
           <table className="w-full text-sm text-left">
            <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0 shadow-sm border-b">
+<thead>
   <tr>
     <th className="px-4 py-3">내부 LOT</th>
     <th className="px-4 py-3">분류</th>
     <th className="px-4 py-3 text-center">수량</th>
-    <th className="px-4 py-3">수축률(%)</th> {/* 🌟 여기 추가 */}
+    <th className="px-4 py-3">수축률(%)</th> {/* 이 줄이 추가되었습니다 */}
     <th className="px-4 py-3">진행 상태</th>
     <th className="px-4 py-3 w-1/3 text-center">메모</th>
     <th className="px-4 py-3 text-center text-red-600">관리</th>
@@ -1012,10 +1012,13 @@ function DashboardView({
                   <tr key={wip.id} className="hover:bg-slate-50 transition-colors">
                     <td className="px-4 py-3 font-medium text-blue-600">{wip.mixLot}</td>
                     <td className="px-4 py-3 font-bold text-slate-800">{wip.type} {wip.height}T</td>
-                    <td className="px-4 py-3 text-center font-bold">{isEditing ? <input type="number" value={editData.qty} onChange={(e) => setEditData({ ...editData, qty: e.target.value })} className="border p-1 w-16 text-center rounded bg-orange-50" /> : wip.qty}</td>
-                    // 🌟 수축률(shrinkageRate) 필드를 추가하고 수정 모드일 때 input으로 변경
+                   <td className="px-4 py-3 text-center font-bold">{isEditing ? <input ... /> : wip.qty}</td>
+
 <td className="px-4 py-3 font-bold text-indigo-600">
-  {isEditing ? (
+  {isEditing ? <input type="number" step="0.01" value={editData.shrinkageRate || ""} onChange={(e) => setEditData({ ...editData, shrinkageRate: e.target.value })} className="border p-1 w-16 text-center rounded bg-orange-50 font-black" /> : (wip.shrinkageRate || "0.00")}
+</td>
+
+<td className="px-4 py-3"><span className={...}>{...}</span></td>
     <input 
       type="number" 
       step="0.01"
@@ -1055,35 +1058,55 @@ function DashboardView({
         </div>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
+     <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
         <div className="flex justify-between items-center mb-4">
-          <h3 className="text-lg font-bold flex items-center text-slate-800"><ShoppingCart className="w-5 h-5 mr-2 text-slate-400" /> 생산 지시 (발주) 현황</h3>
+          <h3 className="text-lg font-bold flex items-center text-slate-800"><Layers className="w-5 h-5 mr-2 text-slate-400" /> 공정 진행 현황 상세 (마스터)</h3>
           <span className="text-xs font-bold text-red-500 bg-red-50 px-2 py-1 rounded border border-red-100 uppercase">마스터 권한</span>
         </div>
-        <div className="overflow-x-auto max-h-[400px] border rounded-lg">
+        <div className="overflow-x-auto max-h-[500px] border rounded-lg">
           <table className="w-full text-sm text-left">
             <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0 shadow-sm border-b">
               <tr>
-                <th className="px-4 py-3">지시일자</th>
+                <th className="px-4 py-3">내부 LOT</th>
                 <th className="px-4 py-3">분류</th>
                 <th className="px-4 py-3 text-center">수량</th>
-                <th className="px-4 py-3 text-center">상태</th>
+                <th className="px-4 py-3 text-center">수축률(%)</th>
+                <th className="px-4 py-3">진행 상태</th>
+                <th className="px-4 py-3 w-1/3 text-center">메모</th>
                 <th className="px-4 py-3 text-center text-red-600">관리</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {sortedOrderList.map((order) => {
-                const isEditing = editingOrderId === order.id;
+              {activeWipList.map((wip) => {
+                const isEditing = editingId === wip.id;
                 return (
-                  <tr key={order.id} className="hover:bg-slate-50">
-                    <td className="px-4 py-3 text-slate-500"><div className="font-bold">{order.orderDate}</div><div className="text-xs font-mono text-slate-400">{order.orderNo}</div></td>
-                    <td className="px-4 py-3 font-bold text-slate-800">{order.color} {order.height}T</td>
-                    <td className="px-4 py-3 text-center font-black text-indigo-600">{isEditing ? <input type="number" value={editOrderData.qty} onChange={(e) => setEditOrderData({ ...editOrderData, qty: e.target.value })} className="border p-1 w-20 text-center rounded bg-orange-50" /> : order.qty}</td>
-                    <td className="px-4 py-3 text-center"><span className={`px-3 py-1.5 rounded text-xs font-bold ${order.status === "대기중" ? "bg-yellow-100 text-yellow-800" : "bg-blue-100 text-blue-800"}`}>{order.status}</span></td>
+                  <tr key={wip.id} className="hover:bg-slate-50 transition-colors">
+                    <td className="px-4 py-3 font-medium text-blue-600">{wip.mixLot}</td>
+                    <td className="px-4 py-3 font-bold text-slate-800">{wip.type} {wip.height}T</td>
+                    <td className="px-4 py-3 text-center font-bold">
+                      {isEditing ? <input type="number" value={editData.qty} onChange={(e) => setEditData({ ...editData, qty: e.target.value })} className="border p-1 w-16 text-center rounded bg-orange-50" /> : wip.qty}
+                    </td>
+                    <td className="px-4 py-3 text-center font-bold text-indigo-600">
+                      {isEditing ? (
+                        <input type="number" step="0.01" value={editData.shrinkageRate || ""} onChange={(e) => setEditData({ ...editData, shrinkageRate: e.target.value })} className="border p-1 w-16 text-center rounded bg-orange-50 font-black" />
+                      ) : (
+                        wip.shrinkageRate || "0.00"
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`px-2 py-1 border rounded text-[10px] font-bold ${wip.currentStep.includes("heating") ? "bg-orange-50 text-orange-700" : "bg-white text-slate-600"}`}>
+                        {WIP_STEPS.find((s) => s.value === wip.currentStep)?.label || "대기중"}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-500 truncate max-w-[150px] text-center">{wip.details}</td>
                     <td className="px-4 py-3 text-center">
                       <div className="flex justify-center gap-1.5">
-                        {isEditing ? <button onClick={() => handleSaveOrder(order)} className="bg-orange-500 text-white p-1.5 rounded shadow-sm">저장</button> : <button onClick={() => { setEditingOrderId(order.id); setEditOrderData(order); }} className="text-slate-500 hover:text-indigo-600 p-1 bg-white border rounded shadow-sm">수정</button>}
-                        <button onClick={() => handleDeleteOrder(order.id)} className="text-red-400 hover:bg-red-500 hover:text-white p-1 bg-white border rounded shadow-sm transition-colors">삭제</button>
+                        {isEditing ? (
+                          <button onClick={() => handleSaveWip(wip)} className="bg-orange-500 text-white p-1 rounded">저장</button>
+                        ) : (
+                          <button onClick={() => { setEditingId(wip.id); setEditData(wip); }} className="text-slate-400 hover:text-indigo-600">수정</button>
+                        )}
+                        <button onClick={() => handleDeleteWip(wip.id)} className="text-red-300 hover:text-red-600">삭제</button>
                       </div>
                     </td>
                   </tr>
