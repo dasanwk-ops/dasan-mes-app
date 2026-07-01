@@ -988,67 +988,7 @@ function DashboardView({
         </div>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
-        <div className="flex justify-between items-center mb-4">
-          <h3 className="text-lg font-bold flex items-center text-slate-800"><Layers className="w-5 h-5 mr-2 text-slate-400" /> 공정 진행 현황 상세 (마스터)</h3>
-          <span className="text-xs font-bold text-red-500 bg-red-50 px-2 py-1 rounded border border-red-100 uppercase">마스터 권한</span>
-        </div>
-        <div className="overflow-x-auto max-h-[500px] border rounded-lg">
-          <table className="w-full text-sm text-left">
-           <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0 shadow-sm border-b">
-<thead>
-  <tr>
-    <th className="px-4 py-3">내부 LOT</th>
-    <th className="px-4 py-3">분류</th>
-    <th className="px-4 py-3 text-center">수량</th>
-    <th className="px-4 py-3">수축률(%)</th> {/* 이 줄이 추가되었습니다 */}
-    <th className="px-4 py-3">진행 상태</th>
-    <th className="px-4 py-3 w-1/3 text-center">메모</th>
-    <th className="px-4 py-3 text-center text-red-600">관리</th>
-  </tr>
-</thead>
-            <tbody className="divide-y divide-slate-100">
-              {activeWipList.map((wip) => {
-                const isEditing = editingId === wip.id;
-               return (
-                  <tr key={wip.id} className="hover:bg-slate-50 transition-colors">
-                    <td className="px-4 py-3 font-medium text-blue-600">{wip.mixLot}</td>
-                    <td className="px-4 py-3 font-bold text-slate-800">{wip.type} {wip.height}T</td>
-                    <td className="px-4 py-3 text-center font-bold">
-                      {isEditing ? <input type="number" value={editData.qty} onChange={(e) => setEditData({ ...editData, qty: e.target.value })} className="border p-1 w-16 text-center rounded bg-orange-50" /> : wip.qty}
-                    </td>
-                    <td className="px-4 py-3 text-center font-bold text-indigo-600">
-                      {isEditing ? (
-                        <input type="number" step="0.01" value={editData.shrinkageRate || ""} onChange={(e) => setEditData({ ...editData, shrinkageRate: e.target.value })} className="border p-1 w-16 text-center rounded bg-orange-50 font-black" />
-                      ) : (
-                        wip.shrinkageRate || "0.00"
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <span className={`px-2 py-1 border rounded text-[10px] font-bold ${wip.currentStep.includes("heating") ? "bg-orange-50 text-orange-700" : "bg-white text-slate-600"}`}>
-                        {WIP_STEPS.find((s) => s.value === wip.currentStep)?.label || "대기중"}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-xs text-slate-500 truncate max-w-[150px] text-center">{wip.details}</td>
-                    <td className="px-4 py-3 text-center">
-                      <div className="flex justify-center gap-1.5">
-                        {isEditing ? (
-                          <button onClick={() => handleSaveWip(wip)} className="bg-orange-500 text-white p-1 rounded">저장</button>
-                        ) : (
-                          <button onClick={() => { setEditingId(wip.id); setEditData(wip); }} className="text-slate-400 hover:text-indigo-600">수정</button>
-                        )}
-                        <button onClick={() => handleDeleteWip(wip.id)} className="text-red-300 hover:text-red-600">삭제</button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-     <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
+        <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
         <div className="flex justify-between items-center mb-4">
           <h3 className="text-lg font-bold flex items-center text-slate-800"><Layers className="w-5 h-5 mr-2 text-slate-400" /> 공정 진행 현황 상세 (마스터)</h3>
           <span className="text-xs font-bold text-red-500 bg-red-50 px-2 py-1 rounded border border-red-100 uppercase">마스터 권한</span>
