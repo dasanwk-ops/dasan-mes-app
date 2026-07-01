@@ -940,16 +940,14 @@ function DashboardView({
           ))}
         </div>
 
-        <div className="overflow-x-auto max-h-[400px] border rounded-lg">
+       <div className="overflow-x-auto max-h-[400px] border rounded-lg">
           <table className="w-full text-sm text-left">
             <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0 shadow-sm border-b">
               <tr>
-                <th className="px-4 py-3">내부 LOT</th>
-                <th className="px-4 py-3">분류</th>
-                <th className="px-4 py-3 text-center">수량</th>
-                <th className="px-4 py-3 text-center">수축률(%)</th>
-                <th className="px-4 py-3 text-center">진행 상태</th>
-                <th className="px-4 py-3 w-1/3 text-center">메모</th>
+                <th className="px-4 py-3 text-center">입고일자</th>
+                <th className="px-4 py-3">소재 종류</th>
+                <th className="px-4 py-3">공급처 로트</th>
+                <th className="px-4 py-3 text-right">잔여 중량 (kg)</th>
                 <th className="px-4 py-3 text-center text-red-600">관리</th>
               </tr>
             </thead>
