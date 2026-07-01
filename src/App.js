@@ -791,12 +791,12 @@ function DashboardView({
     
     try {
       // 🌟 shrinkageRate도 함께 업데이트하도록 로직 반영
-      await setDoc(getDocRef("wipList", wip.id), { 
-        ...wip, 
-        qty: safeQty, 
-        currentStep: editData.currentStep,
-        shrinkageRate: editData.shrinkageRate || wip.shrinkageRate // 추가된 부분
-      });
+     await setDoc(getDocRef("wipList", wip.id), { 
+  ...wip, 
+  qty: safeQty, 
+  currentStep: editData.currentStep,
+  shrinkageRate: editData.shrinkageRate || wip.shrinkageRate // 🌟 이 줄만 추가
+});
       setEditingId(null);
       ctx.showToast("수정 완료", "success");
     } catch (e) { ctx.showToast("실패", "error"); }
@@ -994,16 +994,17 @@ function DashboardView({
         </div>
         <div className="overflow-x-auto max-h-[500px] border rounded-lg">
           <table className="w-full text-sm text-left">
-            <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0 shadow-sm border-b">
-              <tr>
-                <th className="px-4 py-3">내부 LOT</th>
-                <th className="px-4 py-3">분류</th>
-                <th className="px-4 py-3 text-center">수량</th>
-                <th className="px-4 py-3">진행 상태</th>
-                <th className="px-4 py-3 w-1/3 text-center">메모</th>
-                <th className="px-4 py-3 text-center text-red-600">관리</th>
-              </tr>
-            </thead>
+           <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0 shadow-sm border-b">
+  <tr>
+    <th className="px-4 py-3">내부 LOT</th>
+    <th className="px-4 py-3">분류</th>
+    <th className="px-4 py-3 text-center">수량</th>
+    <th className="px-4 py-3">수축률(%)</th> {/* 🌟 여기 추가 */}
+    <th className="px-4 py-3">진행 상태</th>
+    <th className="px-4 py-3 w-1/3 text-center">메모</th>
+    <th className="px-4 py-3 text-center text-red-600">관리</th>
+  </tr>
+</thead>
             <tbody className="divide-y divide-slate-100">
               {activeWipList.map((wip) => {
                 const isEditing = editingId === wip.id;
@@ -1013,7 +1014,20 @@ function DashboardView({
                     <td className="px-4 py-3 font-bold text-slate-800">{wip.type} {wip.height}T</td>
                     <td className="px-4 py-3 text-center font-bold">{isEditing ? <input type="number" value={editData.qty} onChange={(e) => setEditData({ ...editData, qty: e.target.value })} className="border p-1 w-16 text-center rounded bg-orange-50" /> : wip.qty}</td>
                     // 🌟 수축률(shrinkageRate) 필드를 추가하고 수정 모드일 때 input으로 변경
-<td className="px-4 py-3 font-medium text-blue-600">
+<td className="px-4 py-3 font-bold text-indigo-600">
+  {isEditing ? (
+    <input 
+      type="number" 
+      step="0.01"
+      value={editData.shrinkageRate || ""} 
+      onChange={(e) => setEditData({ ...editData, shrinkageRate: e.target.value })} 
+      className="border p-1 w-16 rounded bg-orange-50 font-black" 
+    />
+  ) : (
+    wip.shrinkageRate || "0.00"
+  )}
+</td>
+                <td className="px-4 py-3 font-medium text-blue-600">
   {isEditing ? (
     <input 
       type="number" 
