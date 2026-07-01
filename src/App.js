@@ -1030,11 +1030,16 @@ function DashboardView({
                     <td className="px-4 py-3 text-center">
                       <div className="flex justify-center gap-1.5">
                         {isEditing ? (
-                          <button onClick={() => handleSaveWip(wip)} className="bg-orange-500 text-white p-1 rounded">저장</button>
+                          <>
+                            <button onClick={() => handleSaveWip(wip)} className="bg-orange-500 text-white p-1 px-2 rounded">저장</button>
+                            <button onClick={() => setEditingId(null)} className="bg-slate-200 text-slate-700 p-1 px-2 rounded">취소</button>
+                          </>
                         ) : (
-                          <button onClick={() => { setEditingId(wip.id); setEditData(wip); }} className="text-slate-400 hover:text-indigo-600">수정</button>
+                          <>
+                            <button onClick={() => { setEditingId(wip.id); setEditData(wip); }} className="text-slate-400 hover:text-indigo-600">수정</button>
+                            <button onClick={() => handleDeleteWip(wip.id)} className="text-red-300 hover:text-red-600">삭제</button>
+                          </>
                         )}
-                        <button onClick={() => handleDeleteWip(wip.id)} className="text-red-300 hover:text-red-600">삭제</button>
                       </div>
                     </td>
                   </tr>
