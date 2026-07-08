@@ -273,7 +273,7 @@ const DEFAULT_MASTER_SETTINGS = {
  // 🌟 [추가] 1, 2차 성형 목표 압력 가이드 기본값
   TARGET_PRESSURE: { step3: "70", step4A: "250", step4B: "250" },
   // 🌟 전기로 목표 온도 가이드 기본값
-  TARGET_TEMPERATURE: { furnace1: "1060", furnace2: "1060" },
+  TARGET_TEMPERATURE: { furnace1: "1050", furnace2: "1050" },
   // 🌟 [수정] 원재료 창고 분말 종류별 개별 안전 재고 알람 기준 기본값 세팅
   SAFETY_THRESHOLD: { "4Y-W": "50", "4Y-Y": "50", "5E-P": "50", "4Y-G": "50" }
 };
@@ -311,7 +311,7 @@ const PROCESS_STEPS = [
 const DEFAULT_FURNACES = {
   1: {
     cartItems: [],
-    temp: "1060",
+    temp: "1050",
     isHeating: false,
     operator: "",
     completionData: {},
@@ -319,7 +319,7 @@ const DEFAULT_FURNACES = {
   },
   2: {
     cartItems: [],
-    temp: "1060",
+    temp: "1050",
     isHeating: false,
     operator: "",
     completionData: {},
@@ -2895,7 +2895,7 @@ try {
         ...furnaces,
         [fid]: {
           cartItems: [],
-          temp: "1060",
+          temp: "1050",
           isHeating: false,
           operator: "",
           completionData: {},
@@ -3374,7 +3374,7 @@ try {
                             <label className="text-[9px] font-bold text-slate-400 flex justify-between items-center ml-1 mb-0.5">
                               <span>가동 온도(°C)</span>
                               {/* 🌟 [추가] 목표 온도 가이드 추가 */}
-                              <span className="text-[8px] text-orange-500 bg-orange-50 border border-orange-200 px-1 rounded">목표:{masterSettings?.TARGET_TEMPERATURE?.[`furnace${id}`] || "1060"}</span>
+                              <span className="text-[8px] text-orange-500 bg-orange-50 border border-orange-200 px-1 rounded">목표:{masterSettings?.TARGET_TEMPERATURE?.[`furnace${id}`] || "1050"}</span>
                             </label>
                             <SyncInput
                               type="text"
@@ -4754,7 +4754,7 @@ function Step10Settings({ masterSettings, ctx }) {
    // 🌟 온도 변경 저장 함수
     const handleTemperatureChange = (furnaceKey, value) => {
         const newSettings = cloneDeep(settings);
-        if (!newSettings.TARGET_TEMPERATURE) newSettings.TARGET_TEMPERATURE = { furnace1: "1060", furnace2: "1060" };
+        if (!newSettings.TARGET_TEMPERATURE) newSettings.TARGET_TEMPERATURE = { furnace1: "1050", furnace2: "1050" };
         newSettings.TARGET_TEMPERATURE[furnaceKey] = value;
         setSettings(newSettings);
     };
