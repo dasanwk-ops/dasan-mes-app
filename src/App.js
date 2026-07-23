@@ -132,7 +132,8 @@ const PROCESS_STEPS = [
   { id: "step2", name: "혼합", icon: Beaker },
   { id: "step3", name: "1차 성형", icon: Boxes },
   { id: "step4", name: "2차 성형", icon: Cylinder },
-  { id: "step5", name: "열처리/수축률", icon: Flame },
+  { id: "step5", name: "열처리", icon: Flame },
+  { id: "step5_shrink", name: "수축률 측정", icon: Calculator }, // 🌟 공정 분리 신설
   { id: "step6", name: "검수/가공", icon: Microscope },
   { id: "step7", name: "건조", icon: Wind },
   { id: "step8", name: "포장 (라벨링)", icon: Printer },
@@ -141,8 +142,8 @@ const PROCESS_STEPS = [
 ];
 
 const DEFAULT_FURNACES = {
-  1: { isHeating: false, temp: "1050", operator: "", memo: "", step: 0, slotData: {} },
-  2: { isHeating: false, temp: "1050", operator: "", memo: "", step: 0, slotData: {} },
+  1: { isHeating: false, temp: "1050", operator: "", memo: "", slotData: {} },
+  2: { isHeating: false, temp: "1050", operator: "", memo: "", slotData: {} },
   3: { isHeating: false },
   4: { isHeating: false },
 };
@@ -266,6 +267,7 @@ export default function DasanMES() {
       case "step3": return <Step3FirstMolding {...props} />;
       case "step4": return <Step4SecondMolding {...props} />;
       case "step5": return <Step5HeatTreatment {...props} />;
+      case "step5_shrink": return <Step5_5Shrinkage {...props} />; // 🌟 수축률 컴포넌트 마운트
       case "step6": return <Step6Inspection {...props} />;
       case "step7": return <Step7Drying {...props} />;
       case "step8": return <Step8Packaging {...props} />;
@@ -383,7 +385,8 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
 
   const WIP_STEPS = [
     { value: "step2", label: "배합 대기" }, { value: "step3", label: "1차 성형 대기" }, { value: "step4", label: "2차 성형 대기" },
-    { value: "step5", label: "열처리/수축률 대기" }, { value: "step6", label: "검수 대기" }, { value: "step7", label: "건조 대기" },
+    { value: "step5", label: "열처리 대기" }, { value: "step5_shrink", label: "수축률 측정 대기" }, // 🌟 스텝 업데이트
+    { value: "step6", label: "검수 대기" }, { value: "step7", label: "건조 대기" },
     { value: "step7_drying", label: "건조 진행중" }, { value: "step8", label: "포장 대기" },
   ];
 
@@ -466,7 +469,9 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
 
       <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6 space-y-6">
         <div className="flex justify-between items-center">
-          <h3 className="text-lg font-bold text-slate-800">소재 창고 현황 및 필요 소요량 예측</h3>
+          <div className="flex items-center gap-2">
+            <h3 className="text-lg font-bold text-slate-800">소재 창고 현황 및 필요 소요량 예측</h3>
+          </div>
           <div className="flex items-center gap-2">
             <button onClick={() => setShowInvHistory(!showInvHistory)} className="text-xs font-bold px-3 py-1.5 rounded border transition-colors shadow-sm bg-white text-slate-600 border-slate-300 hover:bg-slate-50">
               입출고 내역 {showInvHistory ? "숨기기" : "보기"}
@@ -474,6 +479,7 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
             <span className="text-xs font-bold text-red-500 bg-red-50 px-2 py-1 rounded border border-red-100 uppercase">마스터 권한</span>
           </div>
         </div>
+
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {stockForecast.map((item) => (
             <div key={item.type} onClick={() => setSelectedMaterial(selectedMaterial === item.type ? null : item.type)} className={`p-4 rounded-2xl border transition-all cursor-pointer ${selectedMaterial === item.type ? "ring-2 ring-indigo-500 shadow-md" : ""} ${item.isShort ? "bg-red-50 border-red-200" : "bg-slate-50 border-slate-100 hover:bg-slate-100"}`}>
@@ -890,6 +896,7 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
                     {inventory.filter((i) => i.type === detailModalType && i.weight > 0).map((item) => (
                       <tr key={item.id} className="hover:bg-slate-50"><td className="p-3">{item.date}</td><td className="p-3 font-mono font-bold text-indigo-600">{item.lot}</td><td className="p-3 text-right font-black">{item.weight.toLocaleString()} kg</td><td className="p-3 text-center"><span className="bg-green-100 text-green-700 px-2 py-1 rounded text-[10px] font-bold">{item.status}</span></td></tr>
                     ))}
+                    {inventory.filter((i) => i.type === detailModalType && i.weight > 0).length === 0 && <tr><td colSpan="4" className="text-center p-6 text-slate-400">잔여 로트가 없습니다.</td></tr>}
                   </tbody>
                 </table>
               )}
@@ -1225,6 +1232,7 @@ function Step4SecondMolding({ wipList, masterSettings, ctx }) {
         if (docSnap.data().currentStep !== "step4") throw "이미 다른 작업자가 처리한 로트입니다.";
         const currentData = docSnap.data();
 
+        // 🌟 수정: Step5 (열처리 대기) 로 넘어갑니다.
         if (qtyA > 0) {
           const defStrA = defA > 0 ? ` [불량 ${defA}개: ${d.defectReasonA || "사유미상"}]` : "";
           const idA = Date.now().toString() + "A";
@@ -1328,13 +1336,12 @@ function Step4SecondMolding({ wipList, masterSettings, ctx }) {
 }
 
 // ==========================================
-// Step 5: Heat Treatment & Shrinkage (완전 개편)
+// Step 5: Heat Treatment (순수 열처리 로딩/언로딩만 담당)
 // ==========================================
 function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) { 
   const [selectedWipId, setSelectedWipId] = useState(null);
   const [alertModal, setAlertModal] = useState({ isOpen: false, message: "", type: "info" });
   const [promptData, setPromptData] = useState({ isOpen: false, message: "", max: 0, val: "", fid: null, slotId: null });
-  const [lotSplitModal, setLotSplitModal] = useState({ isOpen: false, fid: null, lotsToSplit: [], newSlotDataCache: null });
 
   const slots = [
     { id: "L6", label: "좌측 6층" }, { id: "R6", label: "우측 6층" },
@@ -1356,14 +1363,6 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
     return w.qty - used;
   };
 
-  const pendingItems = [];
-  [1, 2].forEach(fid => {
-    const f = furnaces[fid] || {};
-    Object.values(f.slotData || {}).forEach(s => {
-      if (!pendingItems.find(item => item.wipId === s.wipId)) pendingItems.push(s);
-    });
-  });
-
   const updateSlotData = async (fid, newSlotData) => {
     const newFurnaces = cloneDeep(furnaces);
     newFurnaces[fid].slotData = newSlotData;
@@ -1373,7 +1372,6 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
   const handleSlotClick = (fid, slotId) => {
     const f = furnaces[fid] || {};
     if (f.isHeating) return;
-    if (f.step && f.step > 0) return; 
     
     if (!selectedWipId) {
       setAlertModal({ isOpen: true, message: "왼쪽 대기열에서 제품을 먼저 클릭해서 선택하세요!", type: "warning" });
@@ -1400,10 +1398,7 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
     const f = furnaces[fid] || {};
     
     const newSlotData = { ...f.slotData, [promptData.slotId]: { 
-        wipId: selectedWipId, mixLot: w.mixLot, type: w.type, height: w.height, qty: qty, 
-        defect: "", dAvg: "", hAvg: "", shrink: "",
-        measurements: [{ preArea: "", postArea: "", calcShrink: "", calcExpand: "" }],
-        slotAvgShrink: "", slotAvgExpand: "", isLotSplit: false, lotSuffix: "", finalShrink: ""
+        wipId: selectedWipId, mixLot: w.mixLot, type: w.type, height: w.height, qty: qty
     }};
 
     await updateSlotData(fid, newSlotData);
@@ -1418,92 +1413,10 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
     await updateSlotData(fid, newData);
   };
 
-  const handleSlotInput = async (fid, slotId, field, val) => {
-    const f = furnaces[fid] || {};
-    const newData = cloneDeep(f.slotData);
-    if (newData[slotId]) {
-      newData[slotId][field] = val;
-      await updateSlotData(fid, newData);
-    }
-  };
-
-  const addMeasurement = async (fid, slotId) => {
-    const f = furnaces[fid] || {};
-    const newData = cloneDeep(f.slotData);
-    const sData = newData[slotId];
-    if (sData.measurements.length >= 5) return; 
-    sData.measurements.push({ preArea: "", postArea: "", calcShrink: "", calcExpand: "" });
-    await updateSlotData(fid, newData);
-  };
-
-  const removeMeasurement = async (fid, slotId, idx) => {
-    const f = furnaces[fid] || {};
-    const newData = cloneDeep(f.slotData);
-    const sData = newData[slotId];
-    sData.measurements = sData.measurements.filter((_, i) => i !== idx);
-    
-    const validShrinks = sData.measurements.map(m => parseFloat(m.calcShrink)).filter(v => !isNaN(v));
-    sData.slotAvgShrink = validShrinks.length > 0 ? (validShrinks.reduce((a, b) => a + b, 0) / validShrinks.length).toFixed(2) : "";
-    sData.slotAvgExpand = sData.slotAvgShrink ? (1 / (1 - (parseFloat(sData.slotAvgShrink) / 100))).toFixed(4) : "";
-    await updateSlotData(fid, newData);
-  };
-
-  const handleAreaInput = async (fid, slotId, idx, field, val) => {
-    const f = furnaces[fid] || {};
-    const newData = cloneDeep(f.slotData);
-    const sData = newData[slotId];
-    const newM = sData.measurements[idx];
-    newM[field] = val;
-
-    const pre = parseFloat(newM.preArea);
-    const post = parseFloat(newM.postArea);
-
-    if (!isNaN(pre) && !isNaN(post) && pre > 0 && post > 0) {
-      const areaRatio = post / pre;
-      const shrinkage = (1 - Math.sqrt(areaRatio)) * 100;
-      newM.calcShrink = shrinkage.toFixed(2);
-      const expansionRatio = 1 / (1 - (shrinkage / 100));
-      newM.calcExpand = expansionRatio.toFixed(4);
-    } else {
-      newM.calcShrink = "";
-      newM.calcExpand = "";
-    }
-
-    const validShrinks = sData.measurements.map(m => parseFloat(m.calcShrink)).filter(v => !isNaN(v));
-    sData.slotAvgShrink = validShrinks.length > 0 ? (validShrinks.reduce((a, b) => a + b, 0) / validShrinks.length).toFixed(2) : "";
-    sData.slotAvgExpand = sData.slotAvgShrink ? (1 / (1 - (parseFloat(sData.slotAvgShrink) / 100))).toFixed(4) : "";
-
-    await updateSlotData(fid, newData);
-  };
-
   const handleFurnaceInfo = async (fid, field, val) => {
     const newFurnaces = cloneDeep(furnaces);
     if (!newFurnaces[fid]) return;
     newFurnaces[fid][field] = val;
-    await setDoc(getDocRef("equipment", "furnaces"), newFurnaces);
-  };
-
-  const confirmPreSintering = async (fid) => {
-    const f = furnaces[fid] || {};
-    if (Object.keys(f.slotData || {}).length === 0) {
-       setAlertModal({ isOpen: true, message: "배정된 제품이 없습니다.", type: "warning" });
-       return;
-    }
-    const hasEmptyPreArea = Object.values(f.slotData).some(s => s.measurements.some(m => !m.preArea));
-    if (hasEmptyPreArea) {
-      setAlertModal({ isOpen: true, message: "모든 칸의 '소결 전 면적'을 입력해주세요.", type: "warning" });
-      return;
-    }
-    const newFurnaces = cloneDeep(furnaces);
-    newFurnaces[fid].step = 1;
-    await setDoc(getDocRef("equipment", "furnaces"), newFurnaces);
-    
-    setAlertModal({ isOpen: true, message: "✅ 소결 전 면적이 안전하게 보관(잠금) 처리되었습니다.\n\n가동을 시작하여 소결을 진행해주세요.", type: "success" });
-  };
-
-  const unlockPreSintering = async (fid) => {
-    const newFurnaces = cloneDeep(furnaces);
-    newFurnaces[fid].step = 0;
     await setDoc(getDocRef("equipment", "furnaces"), newFurnaces);
   };
 
@@ -1512,203 +1425,94 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
     const newFurnaces = cloneDeep(furnaces);
     
     if (!f.isHeating) {
+      if (Object.keys(f.slotData || {}).length === 0) {
+         setAlertModal({ isOpen: true, message: "전기로가 비어있습니다. 제품을 배정해주세요.", type: "warning" });
+         return;
+      }
       if (!f.operator || f.operator.trim() === "") {
         setAlertModal({ isOpen: true, message: "담당 작업자 이름을 입력해주세요.", type: "warning" });
         return;
       }
       newFurnaces[fid].isHeating = true;
-      newFurnaces[fid].step = 2; 
       await setDoc(getDocRef("equipment", "furnaces"), newFurnaces);
+      ctx.showToast("열처리 가동이 시작되었습니다.", "success");
     } else {
-      newFurnaces[fid].isHeating = false;
-      await setDoc(getDocRef("equipment", "furnaces"), newFurnaces);
-      setAlertModal({ isOpen: true, message: `✅ 가동이 종료되었습니다.\n\n'소결 후 면적'을 입력하여 수축률을 계산해주세요.`, type: "success" });
-    }
-  };
+      // 가동 종료 (즉시 전기로를 비우고 Step5.5 수축률 측정으로 WIP 이동)
+      const slotData = f.slotData || {};
+      const grouped = {};
+      const wipQtyDeductions = {};
+      const curTime = getKST();
 
-  const analyzeAndSaveLots = async (fid) => {
-    const f = furnaces[fid] || {};
-    const hasEmptyPostArea = Object.values(f.slotData || {}).some(s => s.measurements.some(m => !m.postArea));
-    if (hasEmptyPostArea) {
-      setAlertModal({ isOpen: true, message: "모든 칸의 '소결 후 면적'을 입력해주세요.", type: "warning" });
-      return;
-    }
-
-    let newSlotData = cloneDeep(f.slotData);
-    const wipGroups = {};
-
-    Object.entries(newSlotData).forEach(([sId, data]) => {
-      if (!wipGroups[data.wipId]) wipGroups[data.wipId] = [];
-      const shrinkVal = parseFloat(data.slotAvgShrink); 
-      if (!isNaN(shrinkVal)) wipGroups[data.wipId].push({ sId, shrinkVal, mixLot: data.mixLot });
-    });
-
-    let requiresSplitPrompt = false;
-    const lotsToSplit = [];
-
-    Object.entries(wipGroups).forEach(([wipId, validSlots]) => {
-      if (validSlots.length > 0) {
-        validSlots.sort((a, b) => a.shrinkVal - b.shrinkVal);
-        const minVal = validSlots[0].shrinkVal;
-        const maxVal = validSlots[validSlots.length - 1].shrinkVal;
-        
-        if (maxVal - minVal > 0.3) {
-          requiresSplitPrompt = true;
-          let currentGroupIndex = 0;
-          let currentGroupMin = validSlots[0].shrinkVal;
-          
-          const slotsWithGroup = validSlots.map(vs => {
-            if (vs.shrinkVal - currentGroupMin > 0.3) {
-              currentGroupIndex++;
-              currentGroupMin = vs.shrinkVal;
-            }
-            return { ...vs, group: String.fromCharCode(65 + currentGroupIndex) };
-          });
-
-          lotsToSplit.push({ wipId, baseMixLot: validSlots[0].mixLot.slice(-6), slots: slotsWithGroup });
-        } else {
-          const overallAvg = (validSlots.reduce((sum, s) => sum + s.shrinkVal, 0) / validSlots.length).toFixed(2);
-          validSlots.forEach(vs => { newSlotData[vs.sId] = { ...newSlotData[vs.sId], isLotSplit: false, lotSuffix: "", finalShrink: overallAvg }; });
-        }
-      }
-    });
-
-    if (requiresSplitPrompt) {
-      setLotSplitModal({ isOpen: true, fid: fid, lotsToSplit: lotsToSplit, newSlotDataCache: newSlotData });
-    } else {
-      const newFurnaces = cloneDeep(furnaces);
-      newFurnaces[fid].slotData = newSlotData;
-      newFurnaces[fid].step = 3;
-      await setDoc(getDocRef("equipment", "furnaces"), newFurnaces);
-      setAlertModal({ isOpen: true, message: "✅ 수축률 분석이 완료되었습니다.\n(모든 항목 수축률 편차 0.3% 이하 정상 처리됨)", type: "success" });
-    }
-  };
-
-  const handleGroupChange = (lotIndex, slotIndex, newGroup) => {
-    setLotSplitModal(prev => {
-      const newLots = cloneDeep(prev.lotsToSplit);
-      newLots[lotIndex].slots[slotIndex].group = newGroup;
-      return { ...prev, lotsToSplit: newLots };
-    });
-  };
-
-  const applyCustomSplit = async () => {
-    let finalSlotData = cloneDeep(lotSplitModal.newSlotDataCache);
-    lotSplitModal.lotsToSplit.forEach(lot => {
-      const groupMap = {};
-      lot.slots.forEach(s => {
-        if (!groupMap[s.group]) groupMap[s.group] = [];
-        groupMap[s.group].push(s);
+      Object.entries(slotData).forEach(([slotId, s]) => {
+         if (!grouped[s.wipId]) {
+            grouped[s.wipId] = { wipId: s.wipId, mixLot: s.mixLot, type: s.type, height: s.height, totalQty: 0, furnaceSlots: [] };
+         }
+         grouped[s.wipId].totalQty += Number(s.qty);
+         grouped[s.wipId].furnaceSlots.push({ fid, slotId, qty: Number(s.qty) });
+         wipQtyDeductions[s.wipId] = (wipQtyDeductions[s.wipId] || 0) + Number(s.qty);
       });
-      const uniqueGroups = Object.keys(groupMap);
-      if (uniqueGroups.length === 1) {
-        const groupName = uniqueGroups[0];
-        const groupSlots = groupMap[groupName];
-        const gAvg = (groupSlots.reduce((sum, s) => sum + s.shrinkVal, 0) / groupSlots.length).toFixed(2);
-        groupSlots.forEach(vs => { finalSlotData[vs.sId] = { ...finalSlotData[vs.sId], isLotSplit: false, lotSuffix: "", finalShrink: gAvg }; });
-      } else {
-        Object.entries(groupMap).forEach(([groupName, groupSlots]) => {
-          const gAvg = (groupSlots.reduce((sum, s) => sum + s.shrinkVal, 0) / groupSlots.length).toFixed(2);
-          groupSlots.forEach(vs => { finalSlotData[vs.sId] = { ...finalSlotData[vs.sId], isLotSplit: true, lotSuffix: `-${groupName}`, finalShrink: gAvg }; });
+
+      try {
+        await runTransaction(db, async (transaction) => {
+           const originalWips = {};
+           for (const wId of Object.keys(wipQtyDeductions)) {
+             const docRef = getDocRef("wipList", wId);
+             const snap = await transaction.get(docRef);
+             if (snap.exists()) originalWips[wId] = snap.data();
+           }
+
+           // 기존 WIP의 수량 차감 (남은 게 없으면 삭제)
+           for (const [wId, deductQty] of Object.entries(wipQtyDeductions)) {
+              const orig = originalWips[wId];
+              if (!orig) continue;
+              const remain = orig.qty - deductQty;
+              const docRef = getDocRef("wipList", wId);
+              if (remain <= 0) transaction.delete(docRef);
+              else transaction.update(docRef, { qty: remain });
+           }
+
+           // 새로운 step5_shrink WIP 생성
+           Object.values(grouped).forEach(g => {
+              const orig = originalWips[g.wipId] || {};
+              const newId = Date.now().toString() + Math.random().toString(36).substr(2, 5);
+              const ref = getDocRef("wipList", newId);
+              const recordDetails = `[${curTime}] [열처리 완료] ${fid}호기 | 온도:${f.temp}°C | 담당:${f.operator}`;
+              
+              const newWip = {
+                 ...orig,
+                 id: newId,
+                 qty: g.totalQty,
+                 currentStep: "step5_shrink",
+                 furnaceSlots: g.furnaceSlots, // { fid, slotId, qty } 배열 보존
+                 details: `${orig.details || ""}\n${recordDetails}`
+              };
+              transaction.set(ref, newWip);
+              
+              logProcessToGoogleSheet("step5", newWip, f.operator, { equipment: `${fid}호기`, conditions: `온도:${f.temp}°C`, details: f.memo || "-" });
+           });
+
+           // 전기로 초기화
+           newFurnaces[fid] = { isHeating: false, temp: "1050", operator: "", memo: "", slotData: {} };
+           transaction.set(getDocRef("equipment", "furnaces"), newFurnaces);
         });
+
+        setAlertModal({ isOpen: true, message: `✅ 가동 종료!\n\n전기로가 비워졌으며, 해당 제품들은 [수축률 측정 대기]로 이관되었습니다.`, type: "success" });
+      } catch (error) {
+        setAlertModal({ isOpen: true, message: "가동 종료 중 오류가 발생했습니다.", type: "error" });
       }
-    });
-
-    const newFurnaces = cloneDeep(furnaces);
-    newFurnaces[lotSplitModal.fid].slotData = finalSlotData;
-    newFurnaces[lotSplitModal.fid].step = 3;
-    await setDoc(getDocRef("equipment", "furnaces"), newFurnaces);
-    setLotSplitModal({ isOpen: false, fid: null, lotsToSplit: [], newSlotDataCache: null });
-    setAlertModal({ isOpen: true, message: "✅ 지정하신 그룹 방식대로 로트를 확정했습니다.", type: "success" });
-  };
-
-  const applyMergeAll = async () => {
-    let finalSlotData = cloneDeep(lotSplitModal.newSlotDataCache);
-    lotSplitModal.lotsToSplit.forEach(lot => {
-      const overallAvg = (lot.slots.reduce((sum, s) => sum + s.shrinkVal, 0) / lot.slots.length).toFixed(2);
-      lot.slots.forEach(vs => { finalSlotData[vs.sId] = { ...finalSlotData[vs.sId], isLotSplit: false, lotSuffix: "", finalShrink: overallAvg }; });
-    });
-
-    const newFurnaces = cloneDeep(furnaces);
-    newFurnaces[lotSplitModal.fid].slotData = finalSlotData;
-    newFurnaces[lotSplitModal.fid].step = 3;
-    await setDoc(getDocRef("equipment", "furnaces"), newFurnaces);
-    setLotSplitModal({ isOpen: false, fid: null, lotsToSplit: [], newSlotDataCache: null });
-    setAlertModal({ isOpen: true, message: "✅ 편차를 무시하고 하나의 로트로 전체 통합 확정했습니다.", type: "success" });
-  };
-
-  const transferToNext = async (fid) => {
-    const f = furnaces[fid] || {};
-    const slotData = f.slotData || {};
-    const wipQtyDeductions = {}; 
-    const curTime = getKST();
-
-    const grouped = {};
-    Object.entries(slotData).forEach(([slotId, s]) => {
-       const key = s.wipId + (s.lotSuffix || "");
-       if (!grouped[key]) {
-          grouped[key] = { wipId: s.wipId, mixLot: s.mixLot + (s.lotSuffix || ""), type: s.type, height: s.height, qty: 0, defect: 0, slots: [], finalShrink: s.finalShrink, operator: f.operator, temp: f.temp };
-       }
-       grouped[key].qty += Number(s.qty);
-       grouped[key].defect += (Number(s.defect) || 0);
-       grouped[key].slots.push(slotId);
-       wipQtyDeductions[s.wipId] = (wipQtyDeductions[s.wipId] || 0) + Number(s.qty);
-    });
-
-    try {
-      await runTransaction(db, async (transaction) => {
-         const originalWips = {};
-         for (const wId of Object.keys(wipQtyDeductions)) {
-           const docRef = getDocRef("wipList", wId);
-           const snap = await transaction.get(docRef);
-           if (snap.exists()) originalWips[wId] = snap.data();
-         }
-
-         for (const [wId, deductQty] of Object.entries(wipQtyDeductions)) {
-            const orig = originalWips[wId];
-            if (!orig) continue;
-            const remain = orig.qty - deductQty;
-            const docRef = getDocRef("wipList", wId);
-            if (remain <= 0) transaction.delete(docRef);
-            else transaction.update(docRef, { qty: remain });
-         }
-
-         Object.values(grouped).forEach(g => {
-            const newQty = g.qty - g.defect;
-            if (newQty <= 0) return; 
-
-            const orig = originalWips[g.wipId] || {};
-            const newId = Date.now().toString() + Math.random().toString(36).substr(2, 5);
-            const ref = getDocRef("wipList", newId);
-            const slotStr = g.slots.join(", ");
-            const defectStr = g.defect > 0 ? ` [불량 ${g.defect}개]` : "";
-            // 🌟 12칸 전기로 내의 위치(slotStr)를 공정 기록에 안전하게 추가 
-            const recordDetails = `[${curTime}] [열처리] ${fid}호기(${slotStr}) | 온도:${g.temp}°C | 확정수축률:${g.finalShrink}% | 담당:${g.operator}${defectStr}`;
-
-            const newWip = { ...orig, id: newId, mixLot: g.mixLot, qty: newQty, currentStep: "step6", shrinkageRate: g.finalShrink, details: `${orig.details || ""}\n${recordDetails}` };
-            transaction.set(ref, newWip);
-
-            logProcessToGoogleSheet("step5", newWip, g.operator, { defects: g.defect, equipment: `${fid}호기 (${slotStr})`, conditions: `온도:${g.temp}°C`, measurements: `수축률:${g.finalShrink}%`, details: f.memo || "-" });
-         });
-
-         const newFurnaces = cloneDeep(furnaces);
-         newFurnaces[fid] = { isHeating: false, temp: "1050", operator: "", memo: "", step: 0, slotData: {} };
-         transaction.set(getDocRef("equipment", "furnaces"), newFurnaces);
-      });
-      ctx.showToast("열처리 및 수축률 측정 완료, 검수 이관", "success");
-    } catch (error) { ctx.showToast("이관 중 오류 발생", "error"); console.error(error); }
+    }
   };
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 sm:p-6 font-sans">
       <div className="max-w-[1500px] mx-auto">
-        <div className="bg-white rounded-2xl shadow-lg border-b-4 border-teal-500 mb-6 overflow-hidden flex items-center p-5">
-          <Flame className="w-8 h-8 text-teal-500 mr-3" />
-          <h1 className="font-black text-2xl text-slate-800 tracking-wide">열처리 및 수축률 측정 통합 시뮬레이터</h1>
+        <div className="bg-white rounded-2xl shadow-lg border-b-4 border-orange-500 mb-6 overflow-hidden flex items-center p-5">
+          <Flame className="w-8 h-8 text-orange-500 mr-3" />
+          <h1 className="font-black text-2xl text-slate-800 tracking-wide">열처리 전기로 가동 관리</h1>
         </div>
         <div className="flex flex-col xl:flex-row gap-6">
           
-          {/* ======================= 왼쪽: 측정 대상 목록 ======================= */}
+          {/* ======================= 왼쪽: 대기열 ======================= */}
           <div className="w-full xl:w-1/4 flex flex-col gap-6">
             <div className="bg-white border rounded-2xl overflow-hidden h-fit shadow-lg">
               <div className="bg-slate-700 text-white font-bold p-4 text-center flex items-center justify-center gap-2">
@@ -1741,88 +1545,35 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
               const isH = f.isHeating;
               const hasData = Object.keys(f.slotData || {}).length > 0;
               
-              let cardStyle = "border-slate-300 bg-slate-50"; let headerStyle = "bg-slate-500 text-white"; let headerText = `🧊 ${id}호기 배정 대기`; let phaseMessage = "빈칸을 클릭하여 제품을 배정하세요.";
-              if (hasData) {
-                if (f.step === 0) { cardStyle = "border-indigo-300 bg-white shadow-md"; headerStyle = "bg-indigo-600 text-white"; headerText = `🧊 ${id}호기 배정 중`; phaseMessage = "제품 배정 후 '소결 전 면적 임시저장'을 진행하세요."; } 
-                else if (f.step === 1) { cardStyle = "border-indigo-400 shadow-indigo-100 shadow-xl bg-indigo-50/20"; headerStyle = "bg-indigo-600 text-white"; headerText = `📝 ${id}호기 : 소결 전 면적 입력 완료`; phaseMessage = "👉 가동 시작을 누르면 소결이 진행됩니다."; } 
-                else if (f.step === 2) {
-                  if (isH) { cardStyle = "border-orange-500 shadow-orange-200 shadow-xl bg-orange-50/30"; headerStyle = "bg-orange-500 text-white animate-pulse"; headerText = `🔥 ${id}호기 열처리 가동 중`; phaseMessage = "열처리가 진행 중입니다. 가동 종료 후 수축률을 측정하세요."; } 
-                  else { cardStyle = "border-orange-400 shadow-orange-100 shadow-xl bg-orange-50/30"; headerStyle = "bg-orange-500 text-white"; headerText = `⏳ ${id}호기 : 소결 후 면적 입력 대기`; phaseMessage = "👉 소결이 완료되었습니다! '소결 후 면적'을 입력하고 분석을 진행하세요."; }
-                } 
-                else if (f.step === 3) { cardStyle = "border-teal-500 shadow-teal-200 shadow-xl bg-teal-50/30"; headerStyle = "bg-teal-600 text-white"; headerText = `📊 ${id}호기 : 분석 완료 / 이관 대기`; phaseMessage = "✅ 모든 데이터가 확정되었습니다. 다음 공정으로 이관하세요."; }
-              }
+              let cardStyle = isH ? "border-orange-500 shadow-orange-200 shadow-xl bg-orange-50/30" : "border-slate-300 bg-white shadow-md"; 
+              let headerStyle = isH ? "bg-orange-500 text-white animate-pulse" : "bg-slate-500 text-white"; 
+              let headerText = isH ? `🔥 ${id}호기 열처리 가동 중` : `🧊 ${id}호기 배정 대기`; 
 
               return (
                 <div key={id} className={`flex flex-col border-4 rounded-2xl overflow-hidden transition-all duration-300 ${cardStyle}`}>
                   <div className={`p-4 text-center font-black text-xl flex justify-center items-center ${headerStyle}`}>{headerText}</div>
                   <div className="flex flex-col flex-grow p-4 sm:p-5">
-                    <div className={`text-center font-bold mb-4 text-sm py-2.5 rounded-lg border shadow-sm ${f.step === 0 && !hasData ? 'text-slate-500 bg-slate-100 border-slate-200' : f.step <= 1 ? 'text-indigo-800 bg-indigo-50 border-indigo-200' : f.step === 2 ? 'text-orange-800 bg-orange-50 border-orange-200' : 'text-teal-800 bg-teal-50 border-teal-200'}`}>{phaseMessage}</div>
+                    {!isH && <div className="text-center font-bold mb-4 text-sm py-2.5 rounded-lg border shadow-sm text-indigo-800 bg-indigo-50 border-indigo-200">빈칸을 클릭하여 제품을 배정하세요.</div>}
+                    
                     <div className={`grid grid-cols-2 gap-2 sm:gap-3 p-3 sm:p-4 rounded-xl border-4 mb-auto ${hasData ? 'bg-slate-100 border-slate-300' : 'bg-slate-200 border-slate-300'}`}>
                       {slots.map(slot => {
                         const sData = f.slotData?.[slot.id];
                         const isEmpty = !sData;
                         if (isEmpty) return (
-                            <div key={slot.id} onClick={() => handleSlotClick(id, slot.id)} className={`border-2 border-dashed border-slate-300 rounded-xl p-2 min-h-[60px] flex items-center justify-center ${f.step === 0 ? 'bg-white hover:bg-indigo-50 cursor-pointer' : 'bg-white/50 cursor-not-allowed'}`}>
-                              <span className="text-xs text-slate-400 font-bold">{slot.label} {f.step === 0 && "+"}</span>
+                            <div key={slot.id} onClick={() => handleSlotClick(id, slot.id)} className={`border-2 border-dashed border-slate-300 rounded-xl p-2 min-h-[60px] flex items-center justify-center ${!isH ? 'bg-white hover:bg-indigo-50 cursor-pointer' : 'bg-white/50 cursor-not-allowed'}`}>
+                              <span className="text-xs text-slate-400 font-bold">{slot.label} {!isH && "+"}</span>
                             </div>
                         );
 
-                        const slotBorder = f.step <= 1 ? 'border-indigo-300' : f.step === 2 ? 'border-orange-300' : 'border-teal-300';
-                        const badgeColor = f.step <= 1 ? 'text-indigo-600 bg-indigo-50' : f.step === 2 ? 'text-orange-600 bg-orange-50' : 'text-teal-600 bg-teal-50';
-
                         return (
-                          <div key={slot.id} className={`relative border-2 rounded-xl p-2 sm:p-3 flex flex-col items-center justify-start transition-all min-h-[140px] bg-white shadow-md ${slotBorder}`}>
-                            <div className="w-full flex justify-between items-center mb-2 border-b border-slate-100 pb-2">
-                              <div className={`text-[10px] sm:text-xs font-black px-1.5 py-0.5 rounded ${badgeColor}`}>{slot.label}</div>
-                              {f.step === 0 && <button onClick={(e) => handleRemoveSlot(id, slot.id, e)} className="text-red-400 hover:text-red-600 font-black text-xs">✕</button>}
-                              {f.step === 1 && sData.measurements.length < 5 && <button onClick={() => addMeasurement(id, slot.id)} className="text-[9px] bg-indigo-100 text-indigo-700 hover:bg-indigo-200 font-black px-2 py-1 rounded shadow-sm transition-colors">+ 측정추가</button>}
-                            </div>
+                          <div key={slot.id} className={`relative border-2 rounded-xl p-2 sm:p-3 flex flex-col items-center justify-center transition-all min-h-[80px] bg-white shadow-md ${isH ? 'border-orange-300' : 'border-indigo-300'}`}>
+                            <div className="absolute top-1 left-2 text-[10px] sm:text-xs font-black px-1.5 py-0.5 rounded text-indigo-600 bg-indigo-50">{slot.label}</div>
+                            {!isH && <button onClick={(e) => handleRemoveSlot(id, slot.id, e)} className="absolute top-1 right-1 text-red-400 hover:text-red-600 font-black text-xs bg-white rounded-full w-5 h-5 flex items-center justify-center shadow border border-red-100">✕</button>}
                             
-                            <div className="w-full flex flex-col items-center">
-                              {sData.isLotSplit ? (
-                                <div className="text-[10px] font-black text-white bg-rose-500 mb-0.5 px-2 py-0.5 rounded shadow-sm w-[95%] text-center">🚨 분리: {sData.mixLot.slice(-6)}{sData.lotSuffix}</div>
-                              ) : (
-                                <div className="text-[10px] font-mono text-slate-500 mb-0.5 bg-slate-100 px-1 rounded truncate max-w-full">{sData.mixLot.slice(-6)}</div>
-                              )}
-                              
+                            <div className="w-full flex flex-col items-center mt-3">
+                              <div className="text-[10px] font-mono text-slate-500 mb-0.5 bg-slate-100 px-1 rounded truncate max-w-full">{sData.mixLot.slice(-6)}</div>
                               <div className="font-black text-slate-800 text-sm sm:text-base mt-1 leading-tight">{sData.type} {sData.height}T</div>
                               <div className="text-xs font-bold text-indigo-600 mt-1 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">{sData.qty}개</div>
-
-                              {f.step > 0 && f.step < 3 && (
-                                <div className="mt-3 w-full flex flex-col gap-1.5 animate-fade-in">
-                                  {sData.measurements.map((m, idx) => (
-                                    <div key={idx} className={`relative flex flex-col w-full rounded p-1.5 border ${f.step === 1 ? 'bg-indigo-50/30 border-indigo-100' : 'bg-slate-50 border-slate-200'}`}>
-                                      {sData.measurements.length > 1 && f.step === 1 && <button onClick={() => removeMeasurement(id, slot.id, idx)} className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-white border border-slate-300 text-slate-500 rounded-full flex items-center justify-center text-[8px] font-black z-10 shadow-sm">✕</button>}
-                                      <div className="flex gap-1 w-full">
-                                        <div className="flex-1">
-                                          <SyncInput type="number" value={m.preArea} onChange={(val) => handleAreaInput(id, slot.id, idx, 'preArea', val)} disabled={f.step !== 1} placeholder="소결 전" className={`w-full text-[10px] text-center border rounded p-1.5 font-black focus:outline-none ${f.step === 1 ? 'border-indigo-300 bg-white focus:border-indigo-500' : 'border-slate-200 bg-slate-100 text-slate-500'}`} />
-                                        </div>
-                                        {f.step >= 2 && !isH && (
-                                          <div className="flex-1 animate-fade-in">
-                                            <SyncInput type="number" value={m.postArea} onChange={(val) => handleAreaInput(id, slot.id, idx, 'postArea', val)} placeholder="소결 후" className="w-full text-[10px] text-center border rounded p-1.5 font-black focus:outline-none border-orange-300 bg-white focus:border-orange-500 text-orange-900" />
-                                          </div>
-                                        )}
-                                      </div>
-                                      {f.step === 2 && !isH && m.calcShrink && <div className="text-[9px] text-right font-bold text-slate-400 mt-0.5 pr-1 tracking-tighter">수축: {m.calcShrink}%</div>}
-                                    </div>
-                                  ))}
-                                  {f.step === 2 && !isH && (
-                                    <div className="flex items-center justify-between bg-rose-50 rounded p-1 border border-rose-200 mt-1"><span className="text-[9px] font-black text-rose-600 ml-1">불량수량:</span><SyncInput type="number" min="0" max={sData.qty} placeholder="0" value={sData.defect || ""} onChange={(val) => handleSlotInput(id, slot.id, 'defect', val)} className="w-10 text-[10px] text-center border border-rose-300 bg-white rounded p-1 focus:outline-none focus:ring-1 focus:ring-rose-400 text-rose-600 font-bold" /></div>
-                                  )}
-                                </div>
-                              )}
-
-                              {f.step === 2 && !isH && sData.slotAvgShrink && (
-                                <div className="mt-2 w-full bg-slate-800 text-white rounded-lg p-2 shadow-inner border border-slate-700 flex flex-col animate-fade-in">
-                                  <div className="flex justify-between items-center mb-0.5"><span className="text-[9px] text-slate-300 font-bold">평균 수축률</span><span className="text-sm font-black text-rose-400">{sData.slotAvgShrink}%</span></div>
-                                </div>
-                              )}
-
-                              {f.step === 3 && sData.finalShrink && (
-                                <div className="mt-2 w-full bg-teal-600 text-white text-[10px] font-bold text-center py-2 rounded shadow-md border border-teal-700 animate-fade-in flex flex-col">
-                                  <span className="text-teal-200 text-[8px] mb-0.5">로트 확정</span><span className="text-xs">적용 수축률: {sData.finalShrink}%</span>
-                                </div>
-                              )}
                             </div>
                           </div>
                         );
@@ -1833,31 +1584,24 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
                       <div className="flex gap-3 mb-4">
                         <div className="w-1/2">
                           <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center justify-between">목표 가동 온도 <span className="text-[8px] text-orange-500 border border-orange-200 bg-orange-50 px-1 rounded">목표:{masterSettings?.TARGET_TEMPERATURE?.[`furnace${id}`] || "1050"}</span></label>
-                          <SyncInput type="number" value={f.temp} onChange={(val) => handleFurnaceInfo(id, 'temp', val)} disabled={isH || f.step === 3} className="w-full border-2 border-slate-200 bg-slate-50 text-slate-800 font-black text-center p-2.5 rounded-xl focus:border-indigo-400 outline-none disabled:opacity-60" />
+                          <SyncInput type="number" value={f.temp} onChange={(val) => handleFurnaceInfo(id, 'temp', val)} disabled={isH} className="w-full border-2 border-slate-200 bg-slate-50 text-slate-800 font-black text-center p-2.5 rounded-xl focus:border-indigo-400 outline-none disabled:opacity-60" />
                         </div>
                         <div className="w-1/2">
                           <label className="block text-xs font-bold text-slate-500 mb-1">담당 작업자</label>
-                          <SyncInput type="text" placeholder="성명" value={f.operator} onChange={(val) => handleFurnaceInfo(id, 'operator', val)} disabled={isH || f.step === 3} className="w-full border-2 border-slate-200 p-2.5 rounded-xl text-center font-bold text-slate-800 focus:border-indigo-400 outline-none disabled:opacity-60" />
+                          <SyncInput type="text" placeholder="성명" value={f.operator} onChange={(val) => handleFurnaceInfo(id, 'operator', val)} disabled={isH} className="w-full border-2 border-slate-200 p-2.5 rounded-xl text-center font-bold text-slate-800 focus:border-indigo-400 outline-none disabled:opacity-60" />
                         </div>
                       </div>
 
-                      {f.step >= 1 && f.step < 3 && (
-                        <div className="mb-4 p-3 bg-orange-50 border border-orange-200 rounded-xl">
-                          <label className="block text-xs font-bold text-orange-800 mb-1">특이사항(메모)</label>
-                          <SyncInput type="text" placeholder="특이사항이나 메모를 입력하세요" value={f.memo} onChange={(val) => handleFurnaceInfo(id, 'memo', val)} disabled={isH} className="w-full border border-orange-300 p-2.5 rounded-lg font-bold text-slate-700 focus:outline-none" />
+                      {isH && (
+                        <div className="mb-4 p-3 bg-orange-50 border border-orange-200 rounded-xl animate-fade-in">
+                          <label className="block text-xs font-bold text-orange-800 mb-1">가동 특이사항(메모)</label>
+                          <SyncInput type="text" placeholder="특이사항이나 메모를 입력하세요" value={f.memo} onChange={(val) => handleFurnaceInfo(id, 'memo', val)} disabled={!isH} className="w-full border border-orange-300 p-2.5 rounded-lg font-bold text-slate-700 focus:outline-none" />
                         </div>
                       )}
 
-                      {hasData && f.step === 0 && <button onClick={() => confirmPreSintering(id)} className="w-full py-4 rounded-xl font-black text-lg bg-indigo-600 hover:bg-indigo-700 shadow-md text-white transition-transform active:scale-95">[1단계] 소결 전 면적 임시저장</button>}
-                      {f.step === 1 && (
-                        <div className="flex flex-col gap-2">
-                          <button onClick={() => toggleHeating(id)} className="w-full py-4 rounded-xl font-black text-lg bg-orange-500 hover:bg-orange-600 shadow-md text-white transition-transform active:scale-95"><Flame className="w-5 h-5 inline mr-1" /> 전기로 가동 시작</button>
-                          <button onClick={() => unlockPreSintering(id)} className="w-full py-2.5 rounded-xl font-bold text-sm bg-slate-100 text-slate-500 hover:bg-slate-200 border">🔓 잠금 해제 (수정하기)</button>
-                        </div>
-                      )}
-                      {f.step === 2 && isH && <button onClick={() => toggleHeating(id)} className="w-full py-4 rounded-xl font-black text-lg bg-rose-500 hover:bg-rose-600 shadow-md text-white transition-transform active:scale-95 animate-pulse">가동 종료 (측정 모드 전환)</button>}
-                      {f.step === 2 && !isH && <button onClick={() => analyzeAndSaveLots(id)} className="w-full py-4 rounded-xl font-black text-lg bg-indigo-600 hover:bg-indigo-700 shadow-md text-white transition-transform active:scale-95">[2단계] 수축률 분석 및 결과 확정</button>}
-                      {f.step === 3 && <button onClick={() => transferToNext(id)} className="w-full py-4 rounded-xl font-black text-lg bg-teal-600 hover:bg-teal-700 shadow-md text-white transition-transform active:scale-95">✅ 다음 공정 (검수) 이관</button>}
+                      <button onClick={() => toggleHeating(id)} className={`w-full py-4 rounded-xl font-black text-lg shadow-md text-white transition-transform active:scale-95 ${isH ? 'bg-rose-500 hover:bg-rose-600 animate-pulse' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
+                        {isH ? "가동 종료 (측정 대기로 이관)" : "전기로 가동 시작"}
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -1890,38 +1634,345 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ==========================================
+// [신규] Step 5.5: Shrinkage Measurement (수축률 측정)
+// ==========================================
+function Step5_5Shrinkage({ wipList, ctx }) {
+  const pendingWip = wipList.filter(w => w.currentStep === "step5_shrink");
+  const [selectedWipId, setSelectedWipId] = useState(null);
+  const [formData, setFormData] = useState({});
+  const [alertModal, setAlertModal] = useState({ isOpen: false, message: "", type: "info" });
+  const [lotSplitModal, setLotSplitModal] = useState({ isOpen: false, wipId: null, slots: [] });
+
+  const activeWip = wipList.find(w => w.id === selectedWipId);
+
+  useEffect(() => {
+    if (!activeWip) return;
+    if (!formData[activeWip.id]) {
+      const initialSlots = {};
+      (activeWip.furnaceSlots || []).forEach(fSlot => {
+        const key = `${fSlot.fid}-${fSlot.slotId}`;
+        initialSlots[key] = { defect: "", reason: "", measurements: [{ preArea: "", postArea: "", calcShrink: "", calcExpand: "" }] };
+      });
+      setFormData(prev => ({ ...prev, [activeWip.id]: { operator: "", memo: "", slots: initialSlots } }));
+    }
+  }, [activeWip, formData]);
+
+  const fData = formData[selectedWipId] || { operator: "", memo: "", slots: {} };
+
+  const updateField = (field, val) => {
+    setFormData(prev => ({ ...prev, [selectedWipId]: { ...prev[selectedWipId], [field]: val } }));
+  };
+
+  const updateSlot = (slotKey, field, val) => {
+    setFormData(prev => {
+      const newD = cloneDeep(prev);
+      newD[selectedWipId].slots[slotKey][field] = val;
+      return newD;
+    });
+  };
+
+  const addMeasurement = (slotKey) => {
+    setFormData(prev => {
+      const newD = cloneDeep(prev);
+      const mArr = newD[selectedWipId].slots[slotKey].measurements;
+      if (mArr.length < 5) mArr.push({ preArea: "", postArea: "", calcShrink: "", calcExpand: "" });
+      return newD;
+    });
+  };
+
+  const removeMeasurement = (slotKey, idx) => {
+    setFormData(prev => {
+      const newD = cloneDeep(prev);
+      const mArr = newD[selectedWipId].slots[slotKey].measurements;
+      newD[selectedWipId].slots[slotKey].measurements = mArr.filter((_, i) => i !== idx);
+      return newD;
+    });
+  };
+
+  const handleAreaInput = (slotKey, idx, field, val) => {
+    setFormData(prev => {
+      const newD = cloneDeep(prev);
+      const m = newD[selectedWipId].slots[slotKey].measurements[idx];
+      m[field] = val;
+      const pre = parseFloat(m.preArea);
+      const post = parseFloat(m.postArea);
+      if (!isNaN(pre) && !isNaN(post) && pre > 0 && post > 0) {
+        const areaRatio = post / pre;
+        const shrink = (1 - Math.sqrt(areaRatio)) * 100;
+        m.calcShrink = shrink.toFixed(2);
+        m.calcExpand = (1 / (1 - (shrink / 100))).toFixed(4);
+      } else {
+        m.calcShrink = ""; m.calcExpand = "";
+      }
+      return newD;
+    });
+  };
+
+  const analyzeShrinkage = () => {
+    if (!fData.operator || fData.operator.trim() === "") {
+      return setAlertModal({ isOpen: true, message: "담당자 성명을 입력해주세요.", type: "warning" });
+    }
+
+    const slotAverages = [];
+    let hasEmpty = false;
+
+    for (const fSlot of activeWip.furnaceSlots || []) {
+      const slotKey = `${fSlot.fid}-${fSlot.slotId}`;
+      const s = fData.slots[slotKey];
+      if (!s) continue;
+
+      const validShrinks = s.measurements.map(m => parseFloat(m.calcShrink)).filter(v => !isNaN(v));
+      if (validShrinks.length === 0) hasEmpty = true;
+      
+      const avg = validShrinks.length > 0 ? (validShrinks.reduce((a, b) => a + b, 0) / validShrinks.length) : 0;
+      slotAverages.push({ 
+        slotKey, fid: fSlot.fid, slotId: fSlot.slotId, qty: fSlot.qty, 
+        defect: parseInt(s.defect) || 0, reason: s.reason, shrinkVal: Number(avg.toFixed(2)), group: 'A' 
+      });
+    }
+
+    if (hasEmpty) return setAlertModal({ isOpen: true, message: "모든 칸의 소결 전/후 면적을 최소 1개 이상 입력해야 합니다.", type: "warning" });
+
+    slotAverages.sort((a, b) => a.shrinkVal - b.shrinkVal);
+    const minVal = slotAverages[0].shrinkVal;
+    const maxVal = slotAverages[slotAverages.length - 1].shrinkVal;
+
+    if (maxVal - minVal > 0.3) {
+      let currentGroupIndex = 0;
+      let currentGroupMin = slotAverages[0].shrinkVal;
+      const groupedSlots = slotAverages.map(vs => {
+        if (vs.shrinkVal - currentGroupMin > 0.3) { currentGroupIndex++; currentGroupMin = vs.shrinkVal; }
+        return { ...vs, group: String.fromCharCode(65 + currentGroupIndex) };
+      });
+      setLotSplitModal({ isOpen: true, wipId: activeWip.id, slots: groupedSlots });
+    } else {
+      const overallAvg = (slotAverages.reduce((sum, s) => sum + s.shrinkVal, 0) / slotAverages.length).toFixed(2);
+      processMerge(slotAverages, false, "", overallAvg);
+    }
+  };
+
+  const processMerge = async (slotsArray, isSplit, lotSuffix, fixedShrink) => {
+    let newQty = 0;
+    let newDefect = 0;
+    const slotKeysStr = slotsArray.map(s => `${s.fid}호기 ${s.slotId}`).join(", ");
+    
+    slotsArray.forEach(s => {
+       newQty += s.qty;
+       newDefect += s.defect;
+    });
+
+    const finalQty = newQty - newDefect;
+    if (finalQty <= 0) {
+      setAlertModal({ isOpen: true, message: "정상 수량이 0개입니다.", type: "error" });
+      return;
+    }
+
+    const curTime = getKST();
+    const defectStr = newDefect > 0 ? ` [불량 ${newDefect}개]` : "";
+    const recordDetails = `[${curTime}] [수축률측정] 위치(${slotKeysStr}) | 수축률:${fixedShrink}% | 담당:${fData.operator}${defectStr} | 메모:${fData.memo || "-"}`;
+    const newMixLot = activeWip.mixLot + (lotSuffix || "");
+
+    try {
+      await runTransaction(db, async (transaction) => {
+        // Only delete original once if we are processing all slots, but since processMerge is called per group when split, we should delete the original and insert new ones.
+        // Wait, processMerge needs to know if it's handling the LAST group to delete the original WIP.
+        // Let's pass the whole array of groups to a single transaction instead of calling processMerge multiple times.
+      });
+    } catch(e) {}
+  };
+
+  const finalizeProcess = async (groups) => {
+    // groups = [{ suffix: "-A", fixedShrink: "20.10", slots: [...] }, ...]
+    const curTime = getKST();
+    try {
+      await runTransaction(db, async (transaction) => {
+        const docRef = getDocRef("wipList", activeWip.id);
+        transaction.delete(docRef);
+
+        groups.forEach(g => {
+          let gQty = 0; let gDefect = 0;
+          const slotKeysStr = g.slots.map(s => `${s.fid}호기 ${s.slotId}`).join(", ");
+          g.slots.forEach(s => { gQty += s.qty; gDefect += s.defect; });
+          
+          const finalQty = gQty - gDefect;
+          if (finalQty <= 0) return;
+
+          const defectStr = gDefect > 0 ? ` [불량 ${gDefect}개]` : "";
+          const recordDetails = `[${curTime}] [수축률확정] 위치(${slotKeysStr}) | 수축률:${g.fixedShrink}% | 담당:${fData.operator}${defectStr} | 메모:${fData.memo || "-"}`;
+          const newMixLot = activeWip.mixLot + g.suffix;
+          const newId = Date.now().toString() + Math.random().toString(36).substr(2, 5);
+          
+          const newWip = {
+            ...activeWip, id: newId, mixLot: newMixLot, qty: finalQty, currentStep: "step6", shrinkageRate: g.fixedShrink,
+            details: `${activeWip.details || ""}\n${recordDetails}`
+          };
+          
+          transaction.set(getDocRef("wipList", newId), newWip);
+          logProcessToGoogleSheet("step5_shrink", newWip, fData.operator, { defects: gDefect, measurements: `수축률:${g.fixedShrink}%`, details: fData.memo || "-" });
+        });
+      });
+
+      setSelectedWipId(null);
+      setLotSplitModal({ isOpen: false, wipId: null, slots: [] });
+      ctx.showToast("수축률 측정 완료 및 검수 이관", "success");
+    } catch (e) { ctx.showToast("처리 중 오류 발생", "error"); }
+  };
+
+  const handleApplySplit = () => {
+    const groupMap = {};
+    lotSplitModal.slots.forEach(s => {
+      if (!groupMap[s.group]) groupMap[s.group] = [];
+      groupMap[s.group].push(s);
+    });
+
+    const groups = [];
+    Object.entries(groupMap).forEach(([gName, sArr]) => {
+      const avg = (sArr.reduce((sum, s) => sum + s.shrinkVal, 0) / sArr.length).toFixed(2);
+      const suffix = Object.keys(groupMap).length > 1 ? `-${gName}` : "";
+      groups.push({ suffix, fixedShrink: avg, slots: sArr });
+    });
+
+    finalizeProcess(groups);
+  };
+
+  const handleApplyMergeAll = () => {
+    const avg = (lotSplitModal.slots.reduce((sum, s) => sum + s.shrinkVal, 0) / lotSplitModal.slots.length).toFixed(2);
+    finalizeProcess([{ suffix: "", fixedShrink: avg, slots: lotSplitModal.slots }]);
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 p-4 sm:p-6 font-sans">
+      <div className="max-w-[1500px] mx-auto">
+        <div className="bg-white rounded-2xl shadow-lg border-b-4 border-teal-500 mb-6 overflow-hidden flex items-center p-5">
+          <Calculator className="w-8 h-8 text-teal-500 mr-3" />
+          <h1 className="font-black text-2xl text-slate-800 tracking-wide">수축률 측정 및 로트 분석</h1>
+        </div>
+
+        <div className="flex flex-col xl:flex-row gap-6">
+          <div className="w-full xl:w-1/4 flex flex-col gap-6">
+            <div className="bg-white border rounded-2xl overflow-hidden shadow-lg">
+              <div className="bg-slate-700 text-white font-bold p-4 text-center">측정 대기 제품</div>
+              <div className="p-4 space-y-3 bg-slate-50 max-h-[75vh] overflow-y-auto">
+                {pendingWip.map(wip => {
+                  const isSel = selectedWipId === wip.id;
+                  return (
+                    <div key={wip.id} onClick={() => setSelectedWipId(wip.id)} className={`p-4 border-2 rounded-xl cursor-pointer transition-all ${isSel ? 'bg-teal-50 border-teal-500 shadow-md transform scale-[1.02]' : 'bg-white hover:border-slate-300'}`}>
+                      <div className="text-xs text-slate-500 font-mono mb-1 bg-slate-100 inline-block px-2 py-0.5 rounded">{wip.mixLot}</div>
+                      <div className="font-black text-slate-800 text-lg mt-1">{wip.type} <span className="text-slate-500">{wip.height}T</span></div>
+                      <div className="text-xs font-bold text-slate-500 mt-2">투입위치: {(wip.furnaceSlots||[]).length}곳</div>
+                    </div>
+                  );
+                })}
+                {pendingWip.length === 0 && <div className="text-center text-slate-500 py-6 font-bold text-sm bg-white rounded-xl border border-dashed">대기 중인 제품이 없습니다.</div>}
+              </div>
+            </div>
+          </div>
+
+          <div className="w-full xl:w-3/4">
+            {activeWip ? (
+              <div className="bg-white rounded-2xl shadow-lg border-4 border-teal-100 p-6 flex flex-col h-full">
+                <div className="flex justify-between items-center border-b pb-4 mb-4">
+                  <div>
+                    <div className="font-mono text-teal-700 font-bold bg-teal-50 px-3 py-1 rounded inline-block mb-1">{activeWip.mixLot}</div>
+                    <div className="text-3xl font-black text-slate-800">{activeWip.type} {activeWip.height}T</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-sm font-bold text-slate-500">총 수량</div>
+                    <div className="text-3xl font-black text-teal-600">{activeWip.qty} EA</div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 overflow-y-auto pr-2 mb-4">
+                  {(activeWip.furnaceSlots || []).map(fSlot => {
+                    const slotKey = `${fSlot.fid}-${fSlot.slotId}`;
+                    const s = fData.slots[slotKey] || { measurements: [] };
+                    return (
+                      <div key={slotKey} className="border-2 border-slate-200 rounded-xl p-4 bg-slate-50">
+                        <div className="flex justify-between items-center mb-3">
+                          <span className="font-black text-indigo-700 bg-indigo-100 px-2 py-1 rounded text-sm">{fSlot.fid}호기 {fSlot.slotId}</span>
+                          <span className="text-xs font-bold text-slate-500">수량: {fSlot.qty}개</span>
+                        </div>
+                        
+                        <div className="flex gap-2 mb-3">
+                          <input type="number" placeholder="불량수" value={s.defect} onChange={(e) => updateSlot(slotKey, "defect", e.target.value)} className="w-20 border border-rose-300 rounded p-1.5 text-xs text-center text-rose-600 font-bold" />
+                          <input type="text" placeholder="불량사유" value={s.reason} onChange={(e) => updateSlot(slotKey, "reason", e.target.value)} className="flex-1 border border-slate-300 rounded p-1.5 text-xs" />
+                        </div>
+
+                        <div className="space-y-2">
+                          {s.measurements.map((m, idx) => (
+                            <div key={idx} className="flex gap-1 items-center bg-white p-2 rounded border border-slate-200 shadow-sm relative">
+                              <div className="flex-1 flex flex-col"><span className="text-[8px] text-slate-400 font-bold">소결전 면적</span><input type="number" value={m.preArea} onChange={(e)=>handleAreaInput(slotKey, idx, 'preArea', e.target.value)} className="border rounded p-1 text-xs text-center font-bold outline-none focus:border-teal-500" /></div>
+                              <div className="flex-1 flex flex-col"><span className="text-[8px] text-slate-400 font-bold">소결후 면적</span><input type="number" value={m.postArea} onChange={(e)=>handleAreaInput(slotKey, idx, 'postArea', e.target.value)} className="border rounded p-1 text-xs text-center font-bold outline-none focus:border-teal-500" /></div>
+                              <div className="flex-1 flex flex-col"><span className="text-[8px] text-teal-600 font-bold">수축률</span><div className="bg-teal-50 text-teal-800 rounded p-1 text-xs text-center font-black h-[26px] flex items-center justify-center border border-teal-100">{m.calcShrink ? `${m.calcShrink}%` : '-'}</div></div>
+                              {s.measurements.length > 1 && <button onClick={()=>removeMeasurement(slotKey, idx)} className="absolute -top-2 -right-2 bg-white border text-red-400 rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-black shadow hover:bg-red-50">✕</button>}
+                            </div>
+                          ))}
+                          {s.measurements.length < 5 && <button onClick={()=>addMeasurement(slotKey)} className="w-full border border-dashed border-slate-300 rounded py-1.5 text-xs font-bold text-slate-500 hover:bg-slate-100">+ 측정 추가</button>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-auto border-t-2 border-slate-200 pt-4 flex gap-4 items-center">
+                  <input type="text" placeholder="메모 (특이사항)" value={fData.memo} onChange={(e)=>updateField("memo", e.target.value)} className="flex-1 border-2 border-slate-200 p-3 rounded-xl font-bold text-sm focus:border-teal-500 outline-none" />
+                  <input type="text" placeholder="담당 작업자" value={fData.operator} onChange={(e)=>updateField("operator", e.target.value)} className="w-40 border-2 border-slate-200 p-3 rounded-xl font-bold text-sm text-center focus:border-teal-500 outline-none" />
+                  <button onClick={analyzeShrinkage} className="bg-teal-600 hover:bg-teal-700 text-white px-8 py-3 rounded-xl font-black shadow-lg transition-transform active:scale-95">
+                    분석 및 결과 확정
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-white rounded-2xl shadow-lg border-4 border-slate-100 p-12 text-center text-slate-400 h-full flex flex-col justify-center items-center">
+                <Calculator className="w-16 h-16 mb-4 opacity-30" />
+                <h3 className="text-xl font-bold">대기열에서 제품을 선택하세요.</h3>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {alertModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white p-6 sm:p-8 rounded-2xl shadow-2xl max-w-sm w-full transform transition-all border-t-8 border-indigo-500">
+            <h3 className={`text-xl font-black mb-4 flex items-center gap-2 ${alertModal.type === 'success' ? 'text-teal-600' : 'text-indigo-800'}`}>{alertModal.type === 'success' ? '🎉 성공' : '🔔 알림'}</h3>
+            <p className="text-slate-600 font-bold mb-8 leading-relaxed whitespace-pre-line text-lg">{alertModal.message}</p>
+            <button onClick={() => setAlertModal({ isOpen: false, message: '', type: 'info' })} className={`w-full text-white py-3 sm:py-4 rounded-xl font-black text-lg transition-colors outline-none ${alertModal.type === 'success' ? 'bg-teal-600 hover:bg-teal-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}>확인</button>
+          </div>
+        </div>
+      )}
 
       {lotSplitModal.isOpen && (
         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md flex items-center justify-center z-50 p-4">
           <div className="bg-white p-6 sm:p-8 rounded-3xl shadow-2xl max-w-2xl w-full transform transition-all border-4 border-rose-100 flex flex-col max-h-[90vh]">
-            <h3 className="text-2xl font-black text-rose-600 mb-4 flex items-center gap-2">🚨 로트 분리 지정</h3>
-            <div className="text-slate-700 font-medium mb-4 text-sm sm:text-base leading-relaxed">동일 로트 내에서 <strong className="text-rose-600">수축률 편차가 0.3%를 초과</strong>하는 제품이 발견되었습니다.<br/>각 위치별 수축률을 확인하고, 같은 로트로 묶을 그룹(A, B, C...)을 직접 지정해 주세요. 지정된 그룹별로 평균 수축률이 산출됩니다.</div>
-            <div className="overflow-y-auto mb-6 pr-2">
-              {lotSplitModal.lotsToSplit.map((lot, wIdx) => (
-                <div key={wIdx} className="mb-6 bg-rose-50 border border-rose-200 rounded-xl p-4">
-                  <h4 className="font-black text-rose-800 mb-3 border-b border-rose-200 pb-2">품번: {lot.baseMixLot}</h4>
-                  <div className="flex flex-col gap-2">
-                    {lot.slots.map((s, sIdx) => {
-                      const slotLabel = slots.find(sl => sl.id === s.sId)?.label || s.sId;
-                      return (
-                        <div key={sIdx} className="flex justify-between items-center bg-white p-3 rounded-lg border border-rose-100 shadow-sm">
-                          <div className="flex items-center gap-3"><span className="font-black text-indigo-600 bg-indigo-50 px-2 py-1 rounded text-xs">{slotLabel}</span><span className="text-sm font-bold text-slate-700">평균 수축률: <span className="text-rose-600">{s.shrinkVal}%</span></span></div>
-                          <div className="flex items-center gap-2">
-                            <label className="text-xs font-bold text-slate-500">그룹 지정:</label>
-                            <select value={s.group} onChange={(e) => handleGroupChange(wIdx, sIdx, e.target.value)} className="border-2 border-slate-300 rounded p-1.5 text-sm font-black text-slate-800 focus:outline-none focus:border-rose-400 bg-slate-50 cursor-pointer">
-                              <option value="A">Group A</option><option value="B">Group B</option><option value="C">Group C</option><option value="D">Group D</option><option value="E">Group E</option>
-                            </select>
-                          </div>
-                        </div>
-                      );
-                    })}
+            <h3 className="text-2xl font-black text-rose-600 mb-4 flex items-center gap-2">🚨 수축률 편차 감지 (0.3% 초과)</h3>
+            <div className="text-slate-700 font-medium mb-4 text-sm sm:text-base leading-relaxed">위치 간 수축률 편차가 0.3%를 초과합니다. 같은 로트로 묶을 그룹(A, B, C...)을 지정해 주세요. 지정된 그룹별로 평균 수축률이 산출되며 로트가 분리됩니다.</div>
+            
+            <div className="overflow-y-auto mb-6 pr-2 space-y-3">
+              {lotSplitModal.slots.map((s, idx) => (
+                <div key={idx} className="flex justify-between items-center bg-rose-50 p-3 rounded-lg border border-rose-200 shadow-sm">
+                  <div className="flex items-center gap-3">
+                    <span className="font-black text-slate-700 bg-white border border-slate-300 px-2 py-1 rounded text-xs">{s.fid}호기 {s.slotId}</span>
+                    <span className="text-sm font-bold text-slate-700">수축률: <span className="text-rose-600 text-lg">{s.shrinkVal}%</span></span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs font-bold text-slate-500">그룹:</label>
+                    <select value={s.group} onChange={(e) => setLotSplitModal(p => { const ns = cloneDeep(p.slots); ns[idx].group = e.target.value; return {...p, slots: ns}; })} className="border-2 border-slate-300 rounded p-1.5 text-sm font-black text-slate-800 focus:outline-none focus:border-rose-400 bg-white cursor-pointer">
+                      <option value="A">Group A</option><option value="B">Group B</option><option value="C">Group C</option><option value="D">Group D</option><option value="E">Group E</option>
+                    </select>
                   </div>
                 </div>
               ))}
             </div>
+
             <div className="flex flex-col gap-3 mt-auto">
-              <button onClick={applyCustomSplit} className="w-full bg-rose-500 hover:bg-rose-600 text-white py-4 rounded-xl font-black text-lg shadow-lg shadow-rose-200 outline-none">지정한 그룹으로 로트 분리 및 확정</button>
-              <button onClick={applyMergeAll} className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-4 rounded-xl font-black text-lg outline-none border border-slate-300">모두 하나의 로트로 통합 (전체 평균)</button>
+              <button onClick={handleApplySplit} className="w-full bg-rose-500 hover:bg-rose-600 text-white py-4 rounded-xl font-black text-lg shadow-lg shadow-rose-200 outline-none">지정한 그룹으로 로트 분리 확정</button>
+              <button onClick={handleApplyMergeAll} className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-4 rounded-xl font-black text-lg outline-none border border-slate-300">무시하고 하나의 로트로 통합 (전체 평균)</button>
             </div>
           </div>
         </div>
@@ -2449,7 +2500,7 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
 }
 
 // ==========================================
-// Step 10: Master Settings
+// Step 10: Master Settings (환경설정 제어판)
 // ==========================================
 function Step10Settings({ masterSettings, ctx }) {
   const [settings, setSettings] = useState(masterSettings);
