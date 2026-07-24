@@ -1758,63 +1758,68 @@ function Step5_5Shrinkage({ wipList, ctx }) {
   };
 
   const analyzeAndSaveLots = async (fid) => {
-    const d = shrinkDesks[fid] || {};
-    if (!d.operator || d.operator.trim() === "") {
-      return setAlertModal({ isOpen: true, message: "담당자 성명을 입력해주세요.", type: "warning" });
-    }
-
-    const hasEmptyPostArea = Object.values(d.slotData || {}).some(s => s.measurements.some(m => !m.postArea));
-    if (hasEmptyPostArea) {
-      return setAlertModal({ isOpen: true, message: "모든 칸의 '소결 후 면적'을 입력해주세요.", type: "warning" });
-    }
-
-    let newSlotData = cloneDeep(d.slotData);
-    const wipGroups = {};
-
-    Object.entries(newSlotData).forEach(([sId, data]) => {
-      if (!wipGroups[data.wipId]) wipGroups[data.wipId] = [];
-      const shrinkVal = parseFloat(data.slotAvgShrink); 
-      if (!isNaN(shrinkVal)) {
-        wipGroups[data.wipId].push({ sId, shrinkVal, mixLot: data.mixLot, type: data.type, height: data.height, qty: data.qty });
+    try {
+      const d = shrinkDesks[fid] || {};
+      if (!d.operator || d.operator.trim() === "") {
+        return setAlertModal({ isOpen: true, message: "담당자 성명을 입력해주세요.", type: "warning" });
       }
-    });
 
-    let requiresSplitPrompt = false;
-    const lotsToSplit = [];
-    const lotsToMerge = [];
+      const hasEmptyPostArea = Object.values(d.slotData || {}).some(s => s.measurements.some(m => !m.postArea));
+      if (hasEmptyPostArea) {
+        return setAlertModal({ isOpen: true, message: "모든 칸의 '소결 후 면적'을 입력해주세요.", type: "warning" });
+      }
 
-    Object.entries(wipGroups).forEach(([wipId, validSlots]) => {
-      if (validSlots.length > 0) {
-        validSlots.sort((a, b) => a.shrinkVal - b.shrinkVal);
-        
-        const minVal = validSlots[0].shrinkVal;
-        const maxVal = validSlots[validSlots.length - 1].shrinkVal;
-        
-        if (maxVal - minVal > 0.3) {
-          requiresSplitPrompt = true;
-          let currentGroupIndex = 0;
-          let currentGroupMin = validSlots[0].shrinkVal;
-          
-          const slotsWithGroup = validSlots.map(vs => {
-            if (vs.shrinkVal - currentGroupMin > 0.3) {
-              currentGroupIndex++;
-              currentGroupMin = vs.shrinkVal;
-            }
-            return { ...vs, group: String.fromCharCode(65 + currentGroupIndex) };
-          });
+      let newSlotData = cloneDeep(d.slotData);
+      const wipGroups = {};
 
-          lotsToSplit.push({ wipId, baseMixLot: validSlots[0].mixLot.slice(-6), slots: slotsWithGroup });
-        } else {
-          const overallAvg = (validSlots.reduce((sum, s) => sum + s.shrinkVal, 0) / validSlots.length).toFixed(2);
-          lotsToMerge.push({ wipId, finalShrink: overallAvg, slots: validSlots });
+      Object.entries(newSlotData).forEach(([sId, data]) => {
+        if (!wipGroups[data.wipId]) wipGroups[data.wipId] = [];
+        const shrinkVal = parseFloat(data.slotAvgShrink); 
+        if (!isNaN(shrinkVal)) {
+          wipGroups[data.wipId].push({ sId, shrinkVal, mixLot: data.mixLot, type: data.type, height: data.height, qty: data.qty });
         }
-      }
-    });
+      });
 
-    if (requiresSplitPrompt) {
-      setLotSplitModal({ isOpen: true, fid: fid, lotsToSplit: lotsToSplit, lotsToMerge: lotsToMerge, newSlotDataCache: newSlotData });
-    } else {
-      await finalizeProcess(fid, lotsToMerge, []);
+      let requiresSplitPrompt = false;
+      const lotsToSplit = [];
+      const lotsToMerge = [];
+
+      Object.entries(wipGroups).forEach(([wipId, validSlots]) => {
+        if (validSlots.length > 0) {
+          validSlots.sort((a, b) => a.shrinkVal - b.shrinkVal);
+          
+          const minVal = validSlots[0].shrinkVal;
+          const maxVal = validSlots[validSlots.length - 1].shrinkVal;
+          
+          if (maxVal - minVal > 0.3) {
+            requiresSplitPrompt = true;
+            let currentGroupIndex = 0;
+            let currentGroupMin = validSlots[0].shrinkVal;
+            
+            const slotsWithGroup = validSlots.map(vs => {
+              if (vs.shrinkVal - currentGroupMin > 0.3) {
+                currentGroupIndex++;
+                currentGroupMin = vs.shrinkVal;
+              }
+              return { ...vs, group: String.fromCharCode(65 + currentGroupIndex) };
+            });
+
+            lotsToSplit.push({ wipId, baseMixLot: validSlots[0].mixLot.slice(-6), slots: slotsWithGroup });
+          } else {
+            const overallAvg = (validSlots.reduce((sum, s) => sum + s.shrinkVal, 0) / validSlots.length).toFixed(2);
+            lotsToMerge.push({ wipId, finalShrink: overallAvg, slots: validSlots });
+          }
+        }
+      });
+
+      if (requiresSplitPrompt) {
+        setLotSplitModal({ isOpen: true, fid: fid, lotsToSplit: lotsToSplit, lotsToMerge: lotsToMerge, newSlotDataCache: newSlotData });
+      } else {
+        await finalizeProcess(fid, lotsToMerge, []);
+      }
+    } catch (err) {
+      console.error(err);
+      setAlertModal({ isOpen: true, message: `분석 중 오류 발생: ${err.message}`, type: "error" });
     }
   };
 
@@ -1825,32 +1830,24 @@ function Step5_5Shrinkage({ wipList, ctx }) {
     
     try {
         await runTransaction(db, async (transaction) => {
-            // ==========================================
-            // 1. [READ 단계] 모든 WIP 문서를 먼저 읽어옵니다.
-            // ==========================================
+            // 1. [READ] 
             const allWipIds = new Set([...mergedLots.map(m=>m.wipId), ...splitLots.flatMap(s=>s.wipId)]);
             const wipSnaps = {};
             for (const wId of allWipIds) {
                 const snap = await transaction.get(getDocRef("wipList", wId));
-                wipSnaps[wId] = snap;
+                if(snap.exists()) wipSnaps[wId] = snap;
             }
-            const shrinkRef = getDocRef("equipment", "shrinkDesks");
-            const shrinkDoc = await transaction.get(shrinkRef);
+            const shrinkDoc = await transaction.get(getDocRef("equipment", "shrinkDesks"));
 
-            // ==========================================
-            // 2. [WRITE 단계] 읽어온 데이터를 바탕으로 삭제 및 생성을 진행합니다.
-            // ==========================================
-            // 기존 문서 삭제
+            // 2. [WRITE]
             for (const wId of allWipIds) {
-                if(wipSnaps[wId] && wipSnaps[wId].exists()){
-                    transaction.delete(wipSnaps[wId].ref); 
-                }
+                if(wipSnaps[wId]) transaction.delete(wipSnaps[wId].ref); 
             }
 
-            // 통합(병합) 로트 처리 생성
+            // 통합 로트 처리
             mergedLots.forEach(m => {
                 const snap = wipSnaps[m.wipId];
-                if (!snap || !snap.exists()) return;
+                if (!snap) return;
                 const orig = snap.data();
                 const newId = Date.now().toString() + Math.random().toString(36).substr(2, 5);
                 const slotKeysStr = m.slots.map(s => `${fid}호기 ${s.sId}`).join(", ");
@@ -1865,7 +1862,7 @@ function Step5_5Shrinkage({ wipList, ctx }) {
                 logProcessToGoogleSheet("step5_shrink", newWip, d.operator, { measurements: `수축률:${m.finalShrink}%`, details: d.memo || "-" });
             });
 
-            // 분할 로트 처리 생성
+            // 분할 로트 처리
             splitLots.forEach(lot => {
                 const groupMap = {};
                 lot.slots.forEach(s => {
@@ -1875,7 +1872,7 @@ function Step5_5Shrinkage({ wipList, ctx }) {
                 
                 Object.entries(groupMap).forEach(([gName, sArr]) => {
                     const snap = wipSnaps[lot.wipId];
-                    if (!snap || !snap.exists()) return;
+                    if (!snap) return;
                     const orig = snap.data();
                     
                     const gAvg = (sArr.reduce((sum, s) => sum + s.shrinkVal, 0) / sArr.length).toFixed(2);
@@ -1894,16 +1891,15 @@ function Step5_5Shrinkage({ wipList, ctx }) {
                 });
             });
 
-            // 수축률 측정 데스크 비우기 (작업 완료)
+            // 데스크 비우기 (작업 완료)
             const currentDesks = shrinkDoc.exists() ? shrinkDoc.data() : {};
             currentDesks[fid] = { step: 0, operator: "", memo: "", slotData: {} };
-            transaction.set(shrinkRef, currentDesks);
+            transaction.set(getDocRef("equipment", "shrinkDesks"), currentDesks);
         });
         
         ctx.showToast("수축률 분석 및 검수 이관 완료", "success");
         setLotSplitModal({ isOpen: false, fid: null, lotsToSplit: [], lotsToMerge: [] });
     } catch (e) {
-        ctx.showToast(`처리 중 오류 발생: ${e.message}`, "error");
         setAlertModal({ isOpen: true, message: `이관 중 오류가 발생했습니다.\n사유: ${e.message}`, type: "error" });
     }
   };
@@ -2090,16 +2086,16 @@ function Step5_5Shrinkage({ wipList, ctx }) {
             <div className="text-slate-700 font-medium mb-4 text-sm sm:text-base leading-relaxed">위치 간 수축률 편차가 0.3%를 초과합니다. 같은 로트로 묶을 그룹(A, B, C...)을 직접 지정해 주세요. 지정된 그룹별로 평균 수축률이 산출되며 로트가 분리됩니다.</div>
             
             <div className="overflow-y-auto mb-6 pr-2 space-y-3">
-              {lotSplitModal.lotsToSplit.map((lot, wIdx) => (
+              {lotSplitModal.lotsToSplit?.map((lot, wIdx) => (
                 <div key={wIdx} className="mb-6 bg-rose-50 border border-rose-200 rounded-xl p-4">
                   <h4 className="font-black text-rose-800 mb-3 border-b border-rose-200 pb-2">품번: {lot.baseMixLot}</h4>
                   <div className="flex flex-col gap-2">
-                    {lot.slots.map((s, sIdx) => {
+                    {lot.slots?.map((s, sIdx) => {
                       const slotLabel = slots.find(sl => sl.id === s.sId)?.label || s.sId;
                       return (
                         <div key={sIdx} className="flex justify-between items-center bg-white p-3 rounded-lg border border-rose-100 shadow-sm">
                           <div className="flex items-center gap-3">
-                            <span className="font-black text-slate-700 bg-white border border-slate-300 px-2 py-1 rounded text-xs">{s.fid}호기 {s.slotId}</span>
+                            <span className="font-black text-slate-700 bg-white border border-slate-300 px-2 py-1 rounded text-xs">{lotSplitModal.fid}호기 {slotLabel}</span>
                             <span className="text-sm font-bold text-slate-700">수축률: <span className="text-rose-600 text-lg">{s.shrinkVal}%</span></span>
                           </div>
                           <div className="flex items-center gap-2">
@@ -2117,8 +2113,8 @@ function Step5_5Shrinkage({ wipList, ctx }) {
             </div>
 
             <div className="flex flex-col gap-3 mt-auto">
-              <button onClick={handleApplySplit} className="w-full bg-rose-500 hover:bg-rose-600 text-white py-4 rounded-xl font-black text-lg shadow-lg shadow-rose-200 outline-none">지정한 그룹으로 로트 분리 확정</button>
-              <button onClick={handleApplyMergeAll} className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-4 rounded-xl font-black text-lg outline-none border border-slate-300">무시하고 하나의 로트로 통합 (전체 평균)</button>
+              <button onClick={applyCustomSplit} className="w-full bg-rose-500 hover:bg-rose-600 text-white py-4 rounded-xl font-black text-lg shadow-lg shadow-rose-200 outline-none">지정한 그룹으로 로트 분리 확정</button>
+              <button onClick={applyMergeAll} className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-4 rounded-xl font-black text-lg outline-none border border-slate-300">무시하고 하나의 로트로 통합 (전체 평균)</button>
             </div>
           </div>
         </div>
@@ -2126,7 +2122,6 @@ function Step5_5Shrinkage({ wipList, ctx }) {
     </div>
   );
 }
-
 // ==========================================
 // Step 6: Inspection & Machining
 // ==========================================
