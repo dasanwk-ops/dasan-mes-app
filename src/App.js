@@ -1366,7 +1366,7 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
   const updateSlotData = async (fid, newSlotData) => {
     const newFurnaces = cloneDeep(furnaces);
     newFurnaces[fid].slotData = newSlotData;
-    await setDoc(doc(getFirestore(), "artifacts", "dasan-mes-app", "public", "data", "equipment", "furnaces"), newFurnaces);
+    await setDoc(getDocRef("equipment", "furnaces"), newFurnaces);
   };
 
   const handleSlotClick = (fid, slotId) => {
@@ -1417,13 +1417,12 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
     const newFurnaces = cloneDeep(furnaces);
     if (!newFurnaces[fid]) return;
     newFurnaces[fid][field] = val;
-    await setDoc(doc(getFirestore(), "artifacts", "dasan-mes-app", "public", "data", "equipment", "furnaces"), newFurnaces);
+    await setDoc(getDocRef("equipment", "furnaces"), newFurnaces);
   };
 
   const toggleHeating = async (fid) => {
     const f = furnaces[fid] || {};
     const newFurnaces = cloneDeep(furnaces);
-    const db = getFirestore();
     
     if (!f.isHeating) {
       if (Object.keys(f.slotData || {}).length === 0) {
@@ -1435,32 +1434,38 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
         return;
       }
       newFurnaces[fid].isHeating = true;
-      await setDoc(doc(db, "artifacts", "dasan-mes-app", "public", "data", "equipment", "furnaces"), newFurnaces);
+      await setDoc(getDocRef("equipment", "furnaces"), newFurnaces);
       ctx.showToast("열처리 가동이 시작되었습니다.", "success");
     } else {
-      // 🌟 가동 종료: 즉시 전기로를 비우고 위치/수량 정보 그대로 '수축률 측정(shrinkDesks)'으로 이관합니다.
+      // 🌟 가동 종료: 즉시 전기로를 비우고 위치/수량 정보 그대로 '수축률 측정(shrinkDesks)'으로 이관
       const slotData = f.slotData || {};
       const grouped = {};
       const curTime = getKST();
 
       Object.entries(slotData).forEach(([slotId, s]) => {
-         if (!grouped[s.wipId]) grouped[s.wipId] = { qty: 0 };
+         if (!grouped[s.wipId]) {
+            grouped[s.wipId] = { qty: 0, furnaceSlots: [] }; // 배열 초기화
+         }
          grouped[s.wipId].qty += Number(s.qty);
+         grouped[s.wipId].furnaceSlots.push({ fid, slotId, qty: Number(s.qty) }); // 슬롯 정보 보존
       });
 
       try {
         await runTransaction(db, async (transaction) => {
-           // 1. 기존 WIP의 상태를 수축률 대기(step5_shrink)로 변경
+           // 1. 기존 WIP의 상태를 수축률 대기(step5_shrink)로 변경 및 위치 정보 업데이트
            for (const wId of Object.keys(grouped)) {
-             const docRef = doc(db, "artifacts", "dasan-mes-app", "public", "data", "wipList", wId);
+             const docRef = getDocRef("wipList", wId);
              const snap = await transaction.get(docRef);
              if (snap.exists()) {
-               transaction.update(docRef, { currentStep: "step5_shrink" });
+               transaction.update(docRef, { 
+                 currentStep: "step5_shrink",
+                 furnaceSlots: grouped[wId].furnaceSlots 
+               });
              }
            }
 
            // 2. shrinkDesks(수축률 측정대)로 해당 호기의 12칸 데이터를 통째로 복사
-           const shrinkRef = doc(db, "artifacts", "dasan-mes-app", "public", "data", "equipment", "shrinkDesks");
+           const shrinkRef = getDocRef("equipment", "shrinkDesks");
            const shrinkSnap = await transaction.get(shrinkRef);
            const currentDesks = shrinkSnap.exists() ? shrinkSnap.data() : { 1: {step: 0, slotData: {}}, 2: {step: 0, slotData: {}} };
            
@@ -1468,12 +1473,12 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
            Object.entries(slotData).forEach(([slotId, s]) => {
               newShrinkSlotData[slotId] = {
                   wipId: s.wipId, mixLot: s.mixLot, type: s.type, height: s.height, qty: s.qty,
-                  measurements: [{ preArea: "", postArea: "", calcShrink: "", calcExpand: "" }] // 측정 항목 초기화
+                  measurements: [{ preArea: "", postArea: "", calcShrink: "", calcExpand: "" }]
               };
            });
 
            currentDesks[fid] = {
-              step: 1, // 1: 소결 전 입력 단계로 세팅
+              step: 1, // 1: 소결 전 면적 입력 단계
               operator: f.operator || "",
               memo: f.memo || "",
               slotData: newShrinkSlotData
@@ -1482,11 +1487,12 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
 
            // 3. 전기로는 초기화하여 다음 작업 준비
            newFurnaces[fid] = { isHeating: false, temp: "1050", operator: "", memo: "", slotData: {} };
-           transaction.set(doc(db, "artifacts", "dasan-mes-app", "public", "data", "equipment", "furnaces"), newFurnaces);
+           transaction.set(getDocRef("equipment", "furnaces"), newFurnaces);
         });
 
         setAlertModal({ isOpen: true, message: `✅ 가동 종료!\n\n전기로가 비워졌으며, 배정되었던 위치 그대로 [수축률 측정 대기]로 이관되었습니다.`, type: "success" });
       } catch (error) {
+        console.error("이관 에러:", error);
         setAlertModal({ isOpen: true, message: "이관 중 오류가 발생했습니다.", type: "error" });
       }
     }
