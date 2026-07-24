@@ -1422,7 +1422,6 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
 
   const toggleHeating = async (fid) => {
     const f = furnaces[fid] || {};
-    const newFurnaces = cloneDeep(furnaces);
     const db = getFirestore();
     
     if (!f.isHeating) {
@@ -1434,14 +1433,14 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
         setAlertModal({ isOpen: true, message: "담당 작업자 이름을 입력해주세요.", type: "warning" });
         return;
       }
+      const newFurnaces = cloneDeep(furnaces);
       newFurnaces[fid].isHeating = true;
       await setDoc(getDocRef("equipment", "furnaces"), newFurnaces);
       ctx.showToast("열처리 가동이 시작되었습니다.", "success");
     } else {
-      // 🌟 가동 종료: 즉시 전기로를 비우고 위치/수량 정보 그대로 '수축률 측정(shrinkDesks)'으로 이관
+      // 🌟 가동 종료 (트랜잭션 규칙 엄격하게 적용: READ 먼저, WRITE 나중에)
       const slotData = f.slotData || {};
       const grouped = {};
-      const curTime = getKST();
 
       Object.entries(slotData).forEach(([slotId, s]) => {
          if (!grouped[s.wipId]) {
@@ -1453,23 +1452,34 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
 
       try {
         await runTransaction(db, async (transaction) => {
-           // 1. 기존 WIP의 상태를 수축률 대기(step5_shrink)로 변경 및 위치 정보 업데이트
+           // ==========================================
+           // 1. [READ 단계] 업데이트할 모든 문서를 먼저 읽어옵니다.
+           // ==========================================
+           const wipSnaps = {};
            for (const wId of Object.keys(grouped)) {
-             const docRef = getDocRef("wipList", wId);
-             const snap = await transaction.get(docRef);
-             if (snap.exists()) {
-               transaction.update(docRef, { 
+             wipSnaps[wId] = await transaction.get(getDocRef("wipList", wId));
+           }
+           const shrinkRef = getDocRef("equipment", "shrinkDesks");
+           const shrinkSnap = await transaction.get(shrinkRef);
+           const furnaceRef = getDocRef("equipment", "furnaces");
+           const furnaceSnap = await transaction.get(furnaceRef);
+
+           // ==========================================
+           // 2. [WRITE 단계] 읽어온 문서를 바탕으로 업데이트를 수행합니다.
+           // ==========================================
+           // A. 기존 제품을 수축률 대기로 상태 변경
+           for (const wId of Object.keys(grouped)) {
+             const snap = wipSnaps[wId];
+             if (snap && snap.exists()) {
+               transaction.update(snap.ref, { 
                  currentStep: "step5_shrink",
                  furnaceSlots: grouped[wId].furnaceSlots 
                });
              }
            }
 
-           // 2. shrinkDesks(수축률 측정대)로 해당 호기의 데이터를 복사
-           const shrinkRef = getDocRef("equipment", "shrinkDesks");
-           const shrinkSnap = await transaction.get(shrinkRef);
+           // B. 수축률 측정대로 12칸 데이터 복사
            const currentDesks = shrinkSnap.exists() ? shrinkSnap.data() : { 1: {step: 0, slotData: {}}, 2: {step: 0, slotData: {}} };
-           
            const newShrinkSlotData = {};
            Object.entries(slotData).forEach(([slotId, s]) => {
               newShrinkSlotData[slotId] = {
@@ -1477,7 +1487,6 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
                   measurements: [{ preArea: "", postArea: "", calcShrink: "", calcExpand: "" }]
               };
            });
-
            currentDesks[fid] = {
               step: 1, // 1: 소결 전 면적 입력 단계
               operator: f.operator || "",
@@ -1486,15 +1495,17 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
            };
            transaction.set(shrinkRef, currentDesks);
 
-           // 3. 전기로 초기화
-           newFurnaces[fid] = { isHeating: false, temp: "1050", operator: "", memo: "", slotData: {} };
-           transaction.set(getDocRef("equipment", "furnaces"), newFurnaces);
+           // C. 가동 종료된 전기로 완벽 초기화
+           const currentFurnaces = furnaceSnap.exists() ? furnaceSnap.data() : { 1: {}, 2: {} };
+           currentFurnaces[fid] = { isHeating: false, temp: f.temp || "1050", operator: "", memo: "", slotData: {} };
+           transaction.set(furnaceRef, currentFurnaces);
         });
 
         setAlertModal({ isOpen: true, message: `✅ 가동 종료!\n\n전기로가 비워졌으며, 배정되었던 위치 그대로 [수축률 측정 대기]로 이관되었습니다.`, type: "success" });
       } catch (error) {
         console.error("이관 에러:", error);
-        setAlertModal({ isOpen: true, message: "이관 중 오류가 발생했습니다.", type: "error" });
+        // 에러의 정확한 이유를 팝업창에 띄워줍니다.
+        setAlertModal({ isOpen: true, message: `이관 중 오류가 발생했습니다.\n사유: ${error.message}`, type: "error" });
       }
     }
   };
@@ -1727,15 +1738,6 @@ function Step5_5Shrinkage({ wipList, ctx }) {
 
     await updateDesk(fid, { ...d, slotData: newData });
   };
-  
-  const handleSlotInput = async (fid, slotId, field, val) => {
-    const d = shrinkDesks[fid] || {};
-    const newData = cloneDeep(d.slotData);
-    if (newData[slotId]) {
-      newData[slotId][field] = val;
-      await updateDesk(fid, { ...d, slotData: newData });
-    }
-  };
 
   const confirmPreSintering = async (fid) => {
     const d = shrinkDesks[fid] || {};
@@ -1823,26 +1825,33 @@ function Step5_5Shrinkage({ wipList, ctx }) {
     
     try {
         await runTransaction(db, async (transaction) => {
-            // 1. [READ] 
+            // ==========================================
+            // 1. [READ 단계] 모든 WIP 문서를 먼저 읽어옵니다.
+            // ==========================================
             const allWipIds = new Set([...mergedLots.map(m=>m.wipId), ...splitLots.flatMap(s=>s.wipId)]);
-            const originalWips = {};
+            const wipSnaps = {};
             for (const wId of allWipIds) {
                 const snap = await transaction.get(getDocRef("wipList", wId));
-                if (snap.exists()) {
-                    originalWips[wId] = snap.data();
+                wipSnaps[wId] = snap;
+            }
+            const shrinkRef = getDocRef("equipment", "shrinkDesks");
+            const shrinkDoc = await transaction.get(shrinkRef);
+
+            // ==========================================
+            // 2. [WRITE 단계] 읽어온 데이터를 바탕으로 삭제 및 생성을 진행합니다.
+            // ==========================================
+            // 기존 문서 삭제
+            for (const wId of allWipIds) {
+                if(wipSnaps[wId] && wipSnaps[wId].exists()){
+                    transaction.delete(wipSnaps[wId].ref); 
                 }
             }
-            const shrinkDoc = await transaction.get(getDocRef("equipment", "shrinkDesks"));
 
-            // 2. [WRITE]
-            for (const wId of allWipIds) {
-                transaction.delete(getDocRef("wipList", wId)); 
-            }
-
-            // 통합 로트 처리
+            // 통합(병합) 로트 처리 생성
             mergedLots.forEach(m => {
-                const orig = originalWips[m.wipId];
-                if (!orig) return;
+                const snap = wipSnaps[m.wipId];
+                if (!snap || !snap.exists()) return;
+                const orig = snap.data();
                 const newId = Date.now().toString() + Math.random().toString(36).substr(2, 5);
                 const slotKeysStr = m.slots.map(s => `${fid}호기 ${s.sId}`).join(", ");
                 const totalQty = m.slots.reduce((sum, s) => sum + s.qty, 0); 
@@ -1856,7 +1865,7 @@ function Step5_5Shrinkage({ wipList, ctx }) {
                 logProcessToGoogleSheet("step5_shrink", newWip, d.operator, { measurements: `수축률:${m.finalShrink}%`, details: d.memo || "-" });
             });
 
-            // 분할 로트 처리
+            // 분할 로트 처리 생성
             splitLots.forEach(lot => {
                 const groupMap = {};
                 lot.slots.forEach(s => {
@@ -1865,8 +1874,9 @@ function Step5_5Shrinkage({ wipList, ctx }) {
                 });
                 
                 Object.entries(groupMap).forEach(([gName, sArr]) => {
-                    const orig = originalWips[lot.wipId];
-                    if (!orig) return;
+                    const snap = wipSnaps[lot.wipId];
+                    if (!snap || !snap.exists()) return;
+                    const orig = snap.data();
                     
                     const gAvg = (sArr.reduce((sum, s) => sum + s.shrinkVal, 0) / sArr.length).toFixed(2);
                     const newId = Date.now().toString() + Math.random().toString(36).substr(2, 5);
@@ -1884,16 +1894,17 @@ function Step5_5Shrinkage({ wipList, ctx }) {
                 });
             });
 
-            // 데스크 비우기 (작업 완료)
+            // 수축률 측정 데스크 비우기 (작업 완료)
             const currentDesks = shrinkDoc.exists() ? shrinkDoc.data() : {};
             currentDesks[fid] = { step: 0, operator: "", memo: "", slotData: {} };
-            transaction.set(getDocRef("equipment", "shrinkDesks"), currentDesks);
+            transaction.set(shrinkRef, currentDesks);
         });
         
         ctx.showToast("수축률 분석 및 검수 이관 완료", "success");
         setLotSplitModal({ isOpen: false, fid: null, lotsToSplit: [], lotsToMerge: [] });
     } catch (e) {
-        ctx.showToast("처리 중 오류 발생", "error");
+        ctx.showToast(`처리 중 오류 발생: ${e.message}`, "error");
+        setAlertModal({ isOpen: true, message: `이관 중 오류가 발생했습니다.\n사유: ${e.message}`, type: "error" });
     }
   };
 
@@ -1977,7 +1988,6 @@ function Step5_5Shrinkage({ wipList, ctx }) {
 
                       const slotBorder = isStep1 ? 'border-indigo-300' : 'border-orange-300';
                       const titleBg = isStep1 ? 'bg-indigo-50 text-indigo-700' : 'bg-orange-50 text-orange-700';
-                      const btnAdd = isStep1 ? 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100' : 'bg-orange-50 text-orange-600 hover:bg-orange-100';
 
                       return (
                         <div key={slot.id} className={`relative border-2 rounded-xl p-3 flex flex-col justify-start bg-white shadow-sm transition-all ${slotBorder}`}>
@@ -2077,7 +2087,7 @@ function Step5_5Shrinkage({ wipList, ctx }) {
         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md flex items-center justify-center z-50 p-4">
           <div className="bg-white p-6 sm:p-8 rounded-3xl shadow-2xl max-w-2xl w-full transform transition-all border-4 border-rose-100 flex flex-col max-h-[90vh]">
             <h3 className="text-2xl font-black text-rose-600 mb-4 flex items-center gap-2">🚨 수축률 편차 감지 (0.3% 초과)</h3>
-            <div className="text-slate-700 font-medium mb-4 text-sm sm:text-base leading-relaxed">위치 간 평균 수축률 편차가 0.3%를 초과합니다. 같은 로트로 묶을 그룹(A, B, C...)을 직접 지정해 주세요. 지정된 그룹별로 평균 수축률이 산출되며 로트가 분리됩니다.</div>
+            <div className="text-slate-700 font-medium mb-4 text-sm sm:text-base leading-relaxed">위치 간 수축률 편차가 0.3%를 초과합니다. 같은 로트로 묶을 그룹(A, B, C...)을 직접 지정해 주세요. 지정된 그룹별로 평균 수축률이 산출되며 로트가 분리됩니다.</div>
             
             <div className="overflow-y-auto mb-6 pr-2 space-y-3">
               {lotSplitModal.lotsToSplit.map((lot, wIdx) => (
@@ -2116,461 +2126,7 @@ function Step5_5Shrinkage({ wipList, ctx }) {
     </div>
   );
 }
-// ==========================================
-// [신규] Step 5.5: Shrinkage Measurement (수축률 측정)
-// ==========================================
-function Step5_5Shrinkage({ wipList, ctx }) {
-  // 컴포넌트 마운트 시 Firestore에서 수축률 측정대(shrinkDesks) 데이터를 불러옵니다.
-  const [shrinkDesks, setShrinkDesks] = useState({
-    1: { step: 0, operator: "", memo: "", slotData: {} },
-    2: { step: 0, operator: "", memo: "", slotData: {} }
-  });
 
-  useEffect(() => {
-    const db = getFirestore();
-    const unsub = onSnapshot(doc(db, "artifacts", "dasan-mes-app", "public", "data", "equipment", "shrinkDesks"), (docSnap) => {
-      if (docSnap.exists()) {
-        const loaded = docSnap.data();
-        setShrinkDesks({
-          1: { step: 0, operator: "", memo: "", slotData: {}, ...loaded[1] },
-          2: { step: 0, operator: "", memo: "", slotData: {}, ...loaded[2] }
-        });
-      } else {
-        setDoc(doc(db, "artifacts", "dasan-mes-app", "public", "data", "equipment", "shrinkDesks"), {
-          1: { step: 0, operator: "", memo: "", slotData: {} },
-          2: { step: 0, operator: "", memo: "", slotData: {} }
-        });
-      }
-    });
-    return () => unsub();
-  }, []);
-
-  const updateDesk = async (fid, newData) => {
-    const db = getFirestore();
-    const updated = cloneDeep(shrinkDesks);
-    updated[fid] = newData;
-    await setDoc(doc(db, "artifacts", "dasan-mes-app", "public", "data", "equipment", "shrinkDesks"), updated);
-  };
-
-  const [alertModal, setAlertModal] = useState({ isOpen: false, message: "", type: "info" });
-  const [lotSplitModal, setLotSplitModal] = useState({ isOpen: false, fid: null, lotsToSplit: [], newSlotDataCache: null });
-
-  const slots = [
-    { id: "L6", label: "좌측 6층" }, { id: "R6", label: "우측 6층" },
-    { id: "L5", label: "좌측 5층" }, { id: "R5", label: "우측 5층" },
-    { id: "L4", label: "좌측 4층" }, { id: "R4", label: "우측 4층" },
-    { id: "L3", label: "좌측 3층" }, { id: "R3", label: "우측 3층" },
-    { id: "L2", label: "좌측 2층" }, { id: "R2", label: "우측 2층" },
-    { id: "L1", label: "좌측 1층" }, { id: "R1", label: "우측 1층" }
-  ];
-
-  const handleDeskInfo = async (fid, field, val) => {
-    const d = shrinkDesks[fid] || {};
-    await updateDesk(fid, { ...d, [field]: val });
-  };
-
-  const addMeasurement = async (fid, slotId) => {
-    const d = shrinkDesks[fid] || {};
-    const newData = cloneDeep(d.slotData);
-    if (newData[slotId].measurements.length >= 5) return; 
-    newData[slotId].measurements.push({ preArea: "", postArea: "", calcShrink: "", calcExpand: "" });
-    await updateDesk(fid, { ...d, slotData: newData });
-  };
-
-  const removeMeasurement = async (fid, slotId, idx) => {
-    const d = shrinkDesks[fid] || {};
-    const newData = cloneDeep(d.slotData);
-    newData[slotId].measurements = newData[slotId].measurements.filter((_, i) => i !== idx);
-    await updateDesk(fid, { ...d, slotData: newData });
-  };
-
-  const handleAreaInput = async (fid, slotId, idx, field, val) => {
-    const d = shrinkDesks[fid] || {};
-    const newData = cloneDeep(d.slotData);
-    const m = newData[slotId].measurements[idx];
-    m[field] = val;
-
-    const pre = parseFloat(m.preArea);
-    const post = parseFloat(m.postArea);
-
-    if (!isNaN(pre) && !isNaN(post) && pre > 0 && post > 0) {
-      const areaRatio = post / pre;
-      const shrink = (1 - Math.sqrt(areaRatio)) * 100;
-      m.calcShrink = shrink.toFixed(2);
-      m.calcExpand = (1 / (1 - (shrink / 100))).toFixed(4);
-    } else {
-      m.calcShrink = ""; m.calcExpand = "";
-    }
-
-    const validShrinks = newData[slotId].measurements.map(x => parseFloat(x.calcShrink)).filter(v => !isNaN(v));
-    newData[slotId].slotAvgShrink = validShrinks.length > 0 ? (validShrinks.reduce((a, b) => a + b, 0) / validShrinks.length).toFixed(2) : "";
-    newData[slotId].slotAvgExpand = newData[slotId].slotAvgShrink ? (1 / (1 - (parseFloat(newData[slotId].slotAvgShrink) / 100))).toFixed(4) : "";
-
-    await updateDesk(fid, { ...d, slotData: newData });
-  };
-
-  const confirmPreSintering = async (fid) => {
-    const d = shrinkDesks[fid] || {};
-    if (Object.keys(d.slotData || {}).length === 0) return;
-
-    const hasEmptyPreArea = Object.values(d.slotData).some(s => s.measurements.some(m => !m.preArea));
-    if (hasEmptyPreArea) {
-      return setAlertModal({ isOpen: true, message: "모든 칸의 '소결 전 면적'을 입력해주세요.", type: "warning" });
-    }
-    
-    await updateDesk(fid, { ...d, step: 2 });
-    setAlertModal({ isOpen: true, message: "✅ 소결 전 면적이 안전하게 잠금 처리되었습니다.\n소결 공정 후 '소결 후 면적'을 입력해주세요.", type: "success" });
-  };
-
-  const unlockPreSintering = async (fid) => {
-    const d = shrinkDesks[fid] || {};
-    await updateDesk(fid, { ...d, step: 1 });
-  };
-
-  const analyzeAndSaveLots = async (fid) => {
-    const d = shrinkDesks[fid] || {};
-    if (!d.operator || d.operator.trim() === "") {
-      return setAlertModal({ isOpen: true, message: "담당자 성명을 입력해주세요.", type: "warning" });
-    }
-
-    const hasEmptyPostArea = Object.values(d.slotData || {}).some(s => s.measurements.some(m => !m.postArea));
-    if (hasEmptyPostArea) {
-      return setAlertModal({ isOpen: true, message: "모든 칸의 '소결 후 면적'을 입력해주세요.", type: "warning" });
-    }
-
-    let newSlotData = cloneDeep(d.slotData);
-    const wipGroups = {};
-
-    Object.entries(newSlotData).forEach(([sId, data]) => {
-      if (!wipGroups[data.wipId]) wipGroups[data.wipId] = [];
-      const shrinkVal = parseFloat(data.slotAvgShrink); 
-      if (!isNaN(shrinkVal)) {
-        wipGroups[data.wipId].push({ sId, shrinkVal, mixLot: data.mixLot, type: data.type, height: data.height, qty: data.qty });
-      }
-    });
-
-    let requiresSplitPrompt = false;
-    const lotsToSplit = [];
-    const lotsToMerge = [];
-
-    Object.entries(wipGroups).forEach(([wipId, validSlots]) => {
-      if (validSlots.length > 0) {
-        validSlots.sort((a, b) => a.shrinkVal - b.shrinkVal);
-        
-        const minVal = validSlots[0].shrinkVal;
-        const maxVal = validSlots[validSlots.length - 1].shrinkVal;
-        
-        if (maxVal - minVal > 0.3) {
-          requiresSplitPrompt = true;
-          let currentGroupIndex = 0;
-          let currentGroupMin = validSlots[0].shrinkVal;
-          
-          const slotsWithGroup = validSlots.map(vs => {
-            if (vs.shrinkVal - currentGroupMin > 0.3) {
-              currentGroupIndex++;
-              currentGroupMin = vs.shrinkVal;
-            }
-            return { ...vs, group: String.fromCharCode(65 + currentGroupIndex) };
-          });
-
-          lotsToSplit.push({ wipId, baseMixLot: validSlots[0].mixLot.slice(-6), slots: slotsWithGroup });
-        } else {
-          const overallAvg = (validSlots.reduce((sum, s) => sum + s.shrinkVal, 0) / validSlots.length).toFixed(2);
-          lotsToMerge.push({ wipId, finalShrink: overallAvg, slots: validSlots });
-        }
-      }
-    });
-
-    if (requiresSplitPrompt) {
-      setLotSplitModal({ isOpen: true, fid: fid, lotsToSplit: lotsToSplit, lotsToMerge: lotsToMerge, newSlotDataCache: newSlotData });
-    } else {
-      await finalizeProcess(fid, lotsToMerge, []);
-    }
-  };
-
-  const finalizeProcess = async (fid, mergedLots, splitLots) => {
-    const d = shrinkDesks[fid];
-    const curTime = getKST();
-    const db = getFirestore();
-    
-    try {
-        await runTransaction(db, async (transaction) => {
-            const allWipIds = new Set([...mergedLots.map(m=>m.wipId), ...splitLots.flatMap(s=>s.wipId)]);
-            const originalWips = {};
-            for (const wId of allWipIds) {
-                const snap = await transaction.get(doc(db, "artifacts", "dasan-mes-app", "public", "data", "wipList", wId));
-                if (snap.exists()) {
-                    originalWips[wId] = snap.data();
-                    transaction.delete(doc(db, "artifacts", "dasan-mes-app", "public", "data", "wipList", wId)); 
-                }
-            }
-
-            // 통합(병합) 로트 처리
-            mergedLots.forEach(m => {
-                const orig = originalWips[m.wipId];
-                if (!orig) return;
-                const newId = Date.now().toString() + Math.random().toString(36).substr(2, 5);
-                const slotKeysStr = m.slots.map(s => `${fid}호기 ${s.sId}`).join(", ");
-                const totalQty = m.slots.reduce((sum, s) => sum + s.qty, 0);
-                
-                const recordDetails = `[${curTime}] [수축률확정] 위치(${slotKeysStr}) | 수축률:${m.finalShrink}% | 담당:${d.operator}`;
-                const newWip = {
-                    ...orig, id: newId, qty: totalQty, currentStep: "step6", shrinkageRate: m.finalShrink,
-                    details: `${orig.details || ""}\n${recordDetails}`
-                };
-                transaction.set(doc(db, "artifacts", "dasan-mes-app", "public", "data", "wipList", newId), newWip);
-            });
-
-            // 분할 로트 처리
-            splitLots.forEach(lot => {
-                const groupMap = {};
-                lot.slots.forEach(s => {
-                    if (!groupMap[s.group]) groupMap[s.group] = [];
-                    groupMap[s.group].push(s);
-                });
-                
-                Object.entries(groupMap).forEach(([gName, sArr]) => {
-                    const orig = originalWips[lot.wipId];
-                    if (!orig) return;
-                    
-                    const gAvg = (sArr.reduce((sum, s) => sum + s.shrinkVal, 0) / sArr.length).toFixed(2);
-                    const newId = Date.now().toString() + Math.random().toString(36).substr(2, 5);
-                    const suffix = Object.keys(groupMap).length > 1 ? `-${gName}` : "";
-                    const newMixLot = orig.mixLot + suffix;
-                    const slotKeysStr = sArr.map(s => `${fid}호기 ${s.sId}`).join(", ");
-                    const totalQty = sArr.reduce((sum, s) => sum + s.qty, 0);
-
-                    const recordDetails = `[${curTime}] [수축률확정] 위치(${slotKeysStr}) | 수축률:${gAvg}% | 분리됨 | 담당:${d.operator}`;
-                    const newWip = {
-                        ...orig, id: newId, mixLot: newMixLot, qty: totalQty, currentStep: "step6", shrinkageRate: gAvg,
-                        details: `${orig.details || ""}\n${recordDetails}`
-                    };
-                    transaction.set(doc(db, "artifacts", "dasan-mes-app", "public", "data", "wipList", newId), newWip);
-                });
-            });
-
-            // 데스크 비우기
-            const shrinkDoc = await transaction.get(doc(db, "artifacts", "dasan-mes-app", "public", "data", "equipment", "shrinkDesks"));
-            const currentDesks = shrinkDoc.data();
-            currentDesks[fid] = { step: 0, operator: "", memo: "", slotData: {} };
-            transaction.set(doc(db, "artifacts", "dasan-mes-app", "public", "data", "equipment", "shrinkDesks"), currentDesks);
-        });
-        
-        ctx.showToast("수축률 분석 및 검수 이관 완료", "success");
-        setLotSplitModal({ isOpen: false, fid: null, lotsToSplit: [], lotsToMerge: [] });
-    } catch (e) {
-        ctx.showToast("처리 중 오류 발생", "error");
-    }
-  };
-
-  const handleGroupChange = (lotIndex, slotIndex, newGroup) => {
-    setLotSplitModal(prev => {
-      const newLots = [...prev.lotsToSplit];
-      newLots[lotIndex].slots[slotIndex].group = newGroup;
-      return { ...prev, lotsToSplit: newLots };
-    });
-  };
-
-  const applyCustomSplit = async () => {
-    await finalizeProcess(lotSplitModal.fid, lotSplitModal.lotsToMerge, lotSplitModal.lotsToSplit);
-  };
-
-  const applyMergeAll = async () => {
-    const mergedLots = [...lotSplitModal.lotsToMerge];
-    lotSplitModal.lotsToSplit.forEach(lot => {
-      const overallAvg = (lot.slots.reduce((sum, s) => sum + s.shrinkVal, 0) / lot.slots.length).toFixed(2);
-      mergedLots.push({ wipId: lot.wipId, finalShrink: overallAvg, slots: lot.slots });
-    });
-    await finalizeProcess(lotSplitModal.fid, mergedLots, []);
-  };
-
-  return (
-    <div className="min-h-screen bg-slate-50 p-4 sm:p-6 font-sans">
-      <div className="max-w-[1200px] mx-auto">
-        <div className="bg-white rounded-2xl shadow-lg border-b-4 border-teal-500 mb-6 overflow-hidden flex items-center p-5">
-          <Calculator className="w-8 h-8 text-teal-500 mr-3" />
-          <h1 className="font-black text-2xl text-slate-800 tracking-wide">수축률 측정 및 로트 분석</h1>
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {[1, 2].map(id => {
-            const d = shrinkDesks[id] || { step: 0, slotData: {} };
-            const hasData = Object.keys(d.slotData).length > 0;
-            const isStep1 = d.step === 1; // 소결 전
-            const isStep2 = d.step === 2; // 소결 후
-            
-            let cardStyle = "border-slate-300 bg-slate-50 opacity-70";
-            let headerStyle = "bg-slate-500 text-white";
-            let headerText = `🔒 ${id}호기 (측정 대상 없음)`;
-            let phaseMessage = "전기로 가동이 완료되면 이곳으로 제품이 이관됩니다.";
-
-            if (hasData) {
-              if (isStep1) {
-                cardStyle = "border-indigo-400 shadow-indigo-100 shadow-xl bg-white";
-                headerStyle = "bg-indigo-600 text-white";
-                headerText = `📝 ${id}호기 : 소결 전 면적 입력 중`;
-                phaseMessage = "👉 소결 공정 시작 전, 각 칸의 '소결 전 면적'을 입력하고 저장하세요.";
-              } else if (isStep2) {
-                cardStyle = "border-orange-400 shadow-orange-100 shadow-xl bg-orange-50/30";
-                headerStyle = "bg-orange-500 text-white";
-                headerText = `⏳ ${id}호기 : 소결 후 면적 입력 대기`;
-                phaseMessage = "👉 소결이 완료되었습니다! '소결 후 면적'을 입력하면 수축률/확대율이 계산됩니다.";
-              }
-            }
-
-            return (
-              <div key={id} className={`flex flex-col border-4 rounded-2xl overflow-hidden transition-all duration-300 ${cardStyle}`}>
-                <div className={`p-4 text-center font-black text-xl flex justify-center items-center ${headerStyle}`}>
-                  {headerText}
-                </div>
-
-                <div className="flex flex-col flex-grow p-4 sm:p-5">
-                  {hasData && <div className={`text-center font-bold mb-4 text-sm py-2.5 rounded-lg border shadow-sm ${isStep1 ? 'text-indigo-800 bg-indigo-50 border-indigo-200' : 'text-orange-800 bg-orange-50 border-orange-200'}`}>{phaseMessage}</div>}
-                  
-                  {/* 12칸 그리드 */}
-                  <div className={`grid grid-cols-2 gap-2 sm:gap-3 p-3 sm:p-4 rounded-xl border-4 mb-auto ${hasData ? 'bg-slate-100 border-slate-300' : 'bg-slate-200 border-slate-300'}`}>
-                    {slots.map(slot => {
-                      const sData = d.slotData[slot.id];
-                      const isEmpty = !sData;
-
-                      if (isEmpty) {
-                        return (
-                          <div key={slot.id} className="border-2 border-dashed border-slate-300 rounded-xl p-2 min-h-[60px] flex items-center justify-center bg-white/50">
-                            <span className="text-xs text-slate-400 font-bold">{slot.label} (비어있음)</span>
-                          </div>
-                        );
-                      }
-
-                      const slotBorder = isStep1 ? 'border-indigo-300' : 'border-orange-300';
-                      const titleBg = isStep1 ? 'bg-indigo-50 text-indigo-700' : 'bg-orange-50 text-orange-700';
-                      const btnAdd = isStep1 ? 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100' : 'bg-orange-50 text-orange-600 hover:bg-orange-100';
-
-                      return (
-                        <div key={slot.id} className={`relative border-2 rounded-xl p-3 flex flex-col justify-start bg-white shadow-sm transition-all ${slotBorder}`}>
-                          
-                          <div className="flex justify-between items-center mb-3">
-                            <span className={`px-2 py-1 rounded text-xs font-black ${titleBg}`}>{slot.label}</span>
-                            {isStep1 && sData.measurements.length < 5 && (
-                              <button onClick={() => addMeasurement(id, slot.id)} className={`text-[10px] px-2 py-1 rounded font-bold transition-colors ${btnAdd}`}>+ 항목 추가</button>
-                            )}
-                          </div>
-                          
-                          <div className="text-center mb-3">
-                            <div className="text-[10px] text-slate-400 font-bold bg-slate-100 inline-block px-2 py-0.5 rounded-full mb-1">{sData.mixLot.slice(-6)}</div>
-                            <div className="font-black text-slate-800 text-lg">{sData.type} {sData.height}T</div>
-                            <div className="text-xs font-bold text-slate-500 mt-1">수량: {sData.qty}개</div>
-                          </div>
-
-                          <div className="flex flex-col gap-2 w-full mt-auto">
-                            {sData.measurements.map((m, idx) => (
-                              <div key={idx} className="relative w-full animate-fade-in">
-                                {isStep1 ? (
-                                  <>
-                                    <SyncInput type="number" value={m.preArea} onChange={(val) => handleAreaInput(id, slot.id, idx, 'preArea', val)} placeholder="소결 전 면적" className="w-full text-center border border-indigo-200 rounded-lg p-2.5 font-bold text-slate-700 focus:border-indigo-500 outline-none hover:border-indigo-300 transition-colors" />
-                                    {sData.measurements.length > 1 && <button onClick={() => removeMeasurement(id, slot.id, idx)} className="absolute -right-2 -top-2 bg-white text-slate-400 hover:text-red-500 rounded-full w-5 h-5 flex items-center justify-center border shadow-sm text-xs font-black">✕</button>}
-                                  </>
-                                ) : (
-                                  <div className="flex gap-1 items-center">
-                                    <div className="flex-1 bg-slate-100 border border-slate-200 rounded-lg p-2 text-center text-xs font-bold text-slate-500 overflow-hidden text-ellipsis">{m.preArea}</div>
-                                    <SyncInput type="number" value={m.postArea} onChange={(val) => handleAreaInput(id, slot.id, idx, 'postArea', val)} placeholder="소결 후 면적" className="flex-1 text-center border border-orange-300 rounded-lg p-2 text-xs font-bold text-slate-700 focus:border-orange-500 outline-none bg-white" />
-                                    <div className="w-14 bg-teal-50 border border-teal-100 rounded-lg p-2 text-center text-xs font-black text-teal-700">{m.calcShrink ? `${m.calcShrink}%` : '-'}</div>
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {hasData && (
-                    <div className="mt-4 pt-4 border-t-2 border-dashed border-slate-200">
-                      <div className="flex gap-3 mb-4">
-                        <div className="w-full">
-                          <label className="block text-xs font-bold text-slate-500 mb-1">담당 작업자</label>
-                          <SyncInput type="text" placeholder="성명 입력" value={d.operator} onChange={(val) => handleDeskInfo(id, 'operator', val)} className="w-full border-2 border-slate-200 p-2.5 rounded-xl text-center font-bold text-slate-800 focus:border-teal-400 outline-none" />
-                        </div>
-                      </div>
-
-                      {isStep1 && (
-                        <button onClick={() => confirmPreSintering(id)} className="w-full py-4 rounded-xl font-black text-lg shadow-md bg-indigo-600 hover:bg-indigo-700 text-white transition-transform active:scale-95">
-                          [1단계] 소결 전 면적 임시저장 및 잠금
-                        </button>
-                      )}
-                      
-                      {isStep2 && (
-                        <div className="flex flex-col gap-2">
-                          <button onClick={() => analyzeAndSaveLots(id)} className="w-full py-4 rounded-xl font-black text-lg shadow-md bg-orange-500 hover:bg-orange-600 text-white transition-transform active:scale-95">
-                            [2단계] 수축률 분석 및 결과 확정
-                          </button>
-                          <button onClick={() => unlockPreSintering(id)} className="w-full py-2.5 rounded-xl font-bold text-sm bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-700 border border-slate-300 transition-colors">
-                            🔓 소결 전 면적 수정하기 (잠금 해제)
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {alertModal.isOpen && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white p-6 sm:p-8 rounded-2xl shadow-2xl max-w-sm w-full transform transition-all border-t-8 border-teal-500">
-            <h3 className={`text-xl font-black mb-4 flex items-center gap-2 ${alertModal.type === 'success' ? 'text-teal-600' : 'text-indigo-800'}`}>{alertModal.type === 'success' ? '🎉 성공' : '🔔 알림'}</h3>
-            <p className="text-slate-600 font-bold mb-8 leading-relaxed whitespace-pre-line text-lg">{alertModal.message}</p>
-            <button onClick={() => setAlertModal({ isOpen: false, message: '', type: 'info' })} className="w-full text-white py-3 sm:py-4 rounded-xl font-black text-lg transition-colors outline-none bg-teal-600 hover:bg-teal-700">확인</button>
-          </div>
-        </div>
-      )}
-
-      {lotSplitModal.isOpen && (
-        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md flex items-center justify-center z-50 p-4">
-          <div className="bg-white p-6 sm:p-8 rounded-3xl shadow-2xl max-w-2xl w-full transform transition-all border-4 border-rose-100 flex flex-col max-h-[90vh]">
-            <h3 className="text-2xl font-black text-rose-600 mb-4 flex items-center gap-2">🚨 수축률 편차 감지 (0.3% 초과)</h3>
-            <div className="text-slate-700 font-medium mb-4 text-sm sm:text-base leading-relaxed">위치 간 수축률 편차가 0.3%를 초과합니다. 같은 로트로 묶을 그룹(A, B, C...)을 직접 지정해 주세요. 지정된 그룹별로 평균 수축률이 산출되며 로트가 분리됩니다.</div>
-            
-            <div className="overflow-y-auto mb-6 pr-2 space-y-3">
-              {lotSplitModal.lotsToSplit.map((lot, wIdx) => (
-                <div key={wIdx} className="mb-6 bg-rose-50 border border-rose-200 rounded-xl p-4">
-                  <h4 className="font-black text-rose-800 mb-3 border-b border-rose-200 pb-2">품번: {lot.baseMixLot}</h4>
-                  <div className="flex flex-col gap-2">
-                    {lot.slots.map((s, sIdx) => {
-                      const slotLabel = slots.find(sl => sl.id === s.sId)?.label || s.sId;
-                      return (
-                        <div key={sIdx} className="flex justify-between items-center bg-white p-3 rounded-lg border border-rose-100 shadow-sm">
-                          <div className="flex items-center gap-3">
-                            <span className="font-black text-slate-700 bg-white border border-slate-300 px-2 py-1 rounded text-xs">{slotLabel}</span>
-                            <span className="text-sm font-bold text-slate-700">평균 수축률: <span className="text-rose-600 text-lg">{s.shrinkVal}%</span></span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <label className="text-xs font-bold text-slate-500">그룹 지정:</label>
-                            <select value={s.group} onChange={(e) => handleGroupChange(wIdx, sIdx, e.target.value)} className="border-2 border-slate-300 rounded p-1.5 text-sm font-black text-slate-800 focus:outline-none focus:border-rose-400 bg-white cursor-pointer">
-                              <option value="A">Group A</option><option value="B">Group B</option><option value="C">Group C</option><option value="D">Group D</option><option value="E">Group E</option>
-                            </select>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="flex flex-col gap-3 mt-auto">
-              <button onClick={handleApplySplit} className="w-full bg-rose-500 hover:bg-rose-600 text-white py-4 rounded-xl font-black text-lg shadow-lg shadow-rose-200 outline-none">지정한 그룹으로 로트 분리 확정</button>
-              <button onClick={handleApplyMergeAll} className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-4 rounded-xl font-black text-lg outline-none border border-slate-300">무시하고 하나의 로트로 통합 (전체 평균)</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 // ==========================================
 // Step 6: Inspection & Machining
 // ==========================================
