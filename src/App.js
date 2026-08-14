@@ -392,11 +392,16 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
 
   const handleSyncGoogleSheet = async () => { await syncToGoogleSheets(orderList, wipList, inventoryHistory, shippingHistory, ctx); };
 
-  const handleSaveWip = async (wip) => {
+ const handleSaveWip = async (wip) => {
     const safeQty = Number(editData.qty);
     if (isNaN(safeQty) || safeQty < 0) return ctx.showToast("올바른 숫자를 입력해주세요.", "error");
     try {
-      await setDoc(getDocRef("wipList", wip.id), { ...wip, qty: safeQty, currentStep: editData.currentStep, shrinkageRate: editData.shrinkageRate || wip.shrinkageRate });
+      await setDoc(getDocRef("wipList", wip.id), {
+        ...wip,
+        qty: safeQty,
+        currentStep: editData.currentStep || wip.currentStep,
+        shrinkageRate: editData.shrinkageRate || wip.shrinkageRate || ""
+      });
       setEditingId(null); ctx.showToast("수정 완료", "success");
     } catch (e) { ctx.showToast("실패", "error"); }
   };
