@@ -1,3 +1,280 @@
+import React, { useState, useEffect, useRef } from "react";
+import { initializeApp } from "firebase/app";
+import { getAuth, onAuthStateChanged, signInAnonymously } from "firebase/auth";
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, runTransaction, serverTimestamp, addDoc } from "firebase/firestore";
+import { LayoutDashboard, Package, Beaker, BoxSelect, Cylinder, Flame, Microscope, Wind, Printer, Plus, ArrowRight, CheckCircle2, AlertCircle, ShoppingCart, Calculator, History, X, Layers, Split, Edit2, Trash2, Save, Play, Thermometer, Droplets, Archive, Truck, Search, Database, RefreshCcw, Boxes, Lock, Settings } from "lucide-react";
+
+// ==========================================
+// [1] 대한민국 시간(KST) 및 유틸리티 함수
+// ==========================================
+const KST_TIMEZONE = "Asia/Seoul";
+const formatKST = (date = new Date()) => {
+  const parts = new Intl.DateTimeFormat("sv-SE", { timeZone: KST_TIMEZONE, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).formatToParts(date);
+  const get = (type) => parts.find((p) => p.type === type)?.value || "00";
+  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
+};
+const getKST = () => formatKST();
+const getKSTDateOnly = () => getKST().slice(2, 10).replace(/-/g, "");
+const cloneDeep = (value) => JSON.parse(JSON.stringify(value));
+
+// ==========================================
+// [2] TEST / PROD 완전 분리 환경 설정
+// ==========================================
+// 기본값은 TEST입니다.
+// 양산 배포 시 빌드 환경변수 REACT_APP_MES_ENV=production 만 지정하면
+// 동일한 소스코드가 양산 Firebase로 연결됩니다.
+//
+// 중요:
+// - TEST/PROD 모두 Firestore 내부 컬렉션명과 경로는 동일합니다.
+// - 실제 데이터 분리는 Firebase 프로젝트 자체로 수행합니다.
+// - TEST에서는 Google Sheets 외부 전송을 강제로 차단합니다.
+// - TEST/PROD projectId가 예상값과 다르면 앱 실행을 즉시 중단합니다.
+const BUILD_ENV = (typeof process !== "undefined" && process.env) ? process.env : {};
+const MES_ENV_RAW = String(BUILD_ENV.REACT_APP_MES_ENV || "test").toLowerCase();
+const IS_PRODUCTION = MES_ENV_RAW === "production" || MES_ENV_RAW === "prod";
+const IS_TEST = !IS_PRODUCTION;
+const MES_ENV = IS_PRODUCTION ? "production" : "test";
+
+const FIREBASE_CONFIGS = {
+  test: {
+    apiKey: "AIzaSyAhFnQLQGvkC7Fzq0C5w9o7th5fOBmu--8",
+    authDomain: "dasan-mes-test.firebaseapp.com",
+    projectId: "dasan-mes-test",
+    storageBucket: "dasan-mes-test.firebasestorage.app",
+    messagingSenderId: "41323517813",
+    appId: "1:41323517813:web:c33e9386b0315a1f39653c",
+  },
+  production: {
+    apiKey: "AIzaSyDxHU5KH8Wdq6Ct73S-gUOvK2YqD7J23kI",
+    authDomain: "dasanind-mes.firebaseapp.com",
+    projectId: "dasanind-mes",
+    storageBucket: "dasanind-mes.firebasestorage.app",
+    messagingSenderId: "782401133060",
+    appId: "1:782401133060:web:e6997bdb37fad09dd1f351",
+  },
+};
+
+const firebaseConfig = IS_PRODUCTION ? FIREBASE_CONFIGS.production : FIREBASE_CONFIGS.test;
+const EXPECTED_FIREBASE_PROJECT_ID = IS_PRODUCTION ? "dasanind-mes" : "dasan-mes-test";
+
+// 🚨 안전장치: 실행 환경과 Firebase 프로젝트가 일치하지 않으면 즉시 중단
+if (firebaseConfig.projectId !== EXPECTED_FIREBASE_PROJECT_ID) {
+  throw new Error(
+    `[MES 안전차단] ${MES_ENV} 환경의 Firebase projectId가 올바르지 않습니다. ` +
+    `expected=${EXPECTED_FIREBASE_PROJECT_ID}, actual=${firebaseConfig.projectId}`
+  );
+}
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+// TEST / PROD 내부 데이터 구조는 완전히 동일합니다.
+// 실제 양산 Firestore가 사용하는 경로와 동일하게 고정합니다.
+// artifacts/dasan-mes-app/public/data/{collection}
+const appId = "dasan-mes-app";
+const getColRef = (colName) => collection(db, "artifacts", appId, "public", "data", colName);
+const getDocRef = (colName, docId) => doc(db, "artifacts", appId, "public", "data", colName, String(docId));
+
+// ==========================================
+// [3] Google Sheets 외부 전송 제어
+// ==========================================
+// 양산에서 현재 사용 중인 Apps Script URL.
+// TEST에서는 아래 URL이 코드에 있어도 절대로 호출되지 않습니다.
+const PROD_GOOGLE_SHEETS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbxFqyQaps_suzkAmQnOgDDOU_A1p--lmvAIOLZEo8LSPIAQ5mVLofzfFZo0Rmvq7LI7DA/exec";
+const GOOGLE_SHEETS_ENABLED = IS_PRODUCTION;
+const GOOGLE_SHEETS_WEBHOOK_URL = IS_PRODUCTION ? PROD_GOOGLE_SHEETS_WEBHOOK_URL : "";
+
+const syncToGoogleSheets = async (orderList, wipList, inventoryHistory, shippingHistory, ctx) => {
+  if (!GOOGLE_SHEETS_ENABLED) {
+    console.log("[TEST MES] 실제 Google Sheets 전송이 차단되었습니다.");
+    if (ctx) ctx.showToast("[TEST] Google Sheets 전송이 차단되었습니다.", "success");
+    return;
+  }
+
+  const mergedLots = {};
+  const wipFinished = (wipList || []).filter((w) => w.currentStep === "done");
+  wipFinished.forEach((w) => {
+    mergedLots[w.mixLot] = { mixLot: w.mixLot, type: w.type, height: w.height, qty: Number(w.qty), details: w.details || "", shrinkageRate: w.shrinkageRate || "-" };
+  });
+
+  (shippingHistory || []).forEach((h) => {
+    if (!mergedLots[h.lot]) {
+      mergedLots[h.lot] = { mixLot: h.lot, type: h.type, height: h.height, qty: 0, details: h.details || "", shrinkageRate: "-" };
+    }
+    mergedLots[h.lot].qty += Number(h.qty);
+    if (mergedLots[h.lot].shrinkageRate === "-") {
+      const shrinkMatch = (h.details || "").match(/\[수축률:\s*([0-9.]+)/);
+      if (shrinkMatch) mergedLots[h.lot].shrinkageRate = shrinkMatch[1];
+    }
+  });
+
+  const finishedLots = Object.values(mergedLots);
+  if (finishedLots.length === 0) {
+    if (ctx) ctx.showToast("동기화할 생산 완료/출고 데이터가 없습니다.", "error");
+    return;
+  }
+
+  const lotRecords = finishedLots.map((w) => {
+    const details = w.details || "";
+    const defectMatch = details.match(/불량\s*(\d+)개:\s*([^\]]+)/);
+    const defectQty = defectMatch ? parseInt(defectMatch[1]) : 0;
+    const defectReason = defectMatch ? defectMatch[2] : "-";
+    const dateMatch = details.match(/\[(\d{4}-\d{2}-\d{2})\s/);
+    const finishDate = dateMatch ? dateMatch[1] : getKST().split(" ")[0];
+    return [finishDate, w.mixLot, w.type, `${w.height}T`, Number(w.qty), defectQty, defectReason, w.shrinkageRate || "-", details];
+  });
+
+  const monthlyData = {};
+  lotRecords.forEach((record) => {
+    const month = record[0].substring(0, 7);
+    const goodQty = record[4];
+    const defQty = record[5];
+    if (!monthlyData[month]) monthlyData[month] = { total: 0, defect: 0 };
+    monthlyData[month].total += goodQty + defQty;
+    monthlyData[month].defect += defQty;
+  });
+
+  const monthlySummary = Object.keys(monthlyData).sort((a, b) => b.localeCompare(a)).map((month) => {
+    const data = monthlyData[month];
+    const defectRate = data.total > 0 ? data.defect / data.total : 0;
+    return [month, data.total, data.defect, defectRate];
+  });
+
+  try {
+    await fetch(GOOGLE_SHEETS_WEBHOOK_URL, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ lotRecords, monthlySummary })
+    });
+    if (ctx) ctx.showToast("주주 보고용 구글 시트 동기화 완료", "success");
+  } catch (e) {
+    console.error("Google Sheets 동기화 실패:", e);
+    if (ctx) ctx.showToast("시트 동기화 실패", "error");
+  }
+};
+
+const logProcessToGoogleSheet = async (stepId, wipItem, operator, extraData = {}) => {
+  if (!GOOGLE_SHEETS_ENABLED) {
+    console.log(`[TEST MES 공정 로그 차단] ${stepId}`, wipItem, operator, extraData);
+    return;
+  }
+
+  try {
+    const payload = {
+      type: "PROCESS_LOG",
+      data: {
+        stepId: stepId,
+        timestamp: getKST(),
+        lot: wipItem.mixLot || wipItem.lot || wipItem.orderNo || "N/A",
+        product: wipItem.type ? `${wipItem.type} ${wipItem.height}T` : (wipItem.productCode || "N/A"),
+        qty: Number(wipItem.qty) || 0,
+        defects: extraData.defects || 0,
+        defectReason: extraData.defectReason || "-",
+        worker: operator || "현장작업자",
+        equipment: extraData.equipment || "-",
+        conditions: extraData.conditions || "-",
+        measurements: extraData.measurements || "-",
+        details: extraData.details || "-"
+      }
+    };
+    await fetch(GOOGLE_SHEETS_WEBHOOK_URL, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify(payload)
+    });
+  } catch (error) {
+    console.error(`[${stepId}] 기록 전송 실패:`, error);
+  }
+};
+
+const DEFAULT_MASTER_SETTINGS = {
+  MATERIAL_TYPES: ["4Y-W", "4Y-Y", "5E-P", "4Y-G"],
+  PRODUCT_COLORS: ["BL0", "BL1", "BL2", "BL3", "A1", "A2", "B1"],
+  PRODUCT_HEIGHTS: ["20", "22", "25", "30", "35"],
+  WEIGHT_BY_HEIGHT: { 20: 502, 22: 553, 25: 628, 30: 754, 35: 879 },
+  RATIO_BY_COLOR: {
+    BL0: { "4Y-W": 1.0, "4Y-Y": 0.0, "5E-P": 0.0, "4Y-G": 0.0 }, BL1: { "4Y-W": 0.961, "4Y-Y": 0.03, "5E-P": 0.004, "4Y-G": 0.005 },
+    BL2: { "4Y-W": 0.931, "4Y-Y": 0.055, "5E-P": 0.006, "4Y-G": 0.008 }, BL3: { "4Y-W": 0.915, "4Y-Y": 0.079, "5E-P": 0.006, "4Y-G": 0.0 },
+    A1: { "4Y-W": 0.83, "4Y-Y": 0.15, "5E-P": 0.02, "4Y-G": 0.0 }, A2: { "4Y-W": 0.786, "4Y-Y": 0.174, "5E-P": 0.02, "4Y-G": 0.02 },
+    B1: { "4Y-W": 0.869, "4Y-Y": 0.12, "5E-P": 0.011, "4Y-G": 0.0 },
+  },
+  TARGET_PRESSURE: { step3: "70", step4A: "250", step4B: "250" },
+  TARGET_TEMPERATURE: { furnace1: "1050", furnace2: "1050" },
+  SAFETY_THRESHOLD: { "4Y-W": "50", "4Y-Y": "50", "5E-P": "50", "4Y-G": "50" }
+};
+
+const PROCESS_STEPS = [
+  { id: "dashboard", name: "대시보드", icon: LayoutDashboard },
+  { id: "step0", name: "발주 관리", icon: ShoppingCart },
+  { id: "step1", name: "원재료 창고", icon: Package },
+  { id: "step2", name: "혼합", icon: Beaker },
+  { id: "step3", name: "1차 성형", icon: Boxes },
+  { id: "step4", name: "2차 성형", icon: Cylinder },
+  { id: "step5", name: "열처리", icon: Flame },
+  { id: "step5_shrink", name: "수축률 측정", icon: Calculator }, // 🌟 공정 분리 신설
+  { id: "step6", name: "검수/가공", icon: Microscope },
+  { id: "step7", name: "건조", icon: Wind },
+  { id: "step8", name: "포장 (라벨링)", icon: Printer },
+  { id: "step9", name: "완제품 창고", icon: Archive },
+  { id: "tracking", name: "로트 이력 추적", icon: Search },
+];
+
+const DEFAULT_FURNACES = {
+  1: { isHeating: false, temp: "1050", operator: "", memo: "", slotData: {} },
+  2: { isHeating: false, temp: "1050", operator: "", memo: "", slotData: {} },
+  3: { isHeating: false },
+  4: { isHeating: false },
+};
+
+const DEFAULT_DRYING_ROOM = { cartItems: [], temp: "60", humidity: "20", isDrying: false, operator: "", completionData: {}, dryingWipIds: [] };
+
+const SyncInput = ({ value, onChange, ...props }) => {
+  const [localVal, setLocalVal] = useState(value || "");
+  useEffect(() => { setLocalVal(value || ""); }, [value]);
+  return <input {...props} value={localVal} onChange={(e) => setLocalVal(e.target.value)} onBlur={() => onChange(localVal)} />;
+};
+
+export default function DasanMES() {
+  const MASTER_PIN = "7777";
+  const PROCESS_PIN = "15938";
+  const [isUnlocked, setIsUnlocked] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [pinInput, setPinInput] = useState("");
+
+  const urlParams = new URLSearchParams(window.location.search);
+  const initialStep = urlParams.get("step") || "dashboard";
+
+  const [user, setUser] = useState(null);
+  const [activeStep, setActiveStep] = useState(initialStep);
+  const [toast, setToast] = useState(null);
+  const [confirmDialog, setConfirmDialog] = useState(null);
+  const [inventory, setInventory] = useState([]);
+  const [inventoryHistory, setInventoryHistory] = useState([]);
+  const [wipList, setWipList] = useState([]);
+  const [orderList, setOrderList] = useState([]);
+  const [shippingHistory, setShippingHistory] = useState([]);
+  const [furnaces, setFurnaces] = useState(cloneDeep(DEFAULT_FURNACES));
+  const [dryingRoom, setDryingRoom] = useState(cloneDeep(DEFAULT_DRYING_ROOM));
+  const [masterSettings, setMasterSettings] = useState(DEFAULT_MASTER_SETTINGS);
+
+  const prevSyncCount = useRef({ finished: 0, shipped: 0 });
+
+  useEffect(() => {
+    if (!isUnlocked) return;
+    const currentFinished = wipList.filter((w) => w.currentStep === "done").length;
+    const currentShipped = shippingHistory.length;
+    if (currentFinished > prevSyncCount.current.finished || currentShipped > prevSyncCount.current.shipped) {
+      syncToGoogleSheets(orderList, wipList, inventoryHistory, shippingHistory, null);
+    }
+    prevSyncCount.current = { finished: currentFinished, shipped: currentShipped };
+  }, [wipList, shippingHistory, orderList, inventoryHistory, isUnlocked]);
+
+  const showToast = (msg, type = "error") => { setToast({ msg, type }); setTimeout(() => setToast(null), 3000); };
+  const showConfirm = (msg, onConfirm) => { setConfirmDialog({ msg, onConfirm }); };
+  const ctx = { showToast, showConfirm };
 
   useEffect(() => {
     let meta = document.querySelector('meta[name="robots"]');
