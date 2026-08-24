@@ -360,10 +360,12 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
           const bom = getBOM(o.color, o.singleWeight, remainQty);
           return sum + (bom[type] || 0);
         }, 0);
-      const reqFromPendingLots = (wipList || []).filter((w) => w.currentStep === "step1").reduce((sum, w) => {
-          const bom = getBOM(w.type, w.singleWeight || 628, w.qty);
-          return sum + (bom[type] || 0);
-        }, 0);
+     const reqFromPendingLots = (wipList || [])
+  .filter((w) => ["step1", "step2"].includes(w.currentStep))
+  .reduce((sum, w) => {
+    const bom = getBOM(w.type, w.singleWeight || 628, w.qty);
+    return sum + (bom[type] || 0);
+  }, 0);
       const totalRequired = reqFromOrders + reqFromPendingLots;
       const expectedStock = currentStock - totalRequired;
       return { type, current: currentStock, required: totalRequired, expected: expectedStock, isShort: expectedStock < 0 };
@@ -733,7 +735,7 @@ function Step0OrderManagement({ orderList, masterSettings, ctx }) {
 }
 
 // ==========================================
-// Step 1: Material Warehouse 
+// Step 1: Material Warehouse (배합 공정으로 이관만 담당)
 // ==========================================
 function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSettings, ctx }) {
   const [inboundItems, setInboundItems] = useState(masterSettings.MATERIAL_TYPES.map((t) => ({ type: t, lot: "", weight: "" })));
@@ -753,58 +755,78 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
   };
 
   const handleAdd = async (e) => {
-    e.preventDefault();
-    const validItems = inboundItems.filter((item) => item.lot && item.weight);
-    if (validItems.length === 0) return ctx.showToast("입고 데이터를 입력해주세요.", "error");
-    for (let item of validItems) { if (isNaN(parseFloat(item.weight)) || parseFloat(item.weight) <= 0) return ctx.showToast(`[${item.type}] 숫자를 입력해주세요.`, "error"); }
-    const dStr = getKST().split(" ")[0]; const timeStr = getKST().slice(0, 16);
+    if (e && e.preventDefault) e.preventDefault();
+    const validItems = inboundItems.filter((item) => item.lot && item.lot.trim() !== "" && item.weight && item.weight.toString().trim() !== "");
+
+    if (validItems.length === 0) {
+      return ctx.showToast("로트번호와 중량을 모두 입력한 항목이 없습니다.", "error");
+    }
+
+    for (let item of validItems) {
+      if (isNaN(parseFloat(item.weight)) || parseFloat(item.weight) <= 0) {
+        return ctx.showToast(`[${item.type}] 올바른 중량 숫자를 입력해주세요.`, "error");
+      }
+    }
+
+    const dStr = getKST().split(" ")[0];
+    const timeStr = getKST().slice(0, 16);
+
     try {
       for (let item of validItems) {
         const wVal = parseFloat(item.weight);
         const newId = Date.now().toString() + Math.random().toString().slice(2, 7);
         const histId = Date.now().toString() + Math.random().toString().slice(2, 7);
-        await setDoc(getDocRef("inventory", newId), { id: newId, lot: item.lot, type: item.type, weight: wVal, date: dStr, status: "입고완료", createdAt: serverTimestamp() });
-        await setDoc(getDocRef("inventoryHistory", histId), { id: histId, date: timeStr, type: "IN", materialType: item.type, lot: item.lot, qty: wVal, note: "일괄입고", createdAt: serverTimestamp() });
+
+        await setDoc(getDocRef("inventory", newId), {
+          id: newId,
+          lot: item.lot.trim(),
+          type: item.type,
+          weight: wVal,
+          date: dStr,
+          status: "입고완료",
+          createdAt: serverTimestamp()
+        });
+
+        await setDoc(getDocRef("inventoryHistory", histId), {
+          id: histId,
+          date: timeStr,
+          type: "IN",
+          materialType: item.type,
+          lot: item.lot.trim(),
+          qty: wVal,
+          note: "일괄입고",
+          createdAt: serverTimestamp()
+        });
       }
+
       setInboundItems(masterSettings.MATERIAL_TYPES.map((t) => ({ type: t, lot: "", weight: "" })));
-      setIsModalOpen(false); ctx.showToast("소재 입고 완료", "success");
-    } catch (err) { ctx.showToast("입고 실패", "error"); }
+      setIsModalOpen(false);
+      ctx.showToast("소재 입고 완료! 재고에 반영되었습니다.", "success");
+    } catch (err) {
+      console.error("입고 처리 에러:", err);
+      ctx.showToast(`입고 실패: ${err.message || err}`, "error");
+    }
   };
 
   const handleOutboundLot = async (lot) => {
     const op = operators[lot.id];
     if (!op) return ctx.showToast("작업자 성명을 입력해주세요.", "error");
     const neededBOM = calcPartialBOM(lot.type, lot.singleWeight, lot.qty);
-    let currentInv = [...inventory].sort((a, b) => new Date(a.date) - new Date(b.date));
-    let invUpdates = [], invDeletes = [], historyToStore = [];
-
-    for (const [mat, needed] of Object.entries(neededBOM)) {
-      const avail = currentInv.filter((i) => i.type === mat).reduce((s, i) => s + i.weight, 0);
-      if (avail < needed) return ctx.showToast(`[${mat}] 소재 부족!`, "error");
-    }
-
-    for (const [mat, needed] of Object.entries(neededBOM)) {
-      let remain = needed;
-      for (let i = 0; i < currentInv.length; i++) {
-        if (currentInv[i].type === mat && currentInv[i].weight > 0) {
-          const deduct = Math.min(currentInv[i].weight, remain);
-          currentInv[i].weight -= deduct; remain -= deduct;
-          historyToStore.push({ id: Date.now() + Math.random().toString(), date: getKST().slice(0, 16), type: "OUT", materialType: mat, lot: currentInv[i].lot, qty: Number(deduct.toFixed(3)), note: `분할출고(${lot.mixLot})` });
-          if (currentInv[i].weight <= 0) invDeletes.push(currentInv[i].id); else invUpdates.push(currentInv[i]);
-          if (remain <= 0) break;
-        }
-      }
-    }
+    const totalW = Object.values(neededBOM).reduce((a, b) => a + b, 0);
 
     try {
-      for (let u of invUpdates) await setDoc(getDocRef("inventory", u.id), u);
-      for (let d of invDeletes) await deleteDoc(getDocRef("inventory", d));
-      for (let h of historyToStore) await setDoc(getDocRef("inventoryHistory", h.id), h);
-      const totalW = Object.values(neededBOM).reduce((a, b) => a + b, 0);
-      await setDoc(getDocRef("wipList", lot.id), { ...lot, weight: totalW.toFixed(3), currentStep: "step2", details: `${lot.details}\n[${getKST()}] [소재창고] 출고완료 (담당:${op})` });
-      ctx.showToast(`로트 ${lot.mixLot} 출고 완료`, "success");
-      logProcessToGoogleSheet("step1", lot, op, { details: "소재 출고 및 칭량 완료" });
-    } catch (e) { ctx.showToast("오류 발생", "error"); }
+      await setDoc(getDocRef("wipList", lot.id), {
+        ...lot,
+        weight: totalW.toFixed(3),
+        currentStep: "step2",
+        details: `${lot.details || ""}\n[${getKST()}] [소재창고] 배합 대기로 이관 (담당:${op})`
+      });
+      ctx.showToast(`로트 ${lot.mixLot} 배합 공정으로 이관 완료`, "success");
+      logProcessToGoogleSheet("step1", lot, op, { details: "배합 공정 이관 완료" });
+    } catch (e) {
+      console.error("배합실 이관 오류:", e);
+      ctx.showToast(`오류 발생: ${e.message || e}`, "error");
+    }
   };
 
   return (
@@ -875,7 +897,7 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
                   <td className="px-6 py-4">
                     <div className="flex flex-col gap-2 items-center">
                       <input type="text" placeholder="작업자" value={operators[lot.id] || ""} onChange={(e) => setOperators({ ...operators, [lot.id]: e.target.value })} className="border p-2 text-xs text-center font-bold rounded-lg w-24 outline-none focus:border-indigo-500" />
-                      <button onClick={() => handleOutboundLot(lot)} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-black hover:bg-blue-700 shadow-md">출고 실행</button>
+                      <button onClick={() => handleOutboundLot(lot)} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-black hover:bg-blue-700 shadow-md">배합실 이관</button>
                     </div>
                   </td>
                 </tr>
@@ -924,20 +946,29 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
 }
 
 // ==========================================
-// Step 2: Mixing
+// Step 2: Mixing (로트 지정 차감 및 부족 수량 발주 롤백)
 // ==========================================
-function Step2Mixing({ wipList, masterSettings, ctx }) {
-  const pendingWip = wipList.filter((w) => w.currentStep === "step2");
+function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSettings, ctx }) {
+  const pendingWip = (wipList || []).filter((w) => w.currentStep === "step2");
   const [activeMixId, setActiveMixId] = useState(null);
-  const [isSplitMode, setIsSplitMode] = useState(false);
-  const [splitMaterial, setSplitMaterial] = useState("");
-  const [splitWeightStr, setSplitWeightStr] = useState("");
+  const [isShortageMode, setIsShortageMode] = useState(false);
+  const [selectedLots, setSelectedLots] = useState({});
   const [operator, setOperator] = useState("");
   const [specialNote, setSpecialNote] = useState("");
 
+  // 부족 수량 입력용 상태
+  const [completedBatches, setCompletedBatches] = useState("");
+  const [residualMaterial, setResidualMaterial] = useState("");
+  const [residualGrams, setResidualGrams] = useState("");
+
   useEffect(() => {
-    if (!activeMixId && pendingWip.length > 0) { setActiveMixId(pendingWip[0].id); setIsSplitMode(false); }
-    else if (activeMixId && !pendingWip.find((w) => w.id === activeMixId)) { setActiveMixId(pendingWip.length > 0 ? pendingWip[0].id : null); setIsSplitMode(false); }
+    if (!activeMixId && pendingWip.length > 0) {
+      setActiveMixId(pendingWip[0].id);
+      setIsShortageMode(false);
+    } else if (activeMixId && !pendingWip.find((w) => w.id === activeMixId)) {
+      setActiveMixId(pendingWip.length > 0 ? pendingWip[0].id : null);
+      setIsShortageMode(false);
+    }
   }, [pendingWip, activeMixId]);
 
   const activeJob = pendingWip.find((w) => w.id === activeMixId);
@@ -945,136 +976,289 @@ function Step2Mixing({ wipList, masterSettings, ctx }) {
   const activeMaterials = Object.keys(ratios).filter((m) => ratios[m] > 0);
 
   useEffect(() => {
-    if (activeMaterials.length > 0 && !activeMaterials.includes(splitMaterial)) { setSplitMaterial(activeMaterials[0]); setSplitWeightStr(""); }
-  }, [activeJob, activeMaterials, splitMaterial]);
+    if (activeMaterials.length > 0 && !activeMaterials.includes(residualMaterial)) {
+      setResidualMaterial(activeMaterials[0]);
+    }
+  }, [activeJob, activeMaterials, residualMaterial]);
 
-  const splitWeight = parseFloat(splitWeightStr) || 0;
-  const matRatio = ratios[splitMaterial] || 1;
-  const subTotal = matRatio > 0 ? splitWeight / matRatio : 0;
-  const origTotal = activeJob ? parseFloat(activeJob.weight) : 0;
-  const isValidSplit = subTotal > 0 && subTotal < origTotal;
-  const remainTotal = origTotal - subTotal;
-  const subQty = activeJob ? Math.round((subTotal / origTotal) * activeJob.qty) : 0;
-  const remainQty = activeJob ? activeJob.qty - subQty : 0;
+  // 기본 원본 수치
+  const origTotalWeight = activeJob ? parseFloat(activeJob.weight) : 0;
+  const fullBatches = Math.floor(origTotalWeight / 15);
+  const remainder = Number((origTotalWeight % 15).toFixed(3));
 
-  const handleMix = async () => {
-    if (!operator) return ctx.showToast("작업자 필수");
+  // 원료 부족(부분 배합) 시 실 배합량 및 생산 가능 수량 산출
+  const batchesCount = parseInt(completedBatches) || 0;
+  const resKg = (parseFloat(residualGrams) || 0) / 1000;
+  const resMatRatio = ratios[residualMaterial] || 1;
+  const residualCanisterWeight = resMatRatio > 0 ? resKg / resMatRatio : 0;
+  const actualMixedTotalKg = (batchesCount * 15) + residualCanisterWeight;
+
+  // 실제 생산 가능 수량 (EA) 및 부족 수량
+  const actualQty = origTotalWeight > 0
+    ? Math.min(activeJob?.qty || 0, Math.floor(((activeJob?.qty || 0) * actualMixedTotalKg) / origTotalWeight))
+    : 0;
+  const shortageQty = activeJob ? Math.max(0, activeJob.qty - actualQty) : 0;
+
+  // 배합 완료 처리 (원재료 창고 실물 로트 차감 + 발주 롤백)
+  const handleCompleteMix = async () => {
+    if (!activeJob) return ctx.showToast("진행할 배합 작업이 없습니다.", "error");
+    if (!operator) return ctx.showToast("작업자 성명을 입력해주세요.", "error");
+
+    for (const mat of activeMaterials) {
+      if (!selectedLots[mat]) return ctx.showToast(`[${mat}] 원재료 로트를 선택해주세요.`, "error");
+    }
+
+    const finalMixedWeight = isShortageMode ? actualMixedTotalKg : origTotalWeight;
+    const finalProducedQty = isShortageMode ? actualQty : activeJob.qty;
+
+    if (!Number.isFinite(finalMixedWeight) || finalMixedWeight <= 0) {
+      return ctx.showToast("배합 중량이 올바르지 않습니다.", "error");
+    }
+    if (finalProducedQty <= 0) return ctx.showToast("배합 수량이 올바르지 않습니다.", "error");
+    if (isShortageMode && finalMixedWeight > origTotalWeight) {
+      return ctx.showToast("실제 배합량이 원래 지시 중량을 초과할 수 없습니다.", "error");
+    }
+
+    // 소모 분말 중량 계산
+    const consumedBOM = {};
+    for (const mat of activeMaterials) {
+      consumedBOM[mat] = Number((finalMixedWeight * ratios[mat]).toFixed(3));
+    }
+
+    // 재고 잔량 검증
+    for (const mat of activeMaterials) {
+      const targetLotId = selectedLots[mat];
+      const invItem = (inventory || []).find((i) => i.id === targetLotId);
+      if (!invItem || Number(invItem.weight) < consumedBOM[mat]) {
+        return ctx.showToast(
+          `선택한 [${mat}] 로트의 잔량이 부족합니다! (필요: ${consumedBOM[mat]}kg, 잔여: ${invItem?.weight || 0}kg)`,
+          "error"
+        );
+      }
+    }
+
     try {
-      await setDoc(getDocRef("wipList", activeJob.id), { ...activeJob, currentStep: "step3", details: `${activeJob.details}\n[${getKST()}] [배합] 담당: ${operator} ${specialNote ? `[메모:${specialNote}]` : ""}` });
-      setOperator(""); setSpecialNote(""); ctx.showToast("배합 완료", "success");
-      logProcessToGoogleSheet("step2", activeJob, operator, { details: specialNote || "일반 배합 완료" });
-    } catch (err) { ctx.showToast("오류 발생", "error"); }
-  };
+      const curTime = getKST();
+      const usedLotInfoStr = activeMaterials.map((m) => {
+        const lotItem = (inventory || []).find((i) => i.id === selectedLots[m]);
+        return `${m}:${lotItem?.lot || "N/A"}(${consumedBOM[m]}kg)`;
+      }).join(", ");
 
-  const handleSplitMix = async () => {
-    if (!operator) return ctx.showToast("작업자 필수");
-    if (!isValidSplit) return ctx.showToast("잔여 중량 오류", "error");
-    const id1 = Date.now().toString(); const id2 = (Date.now() + 1).toString();
-    try {
-      await deleteDoc(getDocRef("wipList", activeJob.id));
-      await setDoc(getDocRef("wipList", id1), { ...activeJob, id: id1, mixLot: `${activeJob.mixLot}-R`, weight: subTotal.toFixed(3), qty: subQty, currentStep: "step3", details: `${activeJob.details}\n[${getKST()}] [배합] 잔량 분할 배합 (담당:${operator})` });
-      await setDoc(getDocRef("wipList", id2), { ...activeJob, id: id2, mixLot: `MIX-${getKSTDateOnly()}-${Math.floor(Math.random() * 100)}`, weight: remainTotal.toFixed(3), qty: remainQty, currentStep: "step2", details: `${activeJob.details}\n[${getKST()}] [배합] 이전 로트 잔량 분리 생성` });
-      setIsSplitMode(false); setSplitWeightStr(""); setOperator(""); setSpecialNote(""); ctx.showToast("잔량 분할 완료", "success");
-      logProcessToGoogleSheet("step2", { ...activeJob, qty: subQty }, operator, { details: "잔량 분할 배합 완료" });
-    } catch (err) { ctx.showToast("오류 발생", "error"); }
+      // 1. 원재료 창고 재고 차감 및 입출고 이력 기록
+      for (const mat of activeMaterials) {
+        const targetLotId = selectedLots[mat];
+        const invItem = (inventory || []).find((i) => i.id === targetLotId);
+        const remainW = Number((Number(invItem.weight) - consumedBOM[mat]).toFixed(3));
+        const histId = Date.now().toString() + Math.random().toString().slice(2, 7);
+
+        if (remainW <= 0) {
+          await deleteDoc(getDocRef("inventory", targetLotId));
+        } else {
+          await setDoc(getDocRef("inventory", targetLotId), { ...invItem, weight: remainW });
+        }
+
+        await setDoc(getDocRef("inventoryHistory", histId), {
+          id: histId,
+          date: curTime.slice(0, 16),
+          type: "OUT",
+          materialType: mat,
+          lot: invItem.lot,
+          qty: consumedBOM[mat],
+          note: `배합투입(${activeJob.mixLot})`,
+          createdAt: serverTimestamp()
+        });
+      }
+
+      // 2. 원료 부족 시 발주 관리(Step 0)로 잔여 수량 롤백
+      if (isShortageMode && shortageQty > 0 && activeJob.orderId) {
+        const targetOrder = (orderList || []).find((o) => o.id === activeJob.orderId);
+        if (targetOrder) {
+          const newReleasedQty = Math.max(0, (targetOrder.releasedQty || targetOrder.qty) - shortageQty);
+          await setDoc(getDocRef("orderList", activeJob.orderId), {
+            ...targetOrder,
+            releasedQty: newReleasedQty,
+            status: newReleasedQty === 0 ? "대기중" : (newReleasedQty >= targetOrder.qty ? "생산중" : "부분투입")
+          });
+        }
+      }
+
+      // 3. WIP 로트 업데이트 및 다음 공정(1차 성형) 이관
+      const shortageNote = isShortageMode ? ` [원료부족 부분배합: ${shortageQty}EA 발주 롤백]` : "";
+      const recordDetails = `[${curTime}] [배합완료] 투입로트(${usedLotInfoStr})${shortageNote} | 담당:${operator} ${specialNote ? `[메모:${specialNote}]` : ""}`;
+
+      await setDoc(getDocRef("wipList", activeJob.id), {
+        ...activeJob,
+        qty: finalProducedQty,
+        weight: finalMixedWeight.toFixed(3),
+        currentStep: "step3",
+        details: `${activeJob.details || ""}\n${recordDetails}`
+      });
+
+      setOperator("");
+      setSpecialNote("");
+      setIsShortageMode(false);
+      setCompletedBatches("");
+      setResidualGrams("");
+      setSelectedLots({});
+      ctx.showToast(`배합 완료! ${finalProducedQty}EA 1차 성형으로 이관되었습니다.`, "success");
+      logProcessToGoogleSheet("step2", { ...activeJob, qty: finalProducedQty }, operator, { details: recordDetails });
+    } catch (err) {
+      console.error("배합 처리 오류:", err);
+      ctx.showToast(`배합 처리 중 오류 발생: ${err.message || err}`, "error");
+    }
   };
 
   return (
     <div className="space-y-8">
+      {pendingWip.length > 1 && (
+        <div className="bg-white border rounded-2xl p-4 shadow-sm">
+          <div className="text-xs font-bold text-slate-500 mb-2">배합 대상 LOT 선택</div>
+          <div className="flex flex-wrap gap-2">
+            {pendingWip.map((w) => (
+              <button
+                key={w.id}
+                onClick={() => { setActiveMixId(w.id); setSelectedLots({}); setIsShortageMode(false); setCompletedBatches(""); setResidualGrams(""); }}
+                className={`px-3 py-2 rounded-lg text-xs font-black border ${activeMixId === w.id ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-slate-600 border-slate-200"}`}
+              >
+                {w.mixLot} · {w.type} {w.height}T
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {activeJob ? (
-        (() => {
-          const fullBatches = Math.floor(parseFloat(activeJob.weight) / 15);
-          const remainder = Number((parseFloat(activeJob.weight) % 15).toFixed(3));
-          return (
-            <div className="bg-white rounded-2xl shadow-md border overflow-hidden">
-              <div className="bg-indigo-600 px-6 py-4 flex justify-between items-center text-white">
-                <h3 className="text-xl font-black flex items-center"><Beaker className="w-6 h-6 mr-2 opacity-80" /> 소재 배합 지시서</h3>
-                <span className="bg-indigo-800 text-sm px-4 py-1.5 rounded-full font-mono font-bold shadow-inner">{activeJob.mixLot}</span>
+        <div className="bg-white rounded-2xl shadow-md border overflow-hidden">
+          <div className="bg-indigo-600 px-6 py-4 flex justify-between items-center text-white">
+            <h3 className="text-xl font-black flex items-center"><Beaker className="w-6 h-6 mr-2 opacity-80" /> 소재 배합 지시서 및 실물 차감</h3>
+            <span className="bg-indigo-800 text-sm px-4 py-1.5 rounded-full font-mono font-bold shadow-inner">{activeJob.mixLot}</span>
+          </div>
+
+          <div className="flex border-b bg-slate-50">
+            <button onClick={() => setIsShortageMode(false)} className={`flex-1 py-4 text-sm font-bold flex items-center justify-center ${!isShortageMode ? "bg-white text-indigo-700 border-b-2 border-indigo-600" : "text-slate-500"}`}>
+              <Cylinder className="w-4 h-4 mr-2" /> 정상 전체 배합 (15kg 기준)
+            </button>
+            <button onClick={() => setIsShortageMode(true)} className={`flex-1 py-4 text-sm font-bold flex items-center justify-center ${isShortageMode ? "bg-orange-50 text-orange-700 border-b-2 border-orange-600" : "text-slate-500"}`}>
+              <Split className="w-4 h-4 mr-2" /> 원료 부족 부분 배합 (발주 자동 롤백)
+            </button>
+          </div>
+
+          <div className="p-8">
+            <div className="flex justify-between mb-8 pb-6 border-b gap-6">
+              <div>
+                <div className="text-sm font-bold text-slate-500 mb-1">작업 대상 제품</div>
+                <div className="text-3xl font-black flex items-center">
+                  {activeJob.type} <span className="text-indigo-600 ml-2">{activeJob.height}T</span>
+                  <span className="text-xl font-bold text-indigo-600 ml-3 bg-indigo-50 px-3 py-1 rounded-lg">지시: {activeJob.qty} EA</span>
+                </div>
               </div>
-              <div className="flex border-b bg-slate-50">
-                <button onClick={() => setIsSplitMode(false)} className={`flex-1 py-4 text-sm font-bold flex items-center justify-center ${!isSplitMode ? "bg-white text-indigo-700 border-b-2 border-indigo-600" : "text-slate-500"}`}><Cylinder className="w-4 h-4 mr-2" /> 일반 배합 (15kg 기준)</button>
-                <button onClick={() => setIsSplitMode(true)} className={`flex-1 py-4 text-sm font-bold flex items-center justify-center ${isSplitMode ? "bg-orange-50 text-orange-700 border-b-2 border-orange-600" : "text-slate-500"}`}><Split className="w-4 h-4 mr-2" /> 잔량 분할 배합</button>
+              <div className="text-right">
+                <div className="text-sm font-bold text-slate-500 mb-1">지시 총 배합 중량</div>
+                <div className="text-4xl font-black">{origTotalWeight.toFixed(3)} <span className="text-xl font-medium text-slate-400">kg</span></div>
               </div>
-              <div className="p-8">
-                <div className="flex justify-between mb-8 pb-6 border-b gap-6">
-                  <div>
-                    <div className="text-sm font-bold text-slate-500 mb-1">작업 제품</div>
-                    <div className="text-3xl font-black flex items-center">{activeJob.type} <span className="text-indigo-600 ml-2">{activeJob.height}T</span> <span className="text-xl font-bold text-indigo-600 ml-3 bg-indigo-50 px-3 py-1 rounded-lg">{activeJob.qty} EA</span></div>
+            </div>
+
+            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 mb-8">
+              <h4 className="font-black text-base text-slate-800 mb-4 flex items-center">
+                <Package className="w-5 h-5 mr-2 text-indigo-600" /> 투입 원재료 LOT 번호 지정 (창고 재고에서 차감)
+              </h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                {activeMaterials.map((mat) => {
+                  const availableLots = (inventory || []).filter((i) => i.type === mat && Number(i.weight) > 0);
+                  const selectedItem = availableLots.find((i) => i.id === selectedLots[mat]);
+                  return (
+                    <div key={mat} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="font-black text-indigo-700 text-sm">{mat}</span>
+                        {selectedItem && <span className="text-xs font-bold text-emerald-600">잔량: {Number(selectedItem.weight).toFixed(2)}kg</span>}
+                      </div>
+                      <select value={selectedLots[mat] || ""} onChange={(e) => setSelectedLots({ ...selectedLots, [mat]: e.target.value })} className="w-full border p-2 rounded-lg text-xs font-bold text-slate-700 bg-slate-50 focus:border-indigo-500 outline-none">
+                        <option value="">LOT 번호 선택...</option>
+                        {availableLots.map((item) => (
+                          <option key={item.id} value={item.id}>LOT: {item.lot} ({Number(item.weight).toFixed(2)}kg)</option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {!isShortageMode ? (
+              <>
+                <div className="bg-slate-50 rounded-2xl p-6 border mb-8 flex justify-center gap-12">
+                  <div className="text-center"><Cylinder className="w-12 h-12 text-indigo-500 mb-3 mx-auto" /><div className="font-bold text-slate-600">15kg 꽉 찬 통</div><div className="text-3xl font-black text-indigo-700 mt-1">{fullBatches} 통</div></div>
+                  <div className="text-4xl font-black text-slate-300 mt-6">+</div>
+                  <div className={`text-center ${remainder > 0 ? "" : "opacity-30 grayscale"}`}><Cylinder className="w-12 h-12 text-orange-400 mb-3 mx-auto" /><div className="font-bold text-slate-600">나머지 미달 통</div><div className="text-3xl font-black text-orange-600 mt-1">{remainder > 0 ? 1 : 0} 통</div>{remainder > 0 && <div className="text-sm font-black text-orange-700 mt-2">{remainder.toFixed(3)} kg</div>}</div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+                  <div className="border-2 border-indigo-100 bg-indigo-50/40 rounded-2xl p-6 relative overflow-hidden shadow-sm">
+                    <div className="absolute top-0 left-0 w-2 h-full bg-indigo-500"></div>
+                    <h4 className="text-xl font-black text-indigo-900 mb-5 flex items-center"><span className="bg-indigo-600 text-white w-8 h-8 rounded-full inline-flex items-center justify-center text-base mr-3 shadow-md">{fullBatches}</span> 15kg 통 1개당 투입량</h4>
+                    <div className="space-y-3">
+                      {Object.entries(ratios).map(([mat, ratio]) => ratio > 0 ? (
+                        <div key={mat} className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-indigo-100"><span className="font-black text-slate-700 text-lg">{mat}</span><span className="font-black text-indigo-700 text-2xl">{(15 * ratio).toFixed(3)} <span className="text-sm text-slate-400">kg</span></span></div>
+                      ) : null)}
+                    </div>
                   </div>
-                  <div className="text-right">
-                    <div className="text-sm font-bold text-slate-500 mb-1">총 배합 중량</div>
-                    <div className="text-4xl font-black">{parseFloat(activeJob.weight).toFixed(3)} <span className="text-xl font-medium text-slate-400">kg</span></div>
+
+                  {remainder > 0 ? (
+                    <div className="border-2 border-orange-100 bg-orange-50/40 rounded-2xl p-6 relative overflow-hidden shadow-sm">
+                      <div className="absolute top-0 left-0 w-2 h-full bg-orange-400"></div>
+                      <h4 className="text-xl font-black text-orange-900 mb-5 flex items-center"><span className="bg-orange-500 text-white w-8 h-8 rounded-full inline-flex items-center justify-center text-base mr-3 shadow-md">1</span> 최종 미달 통 ({remainder.toFixed(3)}kg) 투입량</h4>
+                      <div className="space-y-3">
+                        {Object.entries(ratios).map(([mat, ratio]) => ratio > 0 ? (
+                          <div key={mat} className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-orange-100"><span className="font-black text-slate-700 text-lg">{mat}</span><span className="font-black text-orange-600 text-2xl">{(remainder * ratio).toFixed(3)} <span className="text-sm text-slate-400">kg</span></span></div>
+                        ) : null)}
+                      </div>
+                    </div>
+                  ) : <div className="border-2 border-dashed border-slate-200 bg-slate-50/80 rounded-2xl p-6 flex flex-col items-center justify-center text-slate-400 min-h-[250px]"><CheckCircle2 className="w-16 h-16 mb-3 opacity-30 text-indigo-500" /><div className="font-black text-lg text-slate-500">나머지 미달 통 없음</div></div>}
+                </div>
+              </>
+            ) : (
+              <div className="bg-orange-50 border border-orange-200 rounded-2xl p-6 mb-8">
+                <div className="mb-6"><h4 className="text-lg font-black text-orange-800 flex items-center mb-1"><AlertCircle className="w-5 h-5 mr-2 text-orange-500" /> 원료 부족 시 실배합량 입력 (자동 롤백)</h4><p className="text-xs text-orange-600 font-bold">실제로 배합 완료된 통 수와 마지막 잔여 분말의 양을 입력하면 실 생산수량이 재계산되고 부족량은 발주관리로 반환됩니다.</p></div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 bg-white p-6 rounded-xl border border-orange-200 mb-6">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-2">혼합 완료된 15kg 통 수</label>
+                    <div className="relative"><input type="number" min="0" max={fullBatches} placeholder="예: 5" value={completedBatches} onChange={(e) => setCompletedBatches(e.target.value)} className="w-full border-2 border-slate-300 rounded-lg p-2.5 font-black text-indigo-700 outline-none focus:border-orange-500 text-center text-lg pr-8" /><span className="absolute right-3 top-3 text-xs font-bold text-slate-400">통</span></div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-2">잔여 분말 종류 선택</label>
+                    <select value={residualMaterial} onChange={(e) => setResidualMaterial(e.target.value)} className="w-full border-2 border-slate-300 rounded-lg p-3 font-bold text-indigo-700 bg-slate-50 focus:border-orange-500 outline-none text-sm">
+                      {activeMaterials.map((m) => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-2">해당 분말 잔여 중량 (g)</label>
+                    <div className="relative"><input type="number" min="0" step="1" placeholder="예: 300" value={residualGrams} onChange={(e) => setResidualGrams(e.target.value)} className="w-full border-2 border-slate-300 rounded-lg p-2.5 font-black text-orange-600 outline-none focus:border-orange-500 text-center text-lg pr-8" /><span className="absolute right-3 top-3 text-xs font-bold text-slate-400">g</span></div>
                   </div>
                 </div>
 
-                {!isSplitMode ? (
-                  <>
-                    <div className="bg-slate-50 rounded-2xl p-6 border mb-8 flex justify-center gap-12">
-                      <div className="text-center"><Cylinder className="w-12 h-12 text-indigo-500 mb-3 mx-auto" /><div className="font-bold text-slate-600">15kg 꽉 찬 통</div><div className="text-3xl font-black text-indigo-700 mt-1">{fullBatches} 통</div></div>
-                      <div className="text-4xl font-black text-slate-300 mt-6">+</div>
-                      <div className={`text-center ${remainder > 0 ? "" : "opacity-30 grayscale"}`}><Cylinder className="w-12 h-12 text-orange-400 mb-3 mx-auto" /><div className="font-bold text-slate-600">나머지 미달 통</div><div className="text-3xl font-black text-orange-600 mt-1">{remainder > 0 ? 1 : 0} 통</div>{remainder > 0 && <div className="text-sm font-black text-orange-700 mt-2">{remainder.toFixed(3)} kg</div>}</div>
-                    </div>
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-                      <div className="border-2 border-indigo-100 bg-indigo-50/40 rounded-2xl p-6 relative overflow-hidden shadow-sm">
-                        <div className="absolute top-0 left-0 w-2 h-full bg-indigo-500"></div>
-                        <h4 className="text-xl font-black text-indigo-900 mb-5 flex items-center"><span className="bg-indigo-600 text-white w-8 h-8 rounded-full inline-flex items-center justify-center text-base mr-3 shadow-md">{fullBatches}</span> 15kg 통 1개당 투입량</h4>
-                        <div className="space-y-3">
-                          {Object.entries(ratios).map(([mat, ratio]) => ratio > 0 ? (
-                            <div key={mat} className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-indigo-100"><span className="font-black text-slate-700 text-lg">{mat}</span><span className="font-black text-indigo-700 text-2xl">{(15 * ratio).toFixed(3)} <span className="text-sm text-slate-400">kg</span></span></div>
-                          ) : null)}
-                        </div>
-                      </div>
-                      {remainder > 0 ? (
-                        <div className="border-2 border-orange-100 bg-orange-50/40 rounded-2xl p-6 relative overflow-hidden shadow-sm">
-                          <div className="absolute top-0 left-0 w-2 h-full bg-orange-400"></div>
-                          <h4 className="text-xl font-black text-orange-900 mb-5 flex items-center"><span className="bg-orange-500 text-white w-8 h-8 rounded-full inline-flex items-center justify-center text-base mr-3 shadow-md">1</span> 최종 미달 통 ({remainder.toFixed(3)}kg) 투입량</h4>
-                          <div className="space-y-3">
-                            {Object.entries(ratios).map(([mat, ratio]) => ratio > 0 ? (
-                              <div key={mat} className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-orange-100"><span className="font-black text-slate-700 text-lg">{mat}</span><span className="font-black text-orange-600 text-2xl">{(remainder * ratio).toFixed(3)} <span className="text-sm text-slate-400">kg</span></span></div>
-                            ) : null)}
-                          </div>
-                        </div>
-                      ) : <div className="border-2 border-dashed border-slate-200 bg-slate-50/80 rounded-2xl p-6 flex flex-col items-center justify-center text-slate-400 min-h-[250px]"><CheckCircle2 className="w-16 h-16 mb-3 opacity-30 text-indigo-500" /><div className="font-black text-lg text-slate-500">나머지 미달 통 없음</div></div>}
-                    </div>
-                    <div className="mt-8 flex justify-end gap-4 border-t pt-6">
-                      <input type="text" placeholder="메모" className="border rounded-lg p-3 text-sm w-64" value={specialNote} onChange={(e) => setSpecialNote(e.target.value)} />
-                      <input type="text" placeholder="작업자" className="border rounded-lg p-3 text-sm w-40 text-center font-bold" value={operator} onChange={(e) => setOperator(e.target.value)} />
-                      <button onClick={handleMix} className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-xl font-black shadow flex items-center"><CheckCircle2 className="w-5 h-5 mr-2" /> 배합 완료</button>
-                    </div>
-                  </>
-                ) : (
-                  <div className="bg-orange-50 border border-orange-200 rounded-2xl p-6">
-                    <div className="mb-6"><h4 className="text-lg font-black text-orange-800 flex items-center mb-2"><AlertCircle className="w-5 h-5 mr-2 text-orange-500" /> 잔량 소진 부분 배합</h4></div>
-                    <div className="grid grid-cols-2 gap-6 bg-white p-6 rounded border border-orange-200 mb-6">
-                      <div>
-                        <label className="block text-sm font-bold text-slate-700 mb-2">잔량을 소진할 소재</label>
-                        <select className="w-full border rounded p-3 font-bold text-indigo-700 bg-slate-50" value={splitMaterial} onChange={(e) => setSplitMaterial(e.target.value)}>
-                          {activeMaterials.map((m) => <option key={m}>{m}</option>)}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-sm font-bold text-slate-700 mb-2">남은 중량 (kg)</label>
-                        <input type="number" min="0" step="0.001" className="w-full border rounded p-3 font-black text-orange-600" value={splitWeightStr} onChange={(e) => setSplitWeightStr(e.target.value)} />
-                      </div>
-                    </div>
-                    {isValidSplit && (
-                      <div className="grid grid-cols-2 gap-6 mb-6">
-                        <div className="bg-white border-2 border-orange-300 rounded-xl p-5"><div className="text-sm font-black text-orange-600 bg-orange-100 px-2 py-1 rounded inline-block mb-3">부분 배합 지시</div><div className="text-2xl font-black">{subTotal.toFixed(3)} kg ({subQty} EA)</div></div>
-                        <div className="bg-white border-2 border-slate-200 rounded-xl p-5"><div className="text-sm font-black text-slate-500 bg-slate-100 px-2 py-1 rounded inline-block mb-3">잔여 대기 (새 로트)</div><div className="text-2xl font-black">{remainTotal.toFixed(3)} kg ({remainQty} EA)</div></div>
-                      </div>
-                    )}
-                    <div className="flex justify-end gap-4 border-t border-orange-200 pt-6">
-                      <input type="text" placeholder="작업자" className="border rounded-lg p-3 text-sm w-40 text-center font-bold" value={operator} onChange={(e) => setOperator(e.target.value)} />
-                      <button onClick={handleSplitMix} disabled={!isValidSplit} className={`px-8 py-3 rounded-xl font-black flex items-center ${isValidSplit ? "bg-orange-500 text-white" : "bg-slate-200 text-slate-400"}`}><Split className="w-5 h-5 mr-2" /> 분할 생성</button>
-                    </div>
-                  </div>
-                )}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div className="bg-white border-2 border-orange-300 rounded-xl p-4 text-center"><div className="text-xs font-bold text-slate-500 mb-1">실제 배합 완료 중량</div><div className="text-2xl font-black text-indigo-700">{actualMixedTotalKg.toFixed(3)} kg</div></div>
+                  <div className="bg-white border-2 border-emerald-300 rounded-xl p-4 text-center"><div className="text-xs font-bold text-slate-500 mb-1">실제 생산 진행 수량</div><div className="text-2xl font-black text-emerald-600">{actualQty} EA</div></div>
+                  <div className="bg-white border-2 border-red-300 rounded-xl p-4 text-center"><div className="text-xs font-bold text-slate-500 mb-1">발주관리 자동 롤백 수량</div><div className="text-2xl font-black text-red-600">{shortageQty} EA</div></div>
+                </div>
               </div>
+            )}
+
+            <div className="mt-8 flex justify-end gap-4 border-t pt-6">
+              <input type="text" placeholder="특이사항 메모" className="border rounded-lg p-3 text-sm w-64 focus:border-indigo-400 outline-none" value={specialNote} onChange={(e) => setSpecialNote(e.target.value)} />
+              <input type="text" placeholder="작업자 성명" className="border rounded-lg p-3 text-sm w-40 text-center font-bold focus:border-indigo-400 outline-none" value={operator} onChange={(e) => setOperator(e.target.value)} />
+              <button onClick={handleCompleteMix} className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-xl font-black shadow flex items-center transition-transform hover:scale-105">
+                <CheckCircle2 className="w-5 h-5 mr-2" /> 배합 완료 및 재고 차감
+              </button>
             </div>
-          );
-        })()
+          </div>
+        </div>
       ) : (
-        <div className="bg-white rounded-2xl shadow-sm border p-12 text-center text-slate-400"><Beaker className="w-16 h-16 mx-auto mb-4" /><h3 className="text-xl font-bold">진행할 작업이 없습니다.</h3></div>
+        <div className="bg-white rounded-2xl shadow-sm border p-12 text-center text-slate-400">
+          <Beaker className="w-16 h-16 mx-auto mb-4" />
+          <h3 className="text-xl font-bold">진행할 배합 작업이 없습니다.</h3>
+        </div>
       )}
     </div>
   );
