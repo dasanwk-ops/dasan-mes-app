@@ -234,7 +234,7 @@ export default function DasanMES() {
       {isAdmin && (
         <div className="w-64 bg-slate-900 text-slate-300 flex flex-col shadow-xl z-20">
           <div className="p-5 bg-slate-950 border-b border-slate-800 text-center">
-            <div className="text-xl font-bold text-white tracking-wide">다산산업 MES</div>
+            <div className="text-xl font-bold text-white tracking-wide">다산산업 TEST MES</div>
             <div className="text-xs text-blue-400 mt-1">첨단소재 디스크 공정관리</div>
           </div>
           <div className="flex-1 overflow-y-auto py-4">
