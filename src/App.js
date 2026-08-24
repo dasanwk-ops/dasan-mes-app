@@ -256,14 +256,15 @@ export default function DasanMES() {
         </div>
       )}
 
-      <div className="flex-1 flex flex-col overflow-hidden">
+     <div className="flex-1 flex flex-col overflow-hidden">
         <header className="bg-white border-b border-slate-200 px-8 py-5 flex justify-between items-center shadow-sm z-10">
           <div className="flex items-center">
             <h1 className="text-2xl font-bold text-slate-800">{PROCESS_STEPS.find((s) => s.id === activeStep)?.name}</h1>
-            {!isAdmin && <span className="ml-4 bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-xs font-black border border-orange-200">현장 전용 모드</span>}
+            <span className="ml-4 bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full text-xs font-black border border-emerald-300">공정관리 TEST</span>
+            {!isAdmin && <span className="ml-2 bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-xs font-black border border-orange-200">현장 전용 모드</span>}
           </div>
           <div className="text-sm text-slate-600 bg-slate-100 px-3 py-1.5 rounded-full flex items-center font-bold">
-            <span className="w-2 h-2 rounded-full bg-green-500 mr-2 animate-pulse"></span> 클라우드 실시간 동기화
+            <span className="w-2 h-2 rounded-full bg-emerald-500 mr-2 animate-pulse"></span> 테스트 환경 연결됨
           </div>
         </header>
         <main className="flex-1 overflow-y-auto bg-slate-50 p-8">
