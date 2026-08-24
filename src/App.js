@@ -41,10 +41,10 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-// 🌟 테스트 전용 독립 DB 저장소 (양산 dasan-mes-app 과 완벽히 격리)
-const appId = "dasan-mes-test-sandbox";
-const getColRef = (colName) => collection(db, "artifacts", appId, "public", "data", colName);
-const getDocRef = (colName, docId) => doc(db, "artifacts", appId, "public", "data", colName, docId.toString());
+// 🌟 Firebase 보안 규칙을 통과하면서 양산과 완벽 분리되는 테스트 전용 경로 (test_data)
+const appId = "dasan-mes-app";
+const getColRef = (colName) => collection(db, "artifacts", appId, "public", "test_data", colName);
+const getDocRef = (colName, docId) => doc(db, "artifacts", appId, "public", "test_data", colName, docId.toString());
 
 const DEFAULT_MASTER_SETTINGS = {
   MATERIAL_TYPES: ["4Y-W", "4Y-Y", "5E-P", "4Y-G"],
@@ -690,22 +690,57 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
   };
 
   const handleAdd = async (e) => {
-    e.preventDefault();
-    const validItems = inboundItems.filter((item) => item.lot && item.weight);
-    if (validItems.length === 0) return ctx.showToast("입고 데이터를 입력해주세요.", "error");
-    for (let item of validItems) { if (isNaN(parseFloat(item.weight)) || parseFloat(item.weight) <= 0) return ctx.showToast(`[${item.type}] 숫자를 입력해주세요.`, "error"); }
-    const dStr = getKST().split(" ")[0]; const timeStr = getKST().slice(0, 16);
+    if (e && e.preventDefault) e.preventDefault();
+    const validItems = inboundItems.filter((item) => item.lot && item.lot.trim() !== "" && item.weight && item.weight.toString().trim() !== "");
+    
+    if (validItems.length === 0) {
+      return ctx.showToast("로트번호와 중량을 모두 입력한 항목이 없습니다.", "error");
+    }
+    
+    for (let item of validItems) {
+      if (isNaN(parseFloat(item.weight)) || parseFloat(item.weight) <= 0) {
+        return ctx.showToast(`[${item.type}] 올바른 중량 숫자를 입력해주세요.`, "error");
+      }
+    }
+
+    const dStr = getKST().split(" ")[0]; 
+    const timeStr = getKST().slice(0, 16);
+
     try {
       for (let item of validItems) {
         const wVal = parseFloat(item.weight);
         const newId = Date.now().toString() + Math.random().toString().slice(2, 7);
         const histId = Date.now().toString() + Math.random().toString().slice(2, 7);
-        await setDoc(getDocRef("inventory", newId), { id: newId, lot: item.lot, type: item.type, weight: wVal, date: dStr, status: "입고완료", createdAt: serverTimestamp() });
-        await setDoc(getDocRef("inventoryHistory", histId), { id: histId, date: timeStr, type: "IN", materialType: item.type, lot: item.lot, qty: wVal, note: "일괄입고", createdAt: serverTimestamp() });
+        
+        await setDoc(getDocRef("inventory", newId), {
+          id: newId,
+          lot: item.lot.trim(),
+          type: item.type,
+          weight: wVal,
+          date: dStr,
+          status: "입고완료",
+          createdAt: serverTimestamp()
+        });
+
+        await setDoc(getDocRef("inventoryHistory", histId), {
+          id: histId,
+          date: timeStr,
+          type: "IN",
+          materialType: item.type,
+          lot: item.lot.trim(),
+          qty: wVal,
+          note: "일괄입고",
+          createdAt: serverTimestamp()
+        });
       }
+
       setInboundItems(masterSettings.MATERIAL_TYPES.map((t) => ({ type: t, lot: "", weight: "" })));
-      setIsModalOpen(false); ctx.showToast("소재 입고 완료", "success");
-    } catch (err) { ctx.showToast("입고 실패", "error"); }
+      setIsModalOpen(false);
+      ctx.showToast("소재 입고 완료! 재고에 반영되었습니다.", "success");
+    } catch (err) {
+      console.error("입고 처리 에러:", err);
+      ctx.showToast(`입고 실패: ${err.message || err}`, "error");
+    }
   };
 
   const handleOutboundLot = async (lot) => {
@@ -743,9 +778,9 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
             {inboundItems.map((item, idx) => (
               <div key={item.type} className="flex gap-3 items-center bg-slate-50 p-3 rounded-xl border border-slate-200 shadow-sm">
                 <span className="w-16 font-black text-indigo-700 text-center">{item.type}</span>
-                <input type="text" placeholder="로트번호" className="flex-1 border border-slate-300 p-2.5 rounded-lg text-sm font-mono focus:border-indigo-400" value={item.lot} onChange={(e) => { const newItems = [...inboundItems]; newItems[idx].lot = e.target.value; setInboundItems(newItems); }} />
+                <input type="text" placeholder="로트번호 입력" className="flex-1 border border-slate-300 p-2.5 rounded-lg text-sm font-mono focus:border-indigo-400 bg-white" value={item.lot} onChange={(e) => { const newItems = [...inboundItems]; newItems[idx].lot = e.target.value; setInboundItems(newItems); }} />
                 <div className="relative w-28">
-                  <input type="number" step="0.001" placeholder="중량" className="w-full border border-slate-300 p-2.5 rounded-lg text-sm text-right font-bold pr-7 focus:border-indigo-400" value={item.weight} onChange={(e) => { const newItems = [...inboundItems]; newItems[idx].weight = e.target.value; setInboundItems(newItems); }} />
+                  <input type="number" step="0.001" placeholder="중량" className="w-full border border-slate-300 p-2.5 rounded-lg text-sm text-right font-bold pr-7 focus:border-indigo-400 bg-white" value={item.weight} onChange={(e) => { const newItems = [...inboundItems]; newItems[idx].weight = e.target.value; setInboundItems(newItems); }} />
                   <span className="absolute right-2 top-2.5 text-xs font-bold text-slate-400">kg</span>
                 </div>
               </div>
@@ -757,13 +792,13 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
         {masterSettings.MATERIAL_TYPES.map((type) => {
-          const totalW = inventory.filter((i) => i.type === type).reduce((s, i) => s + i.weight, 0);
+          const totalW = (inventory || []).filter((i) => i.type === type).reduce((s, i) => s + Number(i.weight || 0), 0);
           const safetyThreshold = Number(masterSettings?.SAFETY_THRESHOLD?.[type]) || 50;
           const isWarning = totalW <= safetyThreshold;
           return (
             <div key={type} onClick={() => { setDetailModalType(type); setDetailModalTab("lots"); }} className={`rounded-2xl shadow-sm border bg-white p-6 cursor-pointer transition-all ${isWarning ? "border-red-300 bg-red-50/50" : "hover:border-indigo-400 hover:shadow-md"}`}>
               <div className="text-sm font-bold text-slate-500 mb-3 flex justify-between items-center"><span>{type}</span>{isWarning && <span className="text-[10px] text-red-500 bg-red-100 border border-red-200 px-1.5 py-0.5 rounded font-black animate-pulse">부족</span>}</div>
-              <div className={`text-3xl font-black mb-4 ${isWarning ? "text-red-600" : "text-slate-800"}`}>{totalW.toLocaleString()} <span className="text-base font-bold text-slate-500">kg</span></div>
+              <div className={`text-3xl font-black mb-4 ${isWarning ? "text-red-600" : "text-slate-800"}`}>{totalW.toFixed(2)} <span className="text-base font-bold text-slate-500">kg</span></div>
             </div>
           );
         })}
@@ -817,10 +852,10 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
                 <table className="w-full text-sm text-left bg-white border rounded-lg overflow-hidden shadow-sm">
                   <thead className="bg-slate-100 text-slate-500 text-xs uppercase"><tr><th className="p-3">입고일자</th><th className="p-3">로트 번호</th><th className="p-3 text-right">잔여 중량</th><th className="p-3 text-center">상태</th></tr></thead>
                   <tbody className="divide-y divide-slate-100">
-                    {inventory.filter((i) => i.type === detailModalType && i.weight > 0).map((item) => (
-                      <tr key={item.id} className="hover:bg-slate-50"><td className="p-3">{item.date}</td><td className="p-3 font-mono font-bold text-indigo-600">{item.lot}</td><td className="p-3 text-right font-black">{item.weight.toLocaleString()} kg</td><td className="p-3 text-center"><span className="bg-green-100 text-green-700 px-2 py-1 rounded text-[10px] font-bold">{item.status}</span></td></tr>
+                    {(inventory || []).filter((i) => i.type === detailModalType && i.weight > 0).map((item) => (
+                      <tr key={item.id} className="hover:bg-slate-50"><td className="p-3">{item.date}</td><td className="p-3 font-mono font-bold text-indigo-600">{item.lot}</td><td className="p-3 text-right font-black">{Number(item.weight).toFixed(2)} kg</td><td className="p-3 text-center"><span className="bg-green-100 text-green-700 px-2 py-1 rounded text-[10px] font-bold">{item.status}</span></td></tr>
                     ))}
-                    {inventory.filter((i) => i.type === detailModalType && i.weight > 0).length === 0 && <tr><td colSpan="4" className="text-center p-6 text-slate-400">잔여 로트가 없습니다.</td></tr>}
+                    {(inventory || []).filter((i) => i.type === detailModalType && i.weight > 0).length === 0 && <tr><td colSpan="4" className="text-center p-6 text-slate-400">잔여 로트가 없습니다.</td></tr>}
                   </tbody>
                 </table>
               )}
@@ -829,7 +864,7 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
                   <thead className="bg-slate-100 text-slate-500 text-xs uppercase"><tr><th className="p-3">일시</th><th className="p-3 text-center">구분</th><th className="p-3">로트 번호</th><th className="p-3 text-right">수량</th><th className="p-3">비고</th></tr></thead>
                   <tbody className="divide-y divide-slate-100">
                     {(inventoryHistory || []).filter((h) => h.materialType === detailModalType).map((h) => (
-                      <tr key={h.id} className="hover:bg-slate-50"><td className="p-3 text-xs text-slate-500">{h.date}</td><td className="p-3 text-center"><span className={`px-2 py-1 rounded text-[10px] font-bold ${h.type === "IN" ? "bg-blue-100 text-blue-700" : "bg-red-100 text-red-700"}`}>{h.type === "IN" ? "입고" : "출고"}</span></td><td className="p-3 font-mono font-bold text-slate-700">{h.lot}</td><td className="p-3 text-right font-black">{h.qty.toLocaleString()} kg</td><td className="p-3 text-xs text-slate-600">{h.note}</td></tr>
+                      <tr key={h.id} className="hover:bg-slate-50"><td className="p-3 text-xs text-slate-500">{h.date}</td><td className="p-3 text-center"><span className={`px-2 py-1 rounded text-[10px] font-bold ${h.type === "IN" ? "bg-blue-100 text-blue-700" : "bg-red-100 text-red-700"}`}>{h.type === "IN" ? "입고" : "출고"}</span></td><td className="p-3 font-mono font-bold text-slate-700">{h.lot}</td><td className="p-3 text-right font-black">{Number(h.qty).toFixed(2)} kg</td><td className="p-3 text-xs text-slate-600">{h.note}</td></tr>
                     ))}
                   </tbody>
                 </table>
@@ -912,8 +947,8 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
     // 재고 잔량 검증
     for (const mat of activeMaterials) {
       const targetLotId = selectedLots[mat];
-      const invItem = inventory.find((i) => i.id === targetLotId);
-      if (!invItem || invItem.weight < consumedBOM[mat]) {
+      const invItem = (inventory || []).find((i) => i.id === targetLotId);
+      if (!invItem || Number(invItem.weight) < consumedBOM[mat]) {
         return ctx.showToast(`선택한 [${mat}] 로트의 잔량이 부족합니다! (필요: ${consumedBOM[mat]}kg, 잔여: ${invItem?.weight || 0}kg)`, "error");
       }
     }
@@ -921,15 +956,15 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
     try {
       const curTime = getKST();
       const usedLotInfoStr = activeMaterials.map((m) => {
-        const lotItem = inventory.find((i) => i.id === selectedLots[m]);
+        const lotItem = (inventory || []).find((i) => i.id === selectedLots[m]);
         return `${m}:${lotItem?.lot || "N/A"}(${consumedBOM[m]}kg)`;
       }).join(", ");
 
       // 1. 원재료 창고 재고 차감 및 입출고 이력 기록
       for (const mat of activeMaterials) {
         const targetLotId = selectedLots[mat];
-        const invItem = inventory.find((i) => i.id === targetLotId);
-        const remainW = Number((invItem.weight - consumedBOM[mat]).toFixed(3));
+        const invItem = (inventory || []).find((i) => i.id === targetLotId);
+        const remainW = Number((Number(invItem.weight) - consumedBOM[mat]).toFixed(3));
         const histId = Date.now().toString() + Math.random().toString().slice(2, 7);
 
         if (remainW <= 0) {
@@ -1028,19 +1063,19 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
               </h4>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 {activeMaterials.map((mat) => {
-                  const availableLots = (inventory || []).filter((i) => i.type === mat && i.weight > 0);
+                  const availableLots = (inventory || []).filter((i) => i.type === mat && Number(i.weight) > 0);
                   const selectedItem = availableLots.find((i) => i.id === selectedLots[mat]);
                   return (
                     <div key={mat} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
                       <div className="flex justify-between items-center mb-2">
                         <span className="font-black text-indigo-700 text-sm">{mat}</span>
-                        {selectedItem && <span className="text-xs font-bold text-emerald-600">잔량: {selectedItem.weight}kg</span>}
+                        {selectedItem && <span className="text-xs font-bold text-emerald-600">잔량: {Number(selectedItem.weight).toFixed(2)}kg</span>}
                       </div>
                       <select value={selectedLots[mat] || ""} onChange={(e) => setSelectedLots({ ...selectedLots, [mat]: e.target.value })} className="w-full border p-2 rounded-lg text-xs font-bold text-slate-700 bg-slate-50 focus:border-indigo-500 outline-none">
                         <option value="">LOT 번호 선택...</option>
                         {availableLots.map((item) => (
                           <option key={item.id} value={item.id}>
-                            LOT: {item.lot} ({item.weight}kg)
+                            LOT: {item.lot} ({Number(item.weight).toFixed(2)}kg)
                           </option>
                         ))}
                       </select>
