@@ -17,80 +17,16 @@ const getKST = () => formatKST();
 const getKSTDateOnly = () => getKST().slice(2, 10).replace(/-/g, "");
 const cloneDeep = (value) => JSON.parse(JSON.stringify(value));
 
-// 🚀 [글로벌 엔진] 구글 시트 데이터 전송 및 리포트 자동 생성
+// 🚀 [글로벌 엔진] 구글 시트 데이터 전송 차단 (테스트 모드)
 const syncToGoogleSheets = async (orderList, wipList, inventoryHistory, shippingHistory, ctx) => {
-  const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxFqyQaps_suzkAmQnOgDDOU_A1p--lmvAIOLZEo8LSPIAQ5mVLofzfFZo0Rmvq7LI7DA/exec";
-  const mergedLots = {};
-
-  const wipFinished = (wipList || []).filter((w) => w.currentStep === "done");
-  wipFinished.forEach((w) => {
-    mergedLots[w.mixLot] = { mixLot: w.mixLot, type: w.type, height: w.height, qty: Number(w.qty), details: w.details || "", shrinkageRate: w.shrinkageRate || "-" };
-  });
-
-  (shippingHistory || []).forEach((h) => {
-    if (!mergedLots[h.lot]) {
-      mergedLots[h.lot] = { mixLot: h.lot, type: h.type, height: h.height, qty: 0, details: h.details || "", shrinkageRate: "-" };
-    }
-    mergedLots[h.lot].qty += Number(h.qty);
-    if (mergedLots[h.lot].shrinkageRate === "-") {
-      const shrinkMatch = (h.details || "").match(/\[수축률:\s*([0-9.]+)/);
-      if (shrinkMatch) mergedLots[h.lot].shrinkageRate = shrinkMatch[1];
-    }
-  });
-
-  const finishedLots = Object.values(mergedLots);
-  if (finishedLots.length === 0) {
-    if (ctx) ctx.showToast("동기화할 생산 완료/출고 데이터가 없습니다.", "error");
-    return;
-  }
-
-  const lotRecords = finishedLots.map((w) => {
-    const details = w.details || "";
-    const defectMatch = details.match(/불량\s*(\d+)개:\s*([^\]]+)/);
-    const defectQty = defectMatch ? parseInt(defectMatch[1]) : 0;
-    const defectReason = defectMatch ? defectMatch[2] : "-";
-    const dateMatch = details.match(/\[(\d{4}-\d{2}-\d{2})\s/);
-    const finishDate = dateMatch ? dateMatch[1] : getKST().split(" ")[0];
-    return [finishDate, w.mixLot, w.type, `${w.height}T`, Number(w.qty), defectQty, defectReason, w.shrinkageRate || "-", details];
-  });
-
-  const monthlyData = {};
-  lotRecords.forEach((record) => {
-    const month = record[0].substring(0, 7);
-    const goodQty = record[4];
-    const defQty = record[5];
-    if (!monthlyData[month]) monthlyData[month] = { total: 0, defect: 0 };
-    monthlyData[month].total += goodQty + defQty;
-    monthlyData[month].defect += defQty;
-  });
-
-  const monthlySummary = Object.keys(monthlyData).sort((a, b) => b.localeCompare(a)).map((month) => {
-    const data = monthlyData[month];
-    const defectRate = data.total > 0 ? data.defect / data.total : 0;
-    return [month, data.total, data.defect, defectRate];
-  });
-
-  try {
-    await fetch(APPS_SCRIPT_URL, { method: "POST", mode: "no-cors", headers: { "Content-Type": "text/plain" }, body: JSON.stringify({ lotRecords, monthlySummary }) });
-    if (ctx) ctx.showToast("주주 보고용 구글 시트 동기화 완료", "success");
-  } catch (e) {
-    if (ctx) ctx.showToast("시트 동기화 실패", "error");
-  }
+  console.log("[테스트 모드] 실제 구글 시트 전송이 안전하게 차단되었습니다.");
+  if (ctx) ctx.showToast("[테스트 모드] 구글 시트 전송이 차단되었습니다.", "success");
+  return;
 };
 
 const logProcessToGoogleSheet = async (stepId, wipItem, operator, extraData = {}) => {
-  const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxFqyQaps_suzkAmQnOgDDOU_A1p--lmvAIOLZEo8LSPIAQ5mVLofzfFZo0Rmvq7LI7DA/exec";
-  try {
-    const payload = {
-      type: "PROCESS_LOG",
-      data: {
-        stepId: stepId, timestamp: getKST(), lot: wipItem.mixLot || wipItem.lot || wipItem.orderNo || "N/A", product: wipItem.type ? `${wipItem.type} ${wipItem.height}T` : (wipItem.productCode || "N/A"),
-        qty: Number(wipItem.qty) || 0, defects: extraData.defects || 0, defectReason: extraData.defectReason || "-", worker: operator || "현장작업자", equipment: extraData.equipment || "-",
-        conditions: extraData.conditions || "-", measurements: extraData.measurements || "-", details: extraData.details || "-"
-      }
-    };
-    await fetch(APPS_SCRIPT_URL, { method: "POST", mode: "no-cors", headers: { "Content-Type": "text/plain" }, body: JSON.stringify(payload) });
-  } catch (error) { console.error(`[${stepId}] 기록 전송 실패:`, error); }
+  console.log(`[테스트 모드 공정 로그 (${stepId})]:`, wipItem, operator, extraData);
+  return;
 };
 
 // --- [Firebase Initialization] ---
@@ -105,7 +41,8 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = typeof __app_id !== "undefined" ? __app_id : "dasan-mes-app";
+// 🌟 테스트 전용 독립 DB 저장소 (양산 dasan-mes-app 과 완벽히 격리)
+const appId = "dasan-mes-test-sandbox";
 const getColRef = (colName) => collection(db, "artifacts", appId, "public", "data", colName);
 const getDocRef = (colName, docId) => doc(db, "artifacts", appId, "public", "data", colName, docId.toString());
 
@@ -2362,7 +2299,7 @@ function Step8Packaging({ wipList, orderList, ctx }) {
 
     try {
       const database = getFirestore();
-      await addDoc(collection(database, "print-queue"), {
+     await addDoc(getColRef("print-queue"), {
         productName, color: wip.type, height: wip.height, lotNumber: finalLot, shrinkage: wip.shrinkageRate, scaleFactor: calculatedScaleFactor,
         mfgDate: getKST().split(" ")[0], size: sizeDisplay, quantity: finalQty, status: "pending", createdAt: serverTimestamp(),
       });
