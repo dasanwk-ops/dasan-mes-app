@@ -5,7 +5,7 @@ import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, runTransa
 import { LayoutDashboard, Package, Beaker, BoxSelect, Cylinder, Flame, Microscope, Wind, Printer, Plus, ArrowRight, CheckCircle2, AlertCircle, ShoppingCart, Calculator, History, X, Layers, Split, Edit2, Trash2, Save, Play, Thermometer, Droplets, Archive, Truck, Search, Database, RefreshCcw, Boxes, Lock, Settings } from "lucide-react";
 
 // ==========================================
-// [1] 대한민국 시간(KST) 및 유틸리티 함수
+// [1] 대한민국 시간(KST) 및 유틸리티 함수 
 // ==========================================
 const KST_TIMEZONE = "Asia/Seoul";
 const formatKST = (date = new Date()) => {
