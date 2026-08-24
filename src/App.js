@@ -5,7 +5,7 @@ import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, runTransa
 import { LayoutDashboard, Package, Beaker, BoxSelect, Cylinder, Flame, Microscope, Wind, Printer, Plus, ArrowRight, CheckCircle2, AlertCircle, ShoppingCart, Calculator, History, X, Layers, Split, Edit2, Trash2, Save, Play, Thermometer, Droplets, Archive, Truck, Search, Database, RefreshCcw, Boxes, Lock, Settings } from "lucide-react";
 
 // ==========================================
-// [1] 대한민국 시간(KST) 및 유틸리티 함수 
+// [1] 대한민국 시간(KST) 및 유틸리티 함수
 // ==========================================
 const KST_TIMEZONE = "Asia/Seoul";
 const formatKST = (date = new Date()) => {
@@ -17,56 +17,179 @@ const getKST = () => formatKST();
 const getKSTDateOnly = () => getKST().slice(2, 10).replace(/-/g, "");
 const cloneDeep = (value) => JSON.parse(JSON.stringify(value));
 
-// 🚀 [글로벌 엔진] 구글 시트 데이터 전송 차단 (테스트 모드)
-const syncToGoogleSheets = async (orderList, wipList, inventoryHistory, shippingHistory, ctx) => {
-  console.log("[테스트 모드] 실제 구글 시트 전송이 안전하게 차단되었습니다.");
-  if (ctx) ctx.showToast("[테스트 모드] 구글 시트 전송이 차단되었습니다.", "success");
-  return;
+// ==========================================
+// [2] TEST / PROD 완전 분리 환경 설정
+// ==========================================
+// 기본값은 TEST입니다.
+// 양산 배포 시 빌드 환경변수 REACT_APP_MES_ENV=production 만 지정하면
+// 동일한 소스코드가 양산 Firebase로 연결됩니다.
+//
+// 중요:
+// - TEST/PROD 모두 Firestore 내부 컬렉션명과 경로는 동일합니다.
+// - 실제 데이터 분리는 Firebase 프로젝트 자체로 수행합니다.
+// - TEST에서는 Google Sheets 외부 전송을 강제로 차단합니다.
+// - TEST/PROD projectId가 예상값과 다르면 앱 실행을 즉시 중단합니다.
+const BUILD_ENV = (typeof process !== "undefined" && process.env) ? process.env : {};
+const MES_ENV_RAW = String(BUILD_ENV.REACT_APP_MES_ENV || "test").toLowerCase();
+const IS_PRODUCTION = MES_ENV_RAW === "production" || MES_ENV_RAW === "prod";
+const IS_TEST = !IS_PRODUCTION;
+const MES_ENV = IS_PRODUCTION ? "production" : "test";
+
+const FIREBASE_CONFIGS = {
+  test: {
+    apiKey: "AIzaSyAhFnQLQGvkC7FzqQC5w9o7th5fOBmu--8",
+    authDomain: "dasan-mes-test.firebaseapp.com",
+    projectId: "dasan-mes-test",
+    storageBucket: "dasan-mes-test.firebasestorage.app",
+    messagingSenderId: "41323517813",
+    appId: "1:41323517813:web:c33e9386b0315a1f39653c",
+  },
+  production: {
+    apiKey: "AIzaSyDxHU5KH8Wdq6Ct73S-gUOvK2YqD7J23kI",
+    authDomain: "dasanind-mes.firebaseapp.com",
+    projectId: "dasanind-mes",
+    storageBucket: "dasanind-mes.firebasestorage.app",
+    messagingSenderId: "782401133060",
+    appId: "1:782401133060:web:e6997bdb37fad09dd1f351",
+  },
 };
 
-const logProcessToGoogleSheet = async (stepId, wipItem, operator, extraData = {}) => {
-  console.log(`[테스트 모드 공정 로그 (${stepId})]:`, wipItem, operator, extraData);
-  return;
-};
+const firebaseConfig = IS_PRODUCTION ? FIREBASE_CONFIGS.production : FIREBASE_CONFIGS.test;
+const EXPECTED_FIREBASE_PROJECT_ID = IS_PRODUCTION ? "dasanind-mes" : "dasan-mes-test";
 
-// --- [Firebase Initialization] ---
-const firebaseConfig = {
-  apiKey: process.env.REACT_APP_FIREBASE_API_KEY || "AIzaSyDxHU5KH8Wdq6Ct73S-gUOvK2YqD7J23kI",
-  authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN || "dasanind-mes.firebaseapp.com",
-  projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID || "dasanind-mes",
-  storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET || "dasanind-mes.firebasestorage.app",
-  messagingSenderId: "782401133060",
-  appId: "1:782401133060:web:e6997bdb37fad09dd1f351",
-};
+// 🚨 안전장치: 실행 환경과 Firebase 프로젝트가 일치하지 않으면 즉시 중단
+if (firebaseConfig.projectId !== EXPECTED_FIREBASE_PROJECT_ID) {
+  throw new Error(
+    `[MES 안전차단] ${MES_ENV} 환경의 Firebase projectId가 올바르지 않습니다. ` +
+    `expected=${EXPECTED_FIREBASE_PROJECT_ID}, actual=${firebaseConfig.projectId}`
+  );
+}
+
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-// 🌟 Firebase 보안 규칙을 통과하면서 양산과 완벽 분리되는 테스트 전용 경로 (test_data)
-// ==========================================
-// TEST MES 전용 데이터 영역
-// ==========================================
-const appId = "dasan-mes-test";
 
-const getColRef = (colName) =>
-  collection(
-    db,
-    "artifacts",
-    appId,
-    "public",
-    "data",
-    colName
-  );
+// TEST / PROD 내부 데이터 구조는 완전히 동일합니다.
+// 실제 양산 Firestore가 사용하는 경로와 동일하게 고정합니다.
+// artifacts/dasan-mes-app/public/data/{collection}
+const appId = "dasan-mes-app";
+const getColRef = (colName) => collection(db, "artifacts", appId, "public", "data", colName);
+const getDocRef = (colName, docId) => doc(db, "artifacts", appId, "public", "data", colName, String(docId));
 
-const getDocRef = (colName, docId) =>
-  doc(
-    db,
-    "artifacts",
-    appId,
-    "public",
-    "data",
-    colName,
-    String(docId)
-  );
+// ==========================================
+// [3] Google Sheets 외부 전송 제어
+// ==========================================
+// 양산에서 현재 사용 중인 Apps Script URL.
+// TEST에서는 아래 URL이 코드에 있어도 절대로 호출되지 않습니다.
+const PROD_GOOGLE_SHEETS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbxFqyQaps_suzkAmQnOgDDOU_A1p--lmvAIOLZEo8LSPIAQ5mVLofzfFZo0Rmvq7LI7DA/exec";
+const GOOGLE_SHEETS_ENABLED = IS_PRODUCTION;
+const GOOGLE_SHEETS_WEBHOOK_URL = IS_PRODUCTION ? PROD_GOOGLE_SHEETS_WEBHOOK_URL : "";
+
+const syncToGoogleSheets = async (orderList, wipList, inventoryHistory, shippingHistory, ctx) => {
+  if (!GOOGLE_SHEETS_ENABLED) {
+    console.log("[TEST MES] 실제 Google Sheets 전송이 차단되었습니다.");
+    if (ctx) ctx.showToast("[TEST] Google Sheets 전송이 차단되었습니다.", "success");
+    return;
+  }
+
+  const mergedLots = {};
+  const wipFinished = (wipList || []).filter((w) => w.currentStep === "done");
+  wipFinished.forEach((w) => {
+    mergedLots[w.mixLot] = { mixLot: w.mixLot, type: w.type, height: w.height, qty: Number(w.qty), details: w.details || "", shrinkageRate: w.shrinkageRate || "-" };
+  });
+
+  (shippingHistory || []).forEach((h) => {
+    if (!mergedLots[h.lot]) {
+      mergedLots[h.lot] = { mixLot: h.lot, type: h.type, height: h.height, qty: 0, details: h.details || "", shrinkageRate: "-" };
+    }
+    mergedLots[h.lot].qty += Number(h.qty);
+    if (mergedLots[h.lot].shrinkageRate === "-") {
+      const shrinkMatch = (h.details || "").match(/\[수축률:\s*([0-9.]+)/);
+      if (shrinkMatch) mergedLots[h.lot].shrinkageRate = shrinkMatch[1];
+    }
+  });
+
+  const finishedLots = Object.values(mergedLots);
+  if (finishedLots.length === 0) {
+    if (ctx) ctx.showToast("동기화할 생산 완료/출고 데이터가 없습니다.", "error");
+    return;
+  }
+
+  const lotRecords = finishedLots.map((w) => {
+    const details = w.details || "";
+    const defectMatch = details.match(/불량\s*(\d+)개:\s*([^\]]+)/);
+    const defectQty = defectMatch ? parseInt(defectMatch[1]) : 0;
+    const defectReason = defectMatch ? defectMatch[2] : "-";
+    const dateMatch = details.match(/\[(\d{4}-\d{2}-\d{2})\s/);
+    const finishDate = dateMatch ? dateMatch[1] : getKST().split(" ")[0];
+    return [finishDate, w.mixLot, w.type, `${w.height}T`, Number(w.qty), defectQty, defectReason, w.shrinkageRate || "-", details];
+  });
+
+  const monthlyData = {};
+  lotRecords.forEach((record) => {
+    const month = record[0].substring(0, 7);
+    const goodQty = record[4];
+    const defQty = record[5];
+    if (!monthlyData[month]) monthlyData[month] = { total: 0, defect: 0 };
+    monthlyData[month].total += goodQty + defQty;
+    monthlyData[month].defect += defQty;
+  });
+
+  const monthlySummary = Object.keys(monthlyData).sort((a, b) => b.localeCompare(a)).map((month) => {
+    const data = monthlyData[month];
+    const defectRate = data.total > 0 ? data.defect / data.total : 0;
+    return [month, data.total, data.defect, defectRate];
+  });
+
+  try {
+    await fetch(GOOGLE_SHEETS_WEBHOOK_URL, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ lotRecords, monthlySummary })
+    });
+    if (ctx) ctx.showToast("주주 보고용 구글 시트 동기화 완료", "success");
+  } catch (e) {
+    console.error("Google Sheets 동기화 실패:", e);
+    if (ctx) ctx.showToast("시트 동기화 실패", "error");
+  }
+};
+
+const logProcessToGoogleSheet = async (stepId, wipItem, operator, extraData = {}) => {
+  if (!GOOGLE_SHEETS_ENABLED) {
+    console.log(`[TEST MES 공정 로그 차단] ${stepId}`, wipItem, operator, extraData);
+    return;
+  }
+
+  try {
+    const payload = {
+      type: "PROCESS_LOG",
+      data: {
+        stepId: stepId,
+        timestamp: getKST(),
+        lot: wipItem.mixLot || wipItem.lot || wipItem.orderNo || "N/A",
+        product: wipItem.type ? `${wipItem.type} ${wipItem.height}T` : (wipItem.productCode || "N/A"),
+        qty: Number(wipItem.qty) || 0,
+        defects: extraData.defects || 0,
+        defectReason: extraData.defectReason || "-",
+        worker: operator || "현장작업자",
+        equipment: extraData.equipment || "-",
+        conditions: extraData.conditions || "-",
+        measurements: extraData.measurements || "-",
+        details: extraData.details || "-"
+      }
+    };
+    await fetch(GOOGLE_SHEETS_WEBHOOK_URL, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify(payload)
+    });
+  } catch (error) {
+    console.error(`[${stepId}] 기록 전송 실패:`, error);
+  }
+};
+
 const DEFAULT_MASTER_SETTINGS = {
   MATERIAL_TYPES: ["4Y-W", "4Y-Y", "5E-P", "4Y-G"],
   PRODUCT_COLORS: ["BL0", "BL1", "BL2", "BL3", "A1", "A2", "B1"],
@@ -160,35 +283,71 @@ export default function DasanMES() {
   }, []);
 
   useEffect(() => {
-    signInAnonymously(auth);
-    onAuthStateChanged(auth, setUser);
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      console.log(`[${MES_ENV.toUpperCase()} MES] Firebase Auth:`, firebaseUser?.uid || "로그인 안됨");
+      setUser(firebaseUser);
+    });
+
+    signInAnonymously(auth)
+      .then((result) => {
+        console.log(`[${MES_ENV.toUpperCase()} MES] 익명 로그인 성공:`, result.user.uid);
+      })
+      .catch((error) => {
+        console.error(`[${MES_ENV.toUpperCase()} MES] 익명 로그인 실패:`, error);
+        showToast(`Firebase 인증 실패: ${error.message}`, "error");
+      });
+
+    return () => unsubscribe();
   }, []);
 
   useEffect(() => {
     if (!user || !isUnlocked) return;
-    const setupListener = (col, setter) => onSnapshot(getColRef(col), (snap) => setter(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
+
+    const unsubscribers = [];
+    const setupListener = (col, setter) => {
+      const unsub = onSnapshot(
+        getColRef(col),
+        (snap) => setter(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+        (error) => {
+          console.error(`[${MES_ENV.toUpperCase()} MES] ${col} 읽기 실패:`, error);
+          showToast(`${col} DB 연결 실패: ${error.message}`, "error");
+        }
+      );
+      unsubscribers.push(unsub);
+    };
+
     setupListener("inventory", setInventory);
     setupListener("inventoryHistory", (d) => setInventoryHistory(d.sort((a, b) => b.id - a.id)));
     setupListener("wipList", setWipList);
     setupListener("orderList", (d) => setOrderList(d.sort((a, b) => new Date(b.orderDate) - new Date(a.orderDate))));
     setupListener("shippingHistory", (d) => setShippingHistory(d.sort((a, b) => b.id - a.id)));
-    
-    onSnapshot(getColRef("equipment"), (snap) => {
-      snap.docs.forEach((d) => {
-        if (d.id === "furnaces") {
-          const loaded = d.data();
-          const mergedFurnaces = cloneDeep(DEFAULT_FURNACES);
-          Object.keys(mergedFurnaces).forEach(k => {
-             if (loaded[k]) mergedFurnaces[k] = { ...mergedFurnaces[k], ...loaded[k] };
-          });
-          setFurnaces(mergedFurnaces);
-        }
-        if (d.id === "dryingRoom") setDryingRoom(d.data());
-        if (d.id === "settings") {
-            if(d.data() && Object.keys(d.data()).length > 0) setMasterSettings(d.data());
-        }
-      });
-    });
+
+    const equipmentUnsub = onSnapshot(
+      getColRef("equipment"),
+      (snap) => {
+        snap.docs.forEach((d) => {
+          if (d.id === "furnaces") {
+            const loaded = d.data();
+            const mergedFurnaces = cloneDeep(DEFAULT_FURNACES);
+            Object.keys(mergedFurnaces).forEach(k => {
+              if (loaded[k]) mergedFurnaces[k] = { ...mergedFurnaces[k], ...loaded[k] };
+            });
+            setFurnaces(mergedFurnaces);
+          }
+          if (d.id === "dryingRoom") setDryingRoom(d.data());
+          if (d.id === "settings") {
+            if (d.data() && Object.keys(d.data()).length > 0) setMasterSettings(d.data());
+          }
+        });
+      },
+      (error) => {
+        console.error(`[${MES_ENV.toUpperCase()} MES] equipment 읽기 실패:`, error);
+        showToast(`equipment DB 연결 실패: ${error.message}`, "error");
+      }
+    );
+    unsubscribers.push(equipmentUnsub);
+
+    return () => unsubscribers.forEach((unsub) => unsub());
   }, [user, isUnlocked]);
 
   if (!isUnlocked) {
@@ -197,7 +356,7 @@ export default function DasanMES() {
         {toast && <div className="absolute top-10 px-6 py-3 bg-red-500 text-white rounded-xl shadow-2xl font-bold animate-in fade-in slide-in-from-top-4">{toast.msg}</div>}
         <div className="bg-slate-800 p-10 rounded-3xl shadow-2xl flex flex-col items-center border border-slate-700 w-full max-w-sm">
           <div className="bg-indigo-500/20 p-4 rounded-full mb-6"><Lock className="w-10 h-10 text-indigo-400" /></div>
-          <h1 className="text-2xl font-black mb-2 tracking-tight text-center">다산산업 MES<br />보안 시스템</h1>
+          <h1 className="text-2xl font-black mb-2 tracking-tight text-center">다산산업 {IS_TEST ? "TEST MES" : "MES"}<br />보안 시스템</h1>
           <p className="text-slate-400 text-sm mb-8 text-center">허가된 관계자 외의 접근을 엄격히 금지합니다.</p>
           <form onSubmit={(e) => {
               e.preventDefault();
@@ -255,8 +414,8 @@ export default function DasanMES() {
       {isAdmin && (
         <div className="w-64 bg-slate-900 text-slate-300 flex flex-col shadow-xl z-20">
           <div className="p-5 bg-slate-950 border-b border-slate-800 text-center">
-            <div className="text-xl font-bold text-white tracking-wide">다산산업 TEST MES</div>
-            <div className="text-xs text-blue-400 mt-1">공정관리 TEST</div>
+            <div className="text-xl font-bold text-white tracking-wide">다산산업 {IS_TEST ? "TEST MES" : "MES"}</div>
+            <div className={`text-xs mt-1 ${IS_TEST ? "text-amber-400" : "text-blue-400"}`}>{IS_TEST ? "공정관리 TEST · 양산 DB 완전 분리" : "첨단소재 디스크 공정관리"}</div>
           </div>
           <div className="flex-1 overflow-y-auto py-4">
             <ul className="space-y-1">
@@ -277,15 +436,15 @@ export default function DasanMES() {
         </div>
       )}
 
-     <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 flex flex-col overflow-hidden">
         <header className="bg-white border-b border-slate-200 px-8 py-5 flex justify-between items-center shadow-sm z-10">
           <div className="flex items-center">
             <h1 className="text-2xl font-bold text-slate-800">{PROCESS_STEPS.find((s) => s.id === activeStep)?.name}</h1>
-            <span className="ml-4 bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full text-xs font-black border border-emerald-300">공정관리 TEST</span>
+            {IS_TEST && <span className="ml-4 bg-amber-100 text-amber-800 px-3 py-1 rounded-full text-xs font-black border border-amber-300">TEST 환경</span>}
             {!isAdmin && <span className="ml-2 bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-xs font-black border border-orange-200">현장 전용 모드</span>}
           </div>
           <div className="text-sm text-slate-600 bg-slate-100 px-3 py-1.5 rounded-full flex items-center font-bold">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 mr-2 animate-pulse"></span> 테스트 환경 연결됨
+            <span className={`w-2 h-2 rounded-full mr-2 animate-pulse ${IS_TEST ? "bg-amber-500" : "bg-green-500"}`}></span> {IS_TEST ? `TEST Firebase: ${firebaseConfig.projectId}` : "양산 클라우드 실시간 동기화"}
           </div>
         </header>
         <main className="flex-1 overflow-y-auto bg-slate-50 p-8">
@@ -714,18 +873,18 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
   const handleAdd = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
     const validItems = inboundItems.filter((item) => item.lot && item.lot.trim() !== "" && item.weight && item.weight.toString().trim() !== "");
-    
+
     if (validItems.length === 0) {
       return ctx.showToast("로트번호와 중량을 모두 입력한 항목이 없습니다.", "error");
     }
-    
+
     for (let item of validItems) {
       if (isNaN(parseFloat(item.weight)) || parseFloat(item.weight) <= 0) {
         return ctx.showToast(`[${item.type}] 올바른 중량 숫자를 입력해주세요.`, "error");
       }
     }
 
-    const dStr = getKST().split(" ")[0]; 
+    const dStr = getKST().split(" ")[0];
     const timeStr = getKST().slice(0, 16);
 
     try {
@@ -733,7 +892,7 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
         const wVal = parseFloat(item.weight);
         const newId = Date.now().toString() + Math.random().toString().slice(2, 7);
         const histId = Date.now().toString() + Math.random().toString().slice(2, 7);
-        
+
         await setDoc(getDocRef("inventory", newId), {
           id: newId,
           lot: item.lot.trim(),
@@ -780,7 +939,10 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
       });
       ctx.showToast(`로트 ${lot.mixLot} 배합 공정으로 이관 완료`, "success");
       logProcessToGoogleSheet("step1", lot, op, { details: "배합 공정 이관 완료" });
-    } catch (e) { ctx.showToast("오류 발생", "error"); }
+    } catch (e) {
+      console.error("배합실 이관 오류:", e);
+      ctx.showToast(`오류 발생: ${e.message || e}`, "error");
+    }
   };
 
   return (
@@ -800,9 +962,9 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
             {inboundItems.map((item, idx) => (
               <div key={item.type} className="flex gap-3 items-center bg-slate-50 p-3 rounded-xl border border-slate-200 shadow-sm">
                 <span className="w-16 font-black text-indigo-700 text-center">{item.type}</span>
-                <input type="text" placeholder="로트번호 입력" className="flex-1 border border-slate-300 p-2.5 rounded-lg text-sm font-mono focus:border-indigo-400 bg-white" value={item.lot} onChange={(e) => { const newItems = [...inboundItems]; newItems[idx].lot = e.target.value; setInboundItems(newItems); }} />
+                <input type="text" placeholder="로트번호" className="flex-1 border border-slate-300 p-2.5 rounded-lg text-sm font-mono focus:border-indigo-400" value={item.lot} onChange={(e) => { const newItems = [...inboundItems]; newItems[idx].lot = e.target.value; setInboundItems(newItems); }} />
                 <div className="relative w-28">
-                  <input type="number" step="0.001" placeholder="중량" className="w-full border border-slate-300 p-2.5 rounded-lg text-sm text-right font-bold pr-7 focus:border-indigo-400 bg-white" value={item.weight} onChange={(e) => { const newItems = [...inboundItems]; newItems[idx].weight = e.target.value; setInboundItems(newItems); }} />
+                  <input type="number" step="0.001" placeholder="중량" className="w-full border border-slate-300 p-2.5 rounded-lg text-sm text-right font-bold pr-7 focus:border-indigo-400" value={item.weight} onChange={(e) => { const newItems = [...inboundItems]; newItems[idx].weight = e.target.value; setInboundItems(newItems); }} />
                   <span className="absolute right-2 top-2.5 text-xs font-bold text-slate-400">kg</span>
                 </div>
               </div>
@@ -814,23 +976,23 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
         {masterSettings.MATERIAL_TYPES.map((type) => {
-          const totalW = (inventory || []).filter((i) => i.type === type).reduce((s, i) => s + Number(i.weight || 0), 0);
+          const totalW = inventory.filter((i) => i.type === type).reduce((s, i) => s + i.weight, 0);
           const safetyThreshold = Number(masterSettings?.SAFETY_THRESHOLD?.[type]) || 50;
           const isWarning = totalW <= safetyThreshold;
           return (
             <div key={type} onClick={() => { setDetailModalType(type); setDetailModalTab("lots"); }} className={`rounded-2xl shadow-sm border bg-white p-6 cursor-pointer transition-all ${isWarning ? "border-red-300 bg-red-50/50" : "hover:border-indigo-400 hover:shadow-md"}`}>
               <div className="text-sm font-bold text-slate-500 mb-3 flex justify-between items-center"><span>{type}</span>{isWarning && <span className="text-[10px] text-red-500 bg-red-100 border border-red-200 px-1.5 py-0.5 rounded font-black animate-pulse">부족</span>}</div>
-              <div className={`text-3xl font-black mb-4 ${isWarning ? "text-red-600" : "text-slate-800"}`}>{totalW.toFixed(2)} <span className="text-base font-bold text-slate-500">kg</span></div>
+              <div className={`text-3xl font-black mb-4 ${isWarning ? "text-red-600" : "text-slate-800"}`}>{totalW.toLocaleString()} <span className="text-base font-bold text-slate-500">kg</span></div>
             </div>
           );
         })}
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
-        <div className="px-6 py-5 bg-slate-50 border-b"><h3 className="font-bold text-lg text-slate-800">생산 투입 지시 (배합 공정 이관 대기)</h3></div>
+        <div className="px-6 py-5 bg-slate-50 border-b"><h3 className="font-bold text-lg text-slate-800">생산 투입 로트 (출고 대기)</h3></div>
         <table className="w-full text-sm text-left">
           <thead className="bg-white border-b text-xs text-slate-500 uppercase tracking-wider">
-            <tr><th className="px-6 py-4">로트 번호</th><th className="px-6 py-4">분류</th><th className="px-4 py-4 text-center">수량</th><th className="px-6 py-4">예상 소요 소재 (BOM)</th><th className="px-6 py-4 text-center">작업</th></tr>
+            <tr><th className="px-6 py-4">로트 번호</th><th className="px-6 py-4">분류</th><th className="px-4 py-4 text-center">수량</th><th className="px-6 py-4">소요 소재 (BOM)</th><th className="px-6 py-4 text-center">작업</th></tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {pendingLots.length === 0 && <tr><td colSpan="5" className="text-center py-20 text-slate-400 font-medium italic">대기 중인 로트가 없습니다.</td></tr>}
@@ -874,10 +1036,10 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
                 <table className="w-full text-sm text-left bg-white border rounded-lg overflow-hidden shadow-sm">
                   <thead className="bg-slate-100 text-slate-500 text-xs uppercase"><tr><th className="p-3">입고일자</th><th className="p-3">로트 번호</th><th className="p-3 text-right">잔여 중량</th><th className="p-3 text-center">상태</th></tr></thead>
                   <tbody className="divide-y divide-slate-100">
-                    {(inventory || []).filter((i) => i.type === detailModalType && i.weight > 0).map((item) => (
-                      <tr key={item.id} className="hover:bg-slate-50"><td className="p-3">{item.date}</td><td className="p-3 font-mono font-bold text-indigo-600">{item.lot}</td><td className="p-3 text-right font-black">{Number(item.weight).toFixed(2)} kg</td><td className="p-3 text-center"><span className="bg-green-100 text-green-700 px-2 py-1 rounded text-[10px] font-bold">{item.status}</span></td></tr>
+                    {inventory.filter((i) => i.type === detailModalType && i.weight > 0).map((item) => (
+                      <tr key={item.id} className="hover:bg-slate-50"><td className="p-3">{item.date}</td><td className="p-3 font-mono font-bold text-indigo-600">{item.lot}</td><td className="p-3 text-right font-black">{item.weight.toLocaleString()} kg</td><td className="p-3 text-center"><span className="bg-green-100 text-green-700 px-2 py-1 rounded text-[10px] font-bold">{item.status}</span></td></tr>
                     ))}
-                    {(inventory || []).filter((i) => i.type === detailModalType && i.weight > 0).length === 0 && <tr><td colSpan="4" className="text-center p-6 text-slate-400">잔여 로트가 없습니다.</td></tr>}
+                    {inventory.filter((i) => i.type === detailModalType && i.weight > 0).length === 0 && <tr><td colSpan="4" className="text-center p-6 text-slate-400">잔여 로트가 없습니다.</td></tr>}
                   </tbody>
                 </table>
               )}
@@ -886,7 +1048,7 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
                   <thead className="bg-slate-100 text-slate-500 text-xs uppercase"><tr><th className="p-3">일시</th><th className="p-3 text-center">구분</th><th className="p-3">로트 번호</th><th className="p-3 text-right">수량</th><th className="p-3">비고</th></tr></thead>
                   <tbody className="divide-y divide-slate-100">
                     {(inventoryHistory || []).filter((h) => h.materialType === detailModalType).map((h) => (
-                      <tr key={h.id} className="hover:bg-slate-50"><td className="p-3 text-xs text-slate-500">{h.date}</td><td className="p-3 text-center"><span className={`px-2 py-1 rounded text-[10px] font-bold ${h.type === "IN" ? "bg-blue-100 text-blue-700" : "bg-red-100 text-red-700"}`}>{h.type === "IN" ? "입고" : "출고"}</span></td><td className="p-3 font-mono font-bold text-slate-700">{h.lot}</td><td className="p-3 text-right font-black">{Number(h.qty).toFixed(2)} kg</td><td className="p-3 text-xs text-slate-600">{h.note}</td></tr>
+                      <tr key={h.id} className="hover:bg-slate-50"><td className="p-3 text-xs text-slate-500">{h.date}</td><td className="p-3 text-center"><span className={`px-2 py-1 rounded text-[10px] font-bold ${h.type === "IN" ? "bg-blue-100 text-blue-700" : "bg-red-100 text-red-700"}`}>{h.type === "IN" ? "입고" : "출고"}</span></td><td className="p-3 font-mono font-bold text-slate-700">{h.lot}</td><td className="p-3 text-right font-black">{h.qty.toLocaleString()} kg</td><td className="p-3 text-xs text-slate-600">{h.note}</td></tr>
                     ))}
                   </tbody>
                 </table>
@@ -916,8 +1078,13 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
   const [residualGrams, setResidualGrams] = useState("");
 
   useEffect(() => {
-    if (!activeMixId && pendingWip.length > 0) { setActiveMixId(pendingWip[0].id); setIsShortageMode(false); }
-    else if (activeMixId && !pendingWip.find((w) => w.id === activeMixId)) { setActiveMixId(pendingWip.length > 0 ? pendingWip[0].id : null); setIsShortageMode(false); }
+    if (!activeMixId && pendingWip.length > 0) {
+      setActiveMixId(pendingWip[0].id);
+      setIsShortageMode(false);
+    } else if (activeMixId && !pendingWip.find((w) => w.id === activeMixId)) {
+      setActiveMixId(pendingWip.length > 0 ? pendingWip[0].id : null);
+      setIsShortageMode(false);
+    }
   }, [pendingWip, activeMixId]);
 
   const activeJob = pendingWip.find((w) => w.id === activeMixId);
@@ -943,14 +1110,16 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
   const actualMixedTotalKg = (batchesCount * 15) + residualCanisterWeight;
 
   // 실제 생산 가능 수량 (EA) 및 부족 수량
-  const actualQty = origTotalWeight > 0 ? Math.min(activeJob?.qty || 0, Math.floor(((activeJob?.qty || 0) * actualMixedTotalKg) / origTotalWeight)) : 0;
+  const actualQty = origTotalWeight > 0
+    ? Math.min(activeJob?.qty || 0, Math.floor(((activeJob?.qty || 0) * actualMixedTotalKg) / origTotalWeight))
+    : 0;
   const shortageQty = activeJob ? Math.max(0, activeJob.qty - actualQty) : 0;
 
   // 배합 완료 처리 (원재료 창고 실물 로트 차감 + 발주 롤백)
   const handleCompleteMix = async () => {
+    if (!activeJob) return ctx.showToast("진행할 배합 작업이 없습니다.", "error");
     if (!operator) return ctx.showToast("작업자 성명을 입력해주세요.", "error");
 
-    // 원재료 로트 선택 검증
     for (const mat of activeMaterials) {
       if (!selectedLots[mat]) return ctx.showToast(`[${mat}] 원재료 로트를 선택해주세요.`, "error");
     }
@@ -958,7 +1127,13 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
     const finalMixedWeight = isShortageMode ? actualMixedTotalKg : origTotalWeight;
     const finalProducedQty = isShortageMode ? actualQty : activeJob.qty;
 
+    if (!Number.isFinite(finalMixedWeight) || finalMixedWeight <= 0) {
+      return ctx.showToast("배합 중량이 올바르지 않습니다.", "error");
+    }
     if (finalProducedQty <= 0) return ctx.showToast("배합 수량이 올바르지 않습니다.", "error");
+    if (isShortageMode && finalMixedWeight > origTotalWeight) {
+      return ctx.showToast("실제 배합량이 원래 지시 중량을 초과할 수 없습니다.", "error");
+    }
 
     // 소모 분말 중량 계산
     const consumedBOM = {};
@@ -971,7 +1146,10 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
       const targetLotId = selectedLots[mat];
       const invItem = (inventory || []).find((i) => i.id === targetLotId);
       if (!invItem || Number(invItem.weight) < consumedBOM[mat]) {
-        return ctx.showToast(`선택한 [${mat}] 로트의 잔량이 부족합니다! (필요: ${consumedBOM[mat]}kg, 잔여: ${invItem?.weight || 0}kg)`, "error");
+        return ctx.showToast(
+          `선택한 [${mat}] 로트의 잔량이 부족합니다! (필요: ${consumedBOM[mat]}kg, 잔여: ${invItem?.weight || 0}kg)`,
+          "error"
+        );
       }
     }
 
@@ -1037,16 +1215,34 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
       setIsShortageMode(false);
       setCompletedBatches("");
       setResidualGrams("");
+      setSelectedLots({});
       ctx.showToast(`배합 완료! ${finalProducedQty}EA 1차 성형으로 이관되었습니다.`, "success");
       logProcessToGoogleSheet("step2", { ...activeJob, qty: finalProducedQty }, operator, { details: recordDetails });
     } catch (err) {
-      console.error(err);
-      ctx.showToast("배합 처리 중 오류 발생", "error");
+      console.error("배합 처리 오류:", err);
+      ctx.showToast(`배합 처리 중 오류 발생: ${err.message || err}`, "error");
     }
   };
 
   return (
     <div className="space-y-8">
+      {pendingWip.length > 1 && (
+        <div className="bg-white border rounded-2xl p-4 shadow-sm">
+          <div className="text-xs font-bold text-slate-500 mb-2">배합 대상 LOT 선택</div>
+          <div className="flex flex-wrap gap-2">
+            {pendingWip.map((w) => (
+              <button
+                key={w.id}
+                onClick={() => { setActiveMixId(w.id); setSelectedLots({}); setIsShortageMode(false); setCompletedBatches(""); setResidualGrams(""); }}
+                className={`px-3 py-2 rounded-lg text-xs font-black border ${activeMixId === w.id ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-slate-600 border-slate-200"}`}
+              >
+                {w.mixLot} · {w.type} {w.height}T
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {activeJob ? (
         <div className="bg-white rounded-2xl shadow-md border overflow-hidden">
           <div className="bg-indigo-600 px-6 py-4 flex justify-between items-center text-white">
@@ -1068,7 +1264,7 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
               <div>
                 <div className="text-sm font-bold text-slate-500 mb-1">작업 대상 제품</div>
                 <div className="text-3xl font-black flex items-center">
-                  {activeJob.type} <span className="text-indigo-600 ml-2">{activeJob.height}T</span> 
+                  {activeJob.type} <span className="text-indigo-600 ml-2">{activeJob.height}T</span>
                   <span className="text-xl font-bold text-indigo-600 ml-3 bg-indigo-50 px-3 py-1 rounded-lg">지시: {activeJob.qty} EA</span>
                 </div>
               </div>
@@ -1078,7 +1274,6 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
               </div>
             </div>
 
-            {/* 원재료 로트 선택 박스 (필수) */}
             <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 mb-8">
               <h4 className="font-black text-base text-slate-800 mb-4 flex items-center">
                 <Package className="w-5 h-5 mr-2 text-indigo-600" /> 투입 원재료 LOT 번호 지정 (창고 재고에서 차감)
@@ -1096,9 +1291,7 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
                       <select value={selectedLots[mat] || ""} onChange={(e) => setSelectedLots({ ...selectedLots, [mat]: e.target.value })} className="w-full border p-2 rounded-lg text-xs font-bold text-slate-700 bg-slate-50 focus:border-indigo-500 outline-none">
                         <option value="">LOT 번호 선택...</option>
                         {availableLots.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            LOT: {item.lot} ({Number(item.weight).toFixed(2)}kg)
-                          </option>
+                          <option key={item.id} value={item.id}>LOT: {item.lot} ({Number(item.weight).toFixed(2)}kg)</option>
                         ))}
                       </select>
                     </div>
@@ -1146,7 +1339,7 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6 bg-white p-6 rounded-xl border border-orange-200 mb-6">
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-2">혼합 완료된 15kg 통 수</label>
-                    <div className="relative"><input type="number" min="0" placeholder="예: 5" value={completedBatches} onChange={(e) => setCompletedBatches(e.target.value)} className="w-full border-2 border-slate-300 rounded-lg p-2.5 font-black text-indigo-700 outline-none focus:border-orange-500 text-center text-lg pr-8" /><span className="absolute right-3 top-3 text-xs font-bold text-slate-400">통</span></div>
+                    <div className="relative"><input type="number" min="0" max={fullBatches} placeholder="예: 5" value={completedBatches} onChange={(e) => setCompletedBatches(e.target.value)} className="w-full border-2 border-slate-300 rounded-lg p-2.5 font-black text-indigo-700 outline-none focus:border-orange-500 text-center text-lg pr-8" /><span className="absolute right-3 top-3 text-xs font-bold text-slate-400">통</span></div>
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-2">잔여 분말 종류 선택</label>
@@ -1186,6 +1379,7 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
     </div>
   );
 }
+
 // ==========================================
 // Step 3: First Molding
 // ==========================================
@@ -2468,7 +2662,7 @@ function Step8Packaging({ wipList, orderList, ctx }) {
 
     try {
       const database = getFirestore();
-     await addDoc(getColRef("print-queue"), {
+      await addDoc(collection(database, "print-queue"), {
         productName, color: wip.type, height: wip.height, lotNumber: finalLot, shrinkage: wip.shrinkageRate, scaleFactor: calculatedScaleFactor,
         mfgDate: getKST().split(" ")[0], size: sizeDisplay, quantity: finalQty, status: "pending", createdAt: serverTimestamp(),
       });
