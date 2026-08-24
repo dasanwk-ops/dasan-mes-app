@@ -1037,27 +1037,169 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
       }
     }
 
-    try {
-      const curTime = getKST();
-      const usedLotInfoStr = activeMaterials.map((m) => {
-        const lotItem = (inventory || []).find((i) => i.id === selectedLots[m]);
-        return `${m}:${lotItem?.lot || "N/A"}(${consumedBOM[m]}kg)`;
-      }).join(", ");
+  try {
+  const curTime = getKST();
 
-      // 1. 원재료 창고 재고 차감 및 입출고 이력 기록
-      for (const mat of activeMaterials) {
-        const targetLotId = selectedLots[mat];
-        const invItem = (inventory || []).find((i) => i.id === targetLotId);
-        const remainW = Number((Number(invItem.weight) - consumedBOM[mat]).toFixed(3));
-        const histId = Date.now().toString() + Math.random().toString().slice(2, 7);
+  // Firestore Transaction:
+  // 재고 차감 + 출고이력 + 발주 롤백 + WIP 이동을 한 번에 처리
+  let recordDetails = "";
 
-        if (remainW <= 0) {
-          await deleteDoc(getDocRef("inventory", targetLotId));
-        } else {
-          await setDoc(getDocRef("inventory", targetLotId), { ...invItem, weight: remainW });
-        }
+  await runTransaction(db, async (transaction) => {
 
-        await setDoc(getDocRef("inventoryHistory", histId), {
+    // ==========================================
+    // 1. 필요한 문서 REF 준비
+    // ==========================================
+    const inventoryRefs = {};
+
+    for (const mat of activeMaterials) {
+      inventoryRefs[mat] = getDocRef(
+        "inventory",
+        selectedLots[mat]
+      );
+    }
+
+    const wipRef = getDocRef("wipList", activeJob.id);
+
+    const orderRef =
+      isShortageMode &&
+      shortageQty > 0 &&
+      activeJob.orderId
+        ? getDocRef("orderList", activeJob.orderId)
+        : null;
+
+
+    // ==========================================
+    // 2. READ 단계
+    //    반드시 실제 Firestore 최신값 기준
+    // ==========================================
+
+    const inventorySnaps = {};
+
+    for (const mat of activeMaterials) {
+      inventorySnaps[mat] =
+        await transaction.get(inventoryRefs[mat]);
+    }
+
+    const wipSnap = await transaction.get(wipRef);
+
+    const orderSnap = orderRef
+      ? await transaction.get(orderRef)
+      : null;
+
+
+    // ==========================================
+    // 3. WIP 중복 처리 방지
+    // ==========================================
+
+    if (!wipSnap.exists()) {
+      throw new Error("배합 대상 로트가 존재하지 않습니다.");
+    }
+
+    if (wipSnap.data().currentStep !== "step2") {
+      throw new Error(
+        "이미 다른 작업자가 처리한 배합 로트입니다."
+      );
+    }
+
+
+    // ==========================================
+    // 4. 실제 재고 최신값 검증
+    // ==========================================
+
+    const liveInventory = {};
+
+    for (const mat of activeMaterials) {
+
+      const snap = inventorySnaps[mat];
+
+      if (!snap.exists()) {
+        throw new Error(
+          `[${mat}] 선택한 원재료 LOT가 존재하지 않습니다.`
+        );
+      }
+
+      const invItem = snap.data();
+
+      if (
+        Number(invItem.weight) <
+        Number(consumedBOM[mat])
+      ) {
+        throw new Error(
+          `[${mat}] LOT ${invItem.lot} 재고 부족 ` +
+          `(필요 ${consumedBOM[mat]}kg / ` +
+          `현재 ${invItem.weight}kg)`
+        );
+      }
+
+      liveInventory[mat] = invItem;
+    }
+
+
+    // ==========================================
+    // 5. 사용 LOT 정보 생성
+    // ==========================================
+
+    const usedLotInfoStr = activeMaterials
+      .map((mat) => {
+        const invItem = liveInventory[mat];
+
+        return (
+          `${mat}:${invItem.lot}` +
+          `(${consumedBOM[mat]}kg)`
+        );
+      })
+      .join(", ");
+
+
+    // ==========================================
+    // 6. 원재료 실제 차감
+    // ==========================================
+
+    for (const mat of activeMaterials) {
+
+      const invItem = liveInventory[mat];
+
+      const remainW = Number(
+        (
+          Number(invItem.weight) -
+          Number(consumedBOM[mat])
+        ).toFixed(3)
+      );
+
+      if (remainW <= 0) {
+
+        transaction.delete(
+          inventoryRefs[mat]
+        );
+
+      } else {
+
+        transaction.update(
+          inventoryRefs[mat],
+          {
+            weight: remainW
+          }
+        );
+      }
+
+
+      // ----------------------------------------
+      // 출고 이력 생성
+      // ----------------------------------------
+
+      const histId =
+        Date.now().toString() +
+        Math.random().toString().slice(2, 7);
+
+      const histRef =
+        getDocRef(
+          "inventoryHistory",
+          histId
+        );
+
+      transaction.set(
+        histRef,
+        {
           id: histId,
           date: curTime.slice(0, 16),
           type: "OUT",
@@ -1066,46 +1208,116 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
           qty: consumedBOM[mat],
           note: `배합투입(${activeJob.mixLot})`,
           createdAt: serverTimestamp()
-        });
-      }
-
-      // 2. 원료 부족 시 발주 관리(Step 0)로 잔여 수량 롤백
-      if (isShortageMode && shortageQty > 0 && activeJob.orderId) {
-        const targetOrder = (orderList || []).find((o) => o.id === activeJob.orderId);
-        if (targetOrder) {
-          const newReleasedQty = Math.max(0, (targetOrder.releasedQty || targetOrder.qty) - shortageQty);
-          await setDoc(getDocRef("orderList", activeJob.orderId), {
-            ...targetOrder,
-            releasedQty: newReleasedQty,
-            status: newReleasedQty === 0 ? "대기중" : (newReleasedQty >= targetOrder.qty ? "생산중" : "부분투입")
-          });
         }
-      }
+      );
+    }
 
-      // 3. WIP 로트 업데이트 및 다음 공정(1차 성형) 이관
-      const shortageNote = isShortageMode ? ` [원료부족 부분배합: ${shortageQty}EA 발주 롤백]` : "";
-      const recordDetails = `[${curTime}] [배합완료] 투입로트(${usedLotInfoStr})${shortageNote} | 담당:${operator} ${specialNote ? `[메모:${specialNote}]` : ""}`;
 
-      await setDoc(getDocRef("wipList", activeJob.id), {
-        ...activeJob,
+    // ==========================================
+    // 7. 부족 수량 발주 롤백
+    // ==========================================
+
+    if (orderRef && orderSnap?.exists()) {
+
+      const targetOrder = orderSnap.data();
+
+      const currentReleased =
+        Number(targetOrder.releasedQty || 0);
+
+      const newReleasedQty =
+        Math.max(
+          0,
+          currentReleased - shortageQty
+        );
+
+      const newStatus =
+        newReleasedQty === 0
+          ? "대기중"
+          : newReleasedQty >= Number(targetOrder.qty)
+          ? "생산중"
+          : "부분투입";
+
+      transaction.update(
+        orderRef,
+        {
+          releasedQty: newReleasedQty,
+          status: newStatus
+        }
+      );
+    }
+
+
+    // ==========================================
+    // 8. WIP → Step 3
+    // ==========================================
+
+    const shortageNote =
+      isShortageMode
+        ? ` [원료부족 부분배합: ${shortageQty}EA 발주 롤백]`
+        : "";
+
+    recordDetails =
+      `[${curTime}] [배합완료] ` +
+      `투입로트(${usedLotInfoStr})` +
+      `${shortageNote} | 담당:${operator} ` +
+      `${specialNote ? `[메모:${specialNote}]` : ""}`;
+
+    const currentWip = wipSnap.data();
+
+    transaction.update(
+      wipRef,
+      {
         qty: finalProducedQty,
         weight: finalMixedWeight.toFixed(3),
         currentStep: "step3",
-        details: `${activeJob.details || ""}\n${recordDetails}`
-      });
+        details:
+          `${currentWip.details || ""}\n` +
+          recordDetails
+      }
+    );
+  });
 
-      setOperator("");
-      setSpecialNote("");
-      setIsShortageMode(false);
-      setCompletedBatches("");
-      setResidualGrams("");
-      setSelectedLots({});
-      ctx.showToast(`배합 완료! ${finalProducedQty}EA 1차 성형으로 이관되었습니다.`, "success");
-      logProcessToGoogleSheet("step2", { ...activeJob, qty: finalProducedQty }, operator, { details: recordDetails });
-    } catch (err) {
-      console.error("배합 처리 오류:", err);
-      ctx.showToast(`배합 처리 중 오류 발생: ${err.message || err}`, "error");
+
+  // ==========================================
+  // Transaction 성공 이후 화면 초기화
+  // ==========================================
+
+  setOperator("");
+  setSpecialNote("");
+  setIsShortageMode(false);
+  setCompletedBatches("");
+  setResidualGrams("");
+  setSelectedLots({});
+
+  ctx.showToast(
+    `배합 완료! ${finalProducedQty}EA 1차 성형으로 이관되었습니다.`,
+    "success"
+  );
+
+  logProcessToGoogleSheet(
+    "step2",
+    {
+      ...activeJob,
+      qty: finalProducedQty
+    },
+    operator,
+    {
+      details: recordDetails
     }
+  );
+
+} catch (err) {
+
+  console.error(
+    "배합 처리 오류:",
+    err
+  );
+
+  ctx.showToast(
+    `배합 처리 중 오류 발생: ${err.message || err}`,
+    "error"
+  );
+}
   };
 
   return (
