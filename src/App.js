@@ -42,10 +42,31 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 // 🌟 Firebase 보안 규칙을 통과하면서 양산과 완벽 분리되는 테스트 전용 경로 (test_data)
-const appId = "dasan-mes-app";
-// 🌟 보안 규칙을 통과하면서 양산과 100% 분리되는 test_ 컬렉션 연결
-const getColRef = (colName) => collection(db, "artifacts", appId, "public", "data", `test_${colName}`);
-const getDocRef = (colName, docId) => doc(db, "artifacts", appId, "public", "data", `test_${colName}`, docId.toString());
+// ==========================================
+// TEST MES 전용 데이터 영역
+// ==========================================
+const appId = "dasan-mes-test";
+
+const getColRef = (colName) =>
+  collection(
+    db,
+    "artifacts",
+    appId,
+    "public",
+    "data",
+    colName
+  );
+
+const getDocRef = (colName, docId) =>
+  doc(
+    db,
+    "artifacts",
+    appId,
+    "public",
+    "data",
+    colName,
+    String(docId)
+  );
 const DEFAULT_MASTER_SETTINGS = {
   MATERIAL_TYPES: ["4Y-W", "4Y-Y", "5E-P", "4Y-G"],
   PRODUCT_COLORS: ["BL0", "BL1", "BL2", "BL3", "A1", "A2", "B1"],
