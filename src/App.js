@@ -456,7 +456,22 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
         <h3 className="text-lg font-bold mb-6 text-slate-800 flex items-center"><ArrowRight className="w-5 h-5 mr-2 text-blue-600" /> 공정 상황 퀵 네비게이션</h3>
         <div className="flex justify-between items-start w-full">
           {pipelineSteps.map((step, idx) => {
-            const count = wipList.filter((w) => w.currentStep.startsWith(step.id)).reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
+  const dashboardStepMap = {
+    step2: ["step2"],
+    step3: ["step3"],
+    step4: ["step4"],
+    step5: ["step5"],
+    step5_shrink: ["step5_shrink"],
+    step6: ["step6"],
+    step7: ["step7", "step7_drying"],
+    step8: ["step8"],
+  };
+
+  const validSteps = dashboardStepMap[step.id] || [step.id];
+
+  const count = wipList
+    .filter((w) => validSteps.includes(w.currentStep))
+    .reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
             const Icon = step.icon;
             return (
               <div key={step.id} onClick={() => setActiveStep(step.id)} className="flex-1 flex flex-col items-center relative group cursor-pointer hover:bg-slate-50 rounded-xl py-2">
