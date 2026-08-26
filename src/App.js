@@ -481,10 +481,16 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
   const [selectedMaterial, setSelectedMaterial] = React.useState(null);
 
   const WIP_STEPS = [
-    { value: "step2", label: "배합 대기" }, { value: "step3", label: "1차 성형 대기" }, { value: "step4", label: "2차 성형 대기" },
-    { value: "step5", label: "열처리 대기" }, { value: "step5_shrink", label: "수축률 측정 대기" }, // 🌟 스텝 업데이트
-    { value: "step6", label: "검수 대기" }, { value: "step7", label: "건조 대기" },
-    { value: "step7_drying", label: "건조 진행중" }, { value: "step8", label: "포장 대기" },
+    { value: "step1", label: "소재창고 대기" },
+    { value: "step2", label: "배합 대기" },
+    { value: "step3", label: "1차 성형 대기" },
+    { value: "step4", label: "2차 성형 대기" },
+    { value: "step5", label: "열처리 대기" },
+    { value: "step5_shrink", label: "수축률 측정 대기" },
+    { value: "step6", label: "검수 대기" },
+    { value: "step7", label: "건조 대기" },
+    { value: "step7_drying", label: "건조 진행중" },
+    { value: "step8", label: "포장 대기" },
   ];
 
   const handleSyncGoogleSheet = async () => { await syncToGoogleSheets(orderList, wipList, inventoryHistory, shippingHistory, ctx); };
@@ -492,15 +498,43 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
  const handleSaveWip = async (wip) => {
     const safeQty = Number(editData.qty);
     if (isNaN(safeQty) || safeQty < 0) return ctx.showToast("올바른 숫자를 입력해주세요.", "error");
-    try {
-      await setDoc(getDocRef("wipList", wip.id), {
-        ...wip,
-        qty: safeQty,
-        currentStep: editData.currentStep || wip.currentStep,
-        shrinkageRate: editData.shrinkageRate || wip.shrinkageRate || ""
-      });
-      setEditingId(null); ctx.showToast("수정 완료", "success");
-    } catch (e) { ctx.showToast("실패", "error"); }
+
+    const targetStep = editData.currentStep || wip.currentStep;
+    const currentIndex = WIP_STEPS.findIndex((s) => s.value === wip.currentStep);
+    const targetIndex = WIP_STEPS.findIndex((s) => s.value === targetStep);
+
+    // 대시보드 수정에서는 현재 공정보다 뒤 단계로 건너뛰는 것은 막고,
+    // 현재 또는 이전 공정으로만 상태 변경을 허용합니다.
+    if (currentIndex >= 0 && targetIndex > currentIndex) {
+      return ctx.showToast("대시보드에서는 현재 또는 이전 공정으로만 변경할 수 있습니다.", "error");
+    }
+
+    const saveChanges = async () => {
+      try {
+        await setDoc(getDocRef("wipList", wip.id), {
+          ...wip,
+          qty: safeQty,
+          currentStep: targetStep,
+          shrinkageRate: editData.shrinkageRate || wip.shrinkageRate || ""
+        });
+        setEditingId(null);
+        ctx.showToast(targetStep !== wip.currentStep ? "이전 공정으로 롤백되었습니다." : "수정 완료", "success");
+      } catch (e) {
+        ctx.showToast("실패", "error");
+      }
+    };
+
+    if (targetStep !== wip.currentStep) {
+      const fromLabel = WIP_STEPS.find((s) => s.value === wip.currentStep)?.label || wip.currentStep;
+      const toLabel = WIP_STEPS.find((s) => s.value === targetStep)?.label || targetStep;
+      ctx.showConfirm(
+        `${fromLabel} → ${toLabel}로 롤백하시겠습니까?\n\n※ 진행 상태만 변경되며 기존 공정 기록, 원재료 입출고 이력, 장비 데이터는 자동으로 삭제하거나 복원하지 않습니다.`,
+        saveChanges
+      );
+      return;
+    }
+
+    await saveChanges();
   };
   const handleDeleteWip = (id) => {
     ctx.showConfirm("삭제하시겠습니까?", async () => { try { await deleteDoc(getDocRef("wipList", id)); ctx.showToast("삭제 완료", "success"); } catch (e) { ctx.showToast("실패", "error"); } });
@@ -672,6 +706,8 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
             <tbody className="divide-y divide-slate-100">
               {activeWipList.map((wip) => {
                 const isEditing = editingId === wip.id;
+                const currentStepIndex = WIP_STEPS.findIndex((s) => s.value === wip.currentStep);
+                const rollbackSteps = currentStepIndex >= 0 ? WIP_STEPS.slice(0, currentStepIndex + 1) : WIP_STEPS;
                 return (
                   <tr key={wip.id} className="hover:bg-slate-50 transition-colors">
                     <td className="px-4 py-3 font-medium text-blue-600">{wip.mixLot}</td>
@@ -683,9 +719,23 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
                       {isEditing ? <input type="number" step="0.01" value={editData.shrinkageRate || ""} onChange={(e) => setEditData({ ...editData, shrinkageRate: e.target.value })} className="border p-1 w-16 text-center rounded bg-orange-50 font-black" /> : wip.shrinkageRate || "0.00"}
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`px-2 py-1 border rounded text-[10px] font-bold ${wip.currentStep.includes("heating") ? "bg-orange-50 text-orange-700" : "bg-white text-slate-600"}`}>
-                        {WIP_STEPS.find((s) => s.value === wip.currentStep)?.label || "대기중"}
-                      </span>
+                      {isEditing ? (
+                        <select
+                          value={editData.currentStep || wip.currentStep}
+                          onChange={(e) => setEditData({ ...editData, currentStep: e.target.value })}
+                          className="border border-orange-300 bg-orange-50 rounded p-1.5 text-[11px] font-black text-orange-700 outline-none focus:border-orange-500"
+                        >
+                          {rollbackSteps.map((step) => (
+                            <option key={step.value} value={step.value}>
+                              {step.value === wip.currentStep ? `현재: ${step.label}` : `↩ ${step.label}`}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className={`px-2 py-1 border rounded text-[10px] font-bold ${wip.currentStep.includes("heating") ? "bg-orange-50 text-orange-700" : "bg-white text-slate-600"}`}>
+                          {WIP_STEPS.find((s) => s.value === wip.currentStep)?.label || "대기중"}
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-500 truncate max-w-[150px] text-center">{wip.details}</td>
                    <td className="px-4 py-3 text-center">
