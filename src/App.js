@@ -18,6 +18,25 @@ const getKSTDateOnly = () => getKST().slice(2, 10).replace(/-/g, "");
 const cloneDeep = (value) => JSON.parse(JSON.stringify(value));
 
 // ==========================================
+// 제품군(345 / 234) 표시 및 호환 유틸리티
+// 기존 데이터가 BL3처럼 색상만 저장되어 있으면 345 제품군으로 간주합니다.
+// ==========================================
+const normalizeProductType = (value = "") => {
+  const raw = String(value || "").trim().replace(/\s+/g, " ").toUpperCase();
+  if (!raw) return "";
+  if (/^(345|234)\s+/.test(raw)) return raw;
+  return `345 ${raw}`;
+};
+
+const getProductSeries = (value = "") => normalizeProductType(value).split(" ")[0] || "345";
+const getProductShade = (value = "") => {
+  const normalized = normalizeProductType(value);
+  const parts = normalized.split(" ");
+  return parts.length > 1 ? parts.slice(1).join(" ") : normalized;
+};
+const getProductLabel = (value = "") => normalizeProductType(value);
+
+// ==========================================
 // [2] TEST / PROD 완전 분리 환경 설정
 // ==========================================
 // 기본값은 TEST입니다.
@@ -95,12 +114,12 @@ const syncToGoogleSheets = async (orderList, wipList, inventoryHistory, shipping
   const mergedLots = {};
   const wipFinished = (wipList || []).filter((w) => w.currentStep === "done");
   wipFinished.forEach((w) => {
-    mergedLots[w.mixLot] = { mixLot: w.mixLot, type: w.type, height: w.height, qty: Number(w.qty), details: w.details || "", shrinkageRate: w.shrinkageRate || "-" };
+    mergedLots[w.mixLot] = { mixLot: w.mixLot, type: getProductLabel(w.type), height: w.height, qty: Number(w.qty), details: w.details || "", shrinkageRate: w.shrinkageRate || "-" };
   });
 
   (shippingHistory || []).forEach((h) => {
     if (!mergedLots[h.lot]) {
-      mergedLots[h.lot] = { mixLot: h.lot, type: h.type, height: h.height, qty: 0, details: h.details || "", shrinkageRate: "-" };
+      mergedLots[h.lot] = { mixLot: h.lot, type: getProductLabel(h.type), height: h.height, qty: 0, details: h.details || "", shrinkageRate: "-" };
     }
     mergedLots[h.lot].qty += Number(h.qty);
     if (mergedLots[h.lot].shrinkageRate === "-") {
@@ -168,7 +187,7 @@ const logProcessToGoogleSheet = async (stepId, wipItem, operator, extraData = {}
         stepId: stepId,
         timestamp: getKST(),
         lot: wipItem.mixLot || wipItem.lot || wipItem.orderNo || "N/A",
-        product: wipItem.type ? `${wipItem.type} ${wipItem.height}T` : (wipItem.productCode || "N/A"),
+        product: wipItem.type ? `${getProductLabel(wipItem.type)} ${wipItem.height}T` : (wipItem.productCode || "N/A"),
         qty: Number(wipItem.qty) || 0,
         defects: extraData.defects || 0,
         defectReason: extraData.defectReason || "-",
@@ -191,19 +210,100 @@ const logProcessToGoogleSheet = async (stepId, wipItem, operator, extraData = {}
 };
 
 const DEFAULT_MASTER_SETTINGS = {
-  MATERIAL_TYPES: ["4Y-W", "4Y-Y", "5E-P", "4Y-G"],
-  PRODUCT_COLORS: ["BL0", "BL1", "BL2", "BL3", "A1", "A2", "B1"],
+  MATERIAL_TYPES: ["4Y-W", "4Y-W-S", "4Y-Y", "5E-P", "4Y-G"],
+  // 분류값 자체에 제품군을 포함시켜 전 공정에서 "345 BL3", "234 BL3"처럼 표시합니다.
+  PRODUCT_COLORS: [
+    "345 BL0", "345 BL1", "345 BL2", "345 BL3", "345 A1", "345 A2", "345 B1",
+    "234 BL2", "234 BL3", "234 B1"
+  ],
   PRODUCT_HEIGHTS: ["20", "22", "25", "30", "35"],
   WEIGHT_BY_HEIGHT: { 20: 502, 22: 553, 25: 628, 30: 754, 35: 879 },
   RATIO_BY_COLOR: {
-    BL0: { "4Y-W": 1.0, "4Y-Y": 0.0, "5E-P": 0.0, "4Y-G": 0.0 }, BL1: { "4Y-W": 0.961, "4Y-Y": 0.03, "5E-P": 0.004, "4Y-G": 0.005 },
-    BL2: { "4Y-W": 0.931, "4Y-Y": 0.055, "5E-P": 0.006, "4Y-G": 0.008 }, BL3: { "4Y-W": 0.915, "4Y-Y": 0.079, "5E-P": 0.006, "4Y-G": 0.0 },
-    A1: { "4Y-W": 0.83, "4Y-Y": 0.15, "5E-P": 0.02, "4Y-G": 0.0 }, A2: { "4Y-W": 0.786, "4Y-Y": 0.174, "5E-P": 0.02, "4Y-G": 0.02 },
-    B1: { "4Y-W": 0.869, "4Y-Y": 0.12, "5E-P": 0.011, "4Y-G": 0.0 },
+    // 3:45 제품군 (기존 BOM 유지)
+    "345 BL0": { "4Y-W": 1.0,   "4Y-W-S": 0.0, "4Y-Y": 0.0,   "5E-P": 0.0,   "4Y-G": 0.0 },
+    "345 BL1": { "4Y-W": 0.961, "4Y-W-S": 0.0, "4Y-Y": 0.03,  "5E-P": 0.004, "4Y-G": 0.005 },
+    "345 BL2": { "4Y-W": 0.931, "4Y-W-S": 0.0, "4Y-Y": 0.055, "5E-P": 0.006, "4Y-G": 0.008 },
+    "345 BL3": { "4Y-W": 0.915, "4Y-W-S": 0.0, "4Y-Y": 0.079, "5E-P": 0.006, "4Y-G": 0.0 },
+    "345 A1":  { "4Y-W": 0.83,  "4Y-W-S": 0.0, "4Y-Y": 0.15,  "5E-P": 0.02,  "4Y-G": 0.0 },
+    "345 A2":  { "4Y-W": 0.786, "4Y-W-S": 0.0, "4Y-Y": 0.174, "5E-P": 0.02,  "4Y-G": 0.02 },
+    "345 B1":  { "4Y-W": 0.869, "4Y-W-S": 0.0, "4Y-Y": 0.12,  "5E-P": 0.011, "4Y-G": 0.0 },
+
+    // 2:34 제품군
+    // 2:34 제품군은 전용 주원료 4Y-W-S를 사용합니다.
+    "234 BL2": { "4Y-W": 0.0, "4Y-W-S": 0.9565, "4Y-Y": 0.0390, "5E-P": 0.0045, "4Y-G": 0.0 },
+    "234 BL3": { "4Y-W": 0.0, "4Y-W-S": 0.9380, "4Y-Y": 0.0560, "5E-P": 0.0060, "4Y-G": 0.0 },
+    "234 B1":  { "4Y-W": 0.0, "4Y-W-S": 0.9004, "4Y-Y": 0.0920, "5E-P": 0.0076, "4Y-G": 0.0 },
   },
   TARGET_PRESSURE: { step3: "70", step4A: "250", step4B: "250" },
   TARGET_TEMPERATURE: { furnace1: "1050", furnace2: "1050" },
-  SAFETY_THRESHOLD: { "4Y-W": "50", "4Y-Y": "50", "5E-P": "50", "4Y-G": "50" }
+  SAFETY_THRESHOLD: { "4Y-W": "50", "4Y-W-S": "50", "4Y-Y": "50", "5E-P": "50", "4Y-G": "50" }
+};
+
+// 기존 TEST Firebase에 저장된 마스터 설정과 새 기본 설정을 안전하게 병합합니다.
+// 과거 키(BL0~B1)는 자동으로 345 제품군으로 변환하여 기존 사용자 설정을 보존합니다.
+const mergeMasterSettings = (loaded = {}) => {
+  const merged = cloneDeep(DEFAULT_MASTER_SETTINGS);
+  if (!loaded || typeof loaded !== "object") return merged;
+
+  const loadedMaterialTypes = Array.isArray(loaded.MATERIAL_TYPES) ? loaded.MATERIAL_TYPES : [];
+  merged.MATERIAL_TYPES = [
+    ...DEFAULT_MASTER_SETTINGS.MATERIAL_TYPES,
+    ...loadedMaterialTypes.filter((t) => !DEFAULT_MASTER_SETTINGS.MATERIAL_TYPES.includes(t)),
+  ];
+
+  // 제품 분류는 새 345/234 체계를 기준으로 고정합니다.
+  merged.PRODUCT_COLORS = cloneDeep(DEFAULT_MASTER_SETTINGS.PRODUCT_COLORS);
+  merged.PRODUCT_HEIGHTS = Array.isArray(loaded.PRODUCT_HEIGHTS) && loaded.PRODUCT_HEIGHTS.length > 0
+    ? loaded.PRODUCT_HEIGHTS
+    : cloneDeep(DEFAULT_MASTER_SETTINGS.PRODUCT_HEIGHTS);
+
+  merged.WEIGHT_BY_HEIGHT = {
+    ...DEFAULT_MASTER_SETTINGS.WEIGHT_BY_HEIGHT,
+    ...(loaded.WEIGHT_BY_HEIGHT || {}),
+  };
+  merged.TARGET_PRESSURE = {
+    ...DEFAULT_MASTER_SETTINGS.TARGET_PRESSURE,
+    ...(loaded.TARGET_PRESSURE || {}),
+  };
+  merged.TARGET_TEMPERATURE = {
+    ...DEFAULT_MASTER_SETTINGS.TARGET_TEMPERATURE,
+    ...(loaded.TARGET_TEMPERATURE || {}),
+  };
+  merged.SAFETY_THRESHOLD = {
+    ...DEFAULT_MASTER_SETTINGS.SAFETY_THRESHOLD,
+    ...(loaded.SAFETY_THRESHOLD || {}),
+  };
+
+  const loadedRatios = loaded.RATIO_BY_COLOR || {};
+  Object.entries(loadedRatios).forEach(([rawProduct, ratios]) => {
+    const normalizedProduct = normalizeProductType(rawProduct);
+    if (!merged.RATIO_BY_COLOR[normalizedProduct] || !ratios || typeof ratios !== "object") return;
+    merged.RATIO_BY_COLOR[normalizedProduct] = {
+      ...merged.RATIO_BY_COLOR[normalizedProduct],
+      ...ratios,
+    };
+  });
+
+  // 모든 제품에 모든 원재료 키를 보장합니다.
+  merged.PRODUCT_COLORS.forEach((product) => {
+    if (!merged.RATIO_BY_COLOR[product]) merged.RATIO_BY_COLOR[product] = {};
+    merged.MATERIAL_TYPES.forEach((mat) => {
+      if (merged.RATIO_BY_COLOR[product][mat] === undefined) merged.RATIO_BY_COLOR[product][mat] = 0;
+    });
+  });
+
+  return merged;
+};
+
+const getProductRatios = (settings, productType) => {
+  const normalized = normalizeProductType(productType);
+  const legacyShade = getProductShade(productType);
+  return (
+    settings?.RATIO_BY_COLOR?.[normalized] ||
+    settings?.RATIO_BY_COLOR?.[legacyShade] ||
+    DEFAULT_MASTER_SETTINGS.RATIO_BY_COLOR?.[normalized] ||
+    { "4Y-W": 1.0 }
+  );
 };
 
 const PROCESS_STEPS = [
@@ -336,7 +436,7 @@ export default function DasanMES() {
           }
           if (d.id === "dryingRoom") setDryingRoom(d.data());
           if (d.id === "settings") {
-            if (d.data() && Object.keys(d.data()).length > 0) setMasterSettings(d.data());
+            if (d.data() && Object.keys(d.data()).length > 0) setMasterSettings(mergeMasterSettings(d.data()));
           }
         });
       },
@@ -463,7 +563,7 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
     const getBOM = (color, singleWeight, qty) => {
       const baseKg = (Number(singleWeight) * Number(qty)) / 1000;
       const totalKg = baseKg * 1.01 + 0.2;
-      const ratios = masterSettings.RATIO_BY_COLOR[color] || { "4Y-W": 1.0 };
+      const ratios = getProductRatios(masterSettings, color);
       const req = {};
       for (const [mat, ratio] of Object.entries(ratios)) {
         if (ratio > 0) req[mat] = totalKg * ratio;
@@ -681,7 +781,7 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
                 return (
                   <tr key={wip.id} className="hover:bg-slate-50 transition-colors">
                     <td className="px-4 py-3 font-medium text-blue-600">{wip.mixLot}</td>
-                    <td className="px-4 py-3 font-bold text-slate-800">{wip.type} {wip.height}T</td>
+                    <td className="px-4 py-3 font-bold text-slate-800">{getProductLabel(wip.type)} {wip.height}T</td>
                     <td className="px-4 py-3 text-center font-bold">
                       {isEditing ? <input type="number" value={editData.qty} onChange={(e) => setEditData({ ...editData, qty: e.target.value })} className="border p-1 w-16 text-center rounded bg-orange-50" /> : wip.qty}
                     </td>
@@ -718,7 +818,7 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
 // Step 0: Order Management 
 // ==========================================
 function Step0OrderManagement({ orderList, masterSettings, ctx }) {
-  const [newOrder, setNewOrder] = useState({ date: getKST().split(" ")[0], color: "BL3", height: "25", singleWeight: masterSettings.WEIGHT_BY_HEIGHT["25"] || 628, qty: 100 });
+  const [newOrder, setNewOrder] = useState({ date: getKST().split(" ")[0], color: "345 BL3", height: "25", singleWeight: masterSettings.WEIGHT_BY_HEIGHT["25"] || 628, qty: 100 });
   const [editingId, setEditingId] = useState(null);
   const [editData, setEditData] = useState({});
   const [releaseQtyMap, setReleaseQtyMap] = useState({});
@@ -726,7 +826,7 @@ function Step0OrderManagement({ orderList, masterSettings, ctx }) {
   const calcBOM = (color, singleWeight, qty) => {
     const baseKg = (singleWeight * parseInt(qty)) / 1000;
     const totalKg = baseKg * 1.01 + 0.2;
-    const ratios = masterSettings.RATIO_BY_COLOR[color] || { "4Y-W": 1.0 };
+    const ratios = getProductRatios(masterSettings, color);
     const reqBOM = {};
     for (const [mat, ratio] of Object.entries(ratios)) { if (ratio > 0) reqBOM[mat] = totalKg * ratio; }
     return reqBOM;
@@ -739,7 +839,10 @@ function Step0OrderManagement({ orderList, masterSettings, ctx }) {
     const reqBOM = calcBOM(newOrder.color, sWeight, newOrder.qty);
     const newItem = {
       id: Date.now().toString(), orderNo: `ORD-${newOrder.date.replace(/-/g, "").slice(2)}-${Math.floor(Math.random() * 1000)}`,
-      orderDate: newOrder.date, productCode: `HR-${newOrder.color}${newOrder.height}`, color: newOrder.color, height: newOrder.height,
+      orderDate: newOrder.date,
+      productCode: `HR-${getProductSeries(newOrder.color)}-${getProductShade(newOrder.color)}${newOrder.height}`,
+      color: normalizeProductType(newOrder.color),
+      height: newOrder.height,
       singleWeight: sWeight, qty: parseInt(newOrder.qty), releasedQty: 0, reqBOM, status: "대기중", createdAt: serverTimestamp(),
     };
     try { await setDoc(getDocRef("orderList", newItem.id), newItem); ctx.showToast("생산 지시가 등록되었습니다.", "success"); } catch (err) { ctx.showToast("등록 실패", "error"); }
@@ -752,17 +855,17 @@ function Step0OrderManagement({ orderList, masterSettings, ctx }) {
     if (!inputQty || inputQty <= 0) return ctx.showToast("투입할 수량을 입력해주세요.");
     if (inputQty > remaining) return ctx.showToast(`잔량보다 많이 투입할 수 없습니다.`, "error");
 
-    ctx.showConfirm(`${order.color} ${order.height}T 내열 부품 ${inputQty}개를 소재 창고로 보내시겠습니까?`, async () => {
+    ctx.showConfirm(`${getProductLabel(order.color)} ${order.height}T 내열 부품 ${inputQty}개를 소재 창고로 보내시겠습니까?`, async () => {
       try {
         const newWipId = Date.now().toString();
         const totalReleased = alreadyReleased + inputQty;
         await setDoc(getDocRef("orderList", order.id), { ...order, releasedQty: totalReleased, status: totalReleased >= order.qty ? "생산중" : "부분투입" });
         await setDoc(getDocRef("wipList", newWipId), {
           id: newWipId, orderId: order.id, mixLot: `MIX-${getKSTDateOnly()}-${Math.floor(Math.random() * 900) + 100}`,
-          type: order.color, height: order.height, singleWeight: order.singleWeight, qty: inputQty, currentStep: "step1", details: `[${getKST()}] 지시분할투입 (원본:${order.orderNo})`,
+          type: normalizeProductType(order.color), height: order.height, singleWeight: order.singleWeight, qty: inputQty, currentStep: "step1", details: `[${getKST()}] 지시분할투입 (원본:${order.orderNo})`,
         });
        setReleaseQtyMap({ ...releaseQtyMap, [order.id]: "" }); ctx.showToast(`${inputQty}개 소재 창고로 전송 완료`, "success");
-        logProcessToGoogleSheet("step0", { mixLot: `투입-${order.orderNo}`, type: order.color, height: order.height, qty: inputQty }, "시스템", { details: `[발주 투입] 원본번호: ${order.orderNo}` });
+        logProcessToGoogleSheet("step0", { mixLot: `투입-${order.orderNo}`, type: normalizeProductType(order.color), height: order.height, qty: inputQty }, "시스템", { details: `[발주 투입] 원본번호: ${order.orderNo}` });
       } catch (e) { ctx.showToast("투입 처리 중 오류 발생", "error"); }
     });
   };
@@ -780,9 +883,16 @@ function Step0OrderManagement({ orderList, masterSettings, ctx }) {
           <div><label className="block text-sm font-medium mb-1">지시 일자</label><input type="date" required className="w-full border rounded-md p-2" value={newOrder.date} onChange={(e) => setNewOrder({ ...newOrder, date: e.target.value })} /></div>
           <div>
             <label className="block text-sm font-medium mb-2">분류</label>
-            <div className="flex flex-wrap gap-2">
-              {masterSettings.PRODUCT_COLORS.map((c) => (
-                <button key={c} type="button" onClick={() => setNewOrder({ ...newOrder, color: c })} className={`px-3 py-1.5 rounded-md text-sm font-medium border ${newOrder.color === c ? "bg-indigo-600 text-white" : "bg-white"}`}>{c}</button>
+            <div className="space-y-3">
+              {["345", "234"].map((series) => (
+                <div key={series} className="border rounded-lg p-3 bg-slate-50">
+                  <div className="text-[11px] font-black text-slate-500 mb-2">{series} 제품군</div>
+                  <div className="flex flex-wrap gap-2">
+                    {masterSettings.PRODUCT_COLORS.filter((c) => c.startsWith(`${series} `)).map((c) => (
+                      <button key={c} type="button" onClick={() => setNewOrder({ ...newOrder, color: c })} className={`px-3 py-1.5 rounded-md text-sm font-bold border ${newOrder.color === c ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-slate-700"}`}>{c}</button>
+                    ))}
+                  </div>
+                </div>
               ))}
             </div>
           </div>
@@ -824,7 +934,7 @@ function Step0OrderManagement({ orderList, masterSettings, ctx }) {
                 const percent = Math.floor((released / order.qty) * 100);
                 return (
                   <tr key={order.id} className="border-b hover:bg-slate-50 transition-colors">
-                    <td className="px-4 py-4"><div className="text-[10px] text-slate-400 font-mono mb-1">{order.orderNo}</div><div className="font-black text-slate-800 text-base">{order.color} {order.height}T</div></td>
+                    <td className="px-4 py-4"><div className="text-[10px] text-slate-400 font-mono mb-1">{order.orderNo}</div><div className="font-black text-slate-800 text-base">{getProductLabel(order.color)} {order.height}T</div></td>
                     <td className="px-4 py-4"><div className="font-bold text-slate-700">{order.qty} EA</div><div className="text-xs font-black text-orange-600">잔량: {remaining} EA</div></td>
                     <td className="px-4 py-4 min-w-[120px]">
                       <div className="flex items-center gap-2"><div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-indigo-500 transition-all" style={{ width: `${percent}%` }}></div></div><span className="text-[10px] font-black text-slate-500">{percent}%</span></div>
@@ -854,17 +964,42 @@ function Step0OrderManagement({ orderList, masterSettings, ctx }) {
 // Step 1: Material Warehouse (배합 공정으로 이관만 담당)
 // ==========================================
 function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSettings, ctx }) {
-  const [inboundItems, setInboundItems] = useState(masterSettings.MATERIAL_TYPES.map((t) => ({ type: t, lot: "", weight: "" })));
+  const makeEmptyInboundItems = (types) =>
+    types.map((t) => ({
+      type: t,
+      lots: Array.from({ length: 4 }, () => ({ lot: "", weight: "" })),
+    }));
+
+  const [inboundItems, setInboundItems] = useState(() => makeEmptyInboundItems(masterSettings.MATERIAL_TYPES));
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [operators, setOperators] = useState({});
   const [detailModalType, setDetailModalType] = useState(null);
   const [detailModalTab, setDetailModalTab] = useState("lots");
   const pendingLots = (wipList || []).filter((w) => w.currentStep === "step1");
 
+  useEffect(() => {
+    if (!isModalOpen) setInboundItems(makeEmptyInboundItems(masterSettings.MATERIAL_TYPES));
+  }, [masterSettings.MATERIAL_TYPES, isModalOpen]);
+
+  const updateInboundLot = (materialIdx, lotIdx, field, value) => {
+    setInboundItems((prev) =>
+      prev.map((item, mIdx) =>
+        mIdx !== materialIdx
+          ? item
+          : {
+              ...item,
+              lots: item.lots.map((lotItem, lIdx) =>
+                lIdx !== lotIdx ? lotItem : { ...lotItem, [field]: value }
+              ),
+            }
+      )
+    );
+  };
+
   const calcPartialBOM = (color, singleWeight, qty) => {
     const baseKg = (Number(singleWeight) * Number(qty)) / 1000;
     const totalKg = baseKg * 1.01 + 0.2;
-    const ratios = masterSettings.RATIO_BY_COLOR[color] || { "4Y-W": 1.0 };
+    const ratios = getProductRatios(masterSettings, color);
     const reqBOM = {};
     for (const [mat, ratio] of Object.entries(ratios)) { if (ratio > 0) reqBOM[mat] = totalKg * ratio; }
     return reqBOM;
@@ -872,7 +1007,23 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
 
   const handleAdd = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
-    const validItems = inboundItems.filter((item) => item.lot && item.lot.trim() !== "" && item.weight && item.weight.toString().trim() !== "");
+    const flatItems = inboundItems.flatMap((item) =>
+      item.lots.map((lotItem) => ({ type: item.type, lot: lotItem.lot, weight: lotItem.weight }))
+    );
+
+    const incompleteItem = flatItems.find((item) => {
+      const hasLot = Boolean(item.lot && item.lot.trim() !== "");
+      const hasWeight = item.weight !== "" && item.weight !== null && item.weight !== undefined;
+      return hasLot !== hasWeight;
+    });
+
+    if (incompleteItem) {
+      return ctx.showToast(`[${incompleteItem.type}] LOT 번호와 중량을 한 쌍으로 입력해주세요.`, "error");
+    }
+
+    const validItems = flatItems.filter(
+      (item) => item.lot && item.lot.trim() !== "" && item.weight !== "" && item.weight !== null && item.weight !== undefined
+    );
 
     if (validItems.length === 0) {
       return ctx.showToast("로트번호와 중량을 모두 입력한 항목이 없습니다.", "error");
@@ -915,9 +1066,9 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
         });
       }
 
-      setInboundItems(masterSettings.MATERIAL_TYPES.map((t) => ({ type: t, lot: "", weight: "" })));
+      setInboundItems(makeEmptyInboundItems(masterSettings.MATERIAL_TYPES));
       setIsModalOpen(false);
-      ctx.showToast("소재 입고 완료! 재고에 반영되었습니다.", "success");
+      ctx.showToast(`${validItems.length}개 LOT 입고 완료! 재고에 반영되었습니다.`, "success");
     } catch (err) {
       console.error("입고 처리 에러:", err);
       ctx.showToast(`입고 실패: ${err.message || err}`, "error");
@@ -958,14 +1109,24 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
             <h4 className="font-black text-lg text-slate-800 flex items-center"><Plus className="w-5 h-5 mr-2 text-indigo-500" /> 소재 일괄 입고</h4>
             <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-slate-600 bg-slate-100 p-1.5 rounded-full"><X className="w-4 h-4" /></button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {inboundItems.map((item, idx) => (
-              <div key={item.type} className="flex gap-3 items-center bg-slate-50 p-3 rounded-xl border border-slate-200 shadow-sm">
-                <span className="w-16 font-black text-indigo-700 text-center">{item.type}</span>
-                <input type="text" placeholder="로트번호" className="flex-1 border border-slate-300 p-2.5 rounded-lg text-sm font-mono focus:border-indigo-400" value={item.lot} onChange={(e) => { const newItems = [...inboundItems]; newItems[idx].lot = e.target.value; setInboundItems(newItems); }} />
-                <div className="relative w-28">
-                  <input type="number" step="0.001" placeholder="중량" className="w-full border border-slate-300 p-2.5 rounded-lg text-sm text-right font-bold pr-7 focus:border-indigo-400" value={item.weight} onChange={(e) => { const newItems = [...inboundItems]; newItems[idx].weight = e.target.value; setInboundItems(newItems); }} />
-                  <span className="absolute right-2 top-2.5 text-xs font-bold text-slate-400">kg</span>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            {inboundItems.map((item, materialIdx) => (
+              <div key={item.type} className="bg-slate-50 p-4 rounded-xl border border-slate-200 shadow-sm">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="font-black text-indigo-700 text-base">{item.type}</span>
+                  <span className="text-[10px] font-bold text-slate-400 bg-white border px-2 py-1 rounded-full">최대 4 LOT</span>
+                </div>
+                <div className="space-y-2">
+                  {item.lots.map((lotItem, lotIdx) => (
+                    <div key={lotIdx} className="grid grid-cols-[28px_minmax(0,1fr)_120px] gap-2 items-center">
+                      <span className="text-xs font-black text-slate-400 text-center">{lotIdx + 1}</span>
+                      <input type="text" placeholder={`LOT ${lotIdx + 1} 번호`} className="w-full border border-slate-300 p-2.5 rounded-lg text-sm font-mono focus:border-indigo-400 outline-none" value={lotItem.lot} onChange={(e) => updateInboundLot(materialIdx, lotIdx, "lot", e.target.value)} />
+                      <div className="relative">
+                        <input type="number" step="0.001" placeholder="중량" className="w-full border border-slate-300 p-2.5 rounded-lg text-sm text-right font-bold pr-7 focus:border-indigo-400 outline-none" value={lotItem.weight} onChange={(e) => updateInboundLot(materialIdx, lotIdx, "weight", e.target.value)} />
+                        <span className="absolute right-2 top-2.5 text-xs font-bold text-slate-400">kg</span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             ))}
@@ -1002,7 +1163,7 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
               return (
                 <tr key={lot.id} className="hover:bg-slate-50 transition-colors">
                   <td className="px-6 py-4 font-mono font-bold text-indigo-600">{lot.mixLot}</td>
-                  <td className="px-6 py-4 font-black">{lot.type} {lot.height}T</td>
+                  <td className="px-6 py-4 font-black">{getProductLabel(lot.type)} {lot.height}T</td>
                   <td className="px-4 py-4 font-black text-blue-600 text-center text-lg">{lot.qty} EA</td>
                   <td className="px-6 py-4">
                     <div className="flex flex-wrap gap-1.5 items-center">
@@ -1088,7 +1249,7 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
   }, [pendingWip, activeMixId]);
 
   const activeJob = pendingWip.find((w) => w.id === activeMixId);
-  const ratios = activeJob ? masterSettings.RATIO_BY_COLOR[activeJob.type] || { "4Y-W": 1.0 } : {};
+  const ratios = activeJob ? getProductRatios(masterSettings, activeJob.type) : {};
   const activeMaterials = Object.keys(ratios).filter((m) => ratios[m] > 0);
 
   useEffect(() => {
@@ -1236,7 +1397,7 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
                 onClick={() => { setActiveMixId(w.id); setSelectedLots({}); setIsShortageMode(false); setCompletedBatches(""); setResidualGrams(""); }}
                 className={`px-3 py-2 rounded-lg text-xs font-black border ${activeMixId === w.id ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-slate-600 border-slate-200"}`}
               >
-                {w.mixLot} · {w.type} {w.height}T
+                {w.mixLot} · {getProductLabel(w.type)} {w.height}T
               </button>
             ))}
           </div>
@@ -1264,7 +1425,7 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
               <div>
                 <div className="text-sm font-bold text-slate-500 mb-1">작업 대상 제품</div>
                 <div className="text-3xl font-black flex items-center">
-                  {activeJob.type} <span className="text-indigo-600 ml-2">{activeJob.height}T</span>
+                  {getProductLabel(activeJob.type)} <span className="text-indigo-600 ml-2">{activeJob.height}T</span>
                   <span className="text-xl font-bold text-indigo-600 ml-3 bg-indigo-50 px-3 py-1 rounded-lg">지시: {activeJob.qty} EA</span>
                 </div>
               </div>
@@ -1435,7 +1596,7 @@ function Step3FirstMolding({ wipList, masterSettings, ctx }) {
               <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-5 border-b border-slate-200 pb-4 gap-4">
                 <div className="flex items-center space-x-4">
                   <span className="font-mono font-bold text-indigo-700 bg-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-200">{wip.mixLot}</span>
-                  <span className="font-black text-slate-800 text-xl tracking-wide">{wip.type}<span className="text-indigo-600 ml-1">{wip.height}T</span></span>
+                  <span className="font-black text-slate-800 text-xl tracking-wide">{getProductLabel(wip.type)}<span className="text-indigo-600 ml-1">{wip.height}T</span></span>
                   <div className="flex items-center bg-white border border-slate-300 rounded-lg shadow-sm px-3 py-1.5">
                     <span className="text-xs font-bold text-slate-500 mr-2 whitespace-nowrap">실 성형수량</span>
                     <input type="number" min="1" value={actualQtyValue} onChange={(e) => handleDataChange(wip.id, "actualQty", e.target.value)} className="w-16 text-center font-black text-indigo-700 outline-none bg-transparent" />
@@ -1580,7 +1741,7 @@ function Step4SecondMolding({ wipList, masterSettings, ctx }) {
               <div className="flex justify-between items-center mb-4 border-b pb-4">
                 <div className="flex items-center space-x-3">
                   <span className="font-mono font-bold text-indigo-700 bg-indigo-100 px-3 py-1 rounded-lg">{wip.mixLot}</span>
-                  <span className="font-black text-xl">{wip.type} {wip.height}T</span>
+                  <span className="font-black text-xl">{getProductLabel(wip.type)} {wip.height}T</span>
                   <span className="font-bold text-slate-600 bg-white border px-3 py-1 rounded-lg shadow-sm">대상: {wip.qty} EA</span>
                 </div>
                 <div className="flex items-center space-x-2">
@@ -1838,7 +1999,7 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
                   return (
                     <div key={wip.id} onClick={() => setSelectedWipId(wip.id)} className={`p-4 border-2 rounded-xl cursor-pointer transition-all ${isSel ? 'bg-indigo-50 border-indigo-500 shadow-md transform scale-[1.02]' : 'bg-white hover:border-slate-300'}`}>
                       <div className="text-xs text-slate-500 font-mono mb-1 bg-slate-100 inline-block px-2 py-0.5 rounded">{wip.mixLot}</div>
-                      <div className="font-black text-slate-800 text-lg mt-1">{wip.type} <span className="text-slate-500">{wip.height}T</span></div>
+                      <div className="font-black text-slate-800 text-lg mt-1">{getProductLabel(wip.type)} <span className="text-slate-500">{wip.height}T</span></div>
                       <div className="text-sm font-bold text-indigo-600 mt-2">잔여 수량: {remain}개</div>
                     </div>
                   );
@@ -1884,7 +2045,7 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
                             
                             <div className="w-full flex flex-col items-center mt-3">
                               <div className="text-[10px] font-mono text-slate-500 mb-0.5 bg-slate-100 px-1 rounded truncate max-w-full">{sData.mixLot.slice(-6)}</div>
-                              <div className="font-black text-slate-800 text-sm sm:text-base mt-1 leading-tight">{sData.type} {sData.height}T</div>
+                              <div className="font-black text-slate-800 text-sm sm:text-base mt-1 leading-tight">{getProductLabel(sData.type)} {sData.height}T</div>
                               <div className="text-xs font-bold text-indigo-600 mt-1 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">{sData.qty}개</div>
                             </div>
                           </div>
@@ -2302,7 +2463,7 @@ function Step5_5Shrinkage({ wipList, ctx }) {
                           
                           <div className="text-center mb-3">
                             <div className="text-[10px] text-slate-400 font-bold bg-slate-100 inline-block px-2 py-0.5 rounded-full mb-1">{sData.mixLot.slice(-6)}</div>
-                            <div className="font-black text-slate-800 text-lg">{sData.type} {sData.height}T</div>
+                            <div className="font-black text-slate-800 text-lg">{getProductLabel(sData.type)} {sData.height}T</div>
                           </div>
 
                           <div className="flex flex-col gap-2 w-full mt-auto">
@@ -2482,7 +2643,7 @@ function Step6Inspection({ wipList, ctx }) {
                   <tr key={wip.id} className="hover:bg-slate-50/50 transition-colors">
                     <td className="p-4">
                       <div className="text-[10px] font-mono font-bold text-indigo-600 mb-1">{wip.mixLot}</div>
-                      <div className="font-black text-slate-800">{wip.type} {wip.height}T</div>
+                      <div className="font-black text-slate-800">{getProductLabel(wip.type)} {wip.height}T</div>
                     </td>
                     <td className="p-4 font-black text-blue-600 text-lg">{wip.qty}</td>
                     <td className="p-4">
@@ -2575,7 +2736,7 @@ function Step7Drying({ wipList, dryingRoom: room, ctx }) {
           {pendingWip.length === 0 && <div className="text-slate-400 text-sm text-center py-8 border border-dashed rounded-lg">대기 중인 물량이 없습니다.</div>}
           {pendingWip.map((w) => (
             <div key={w.id} className="border p-3 rounded-lg flex justify-between items-center bg-slate-50 border-slate-200">
-              <div><div className="text-[10px] font-mono font-bold text-indigo-600">{w.mixLot}</div><div className="text-sm font-black">{w.type} {w.height}T<span className="text-slate-400 ml-1">({w.qty}개)</span></div></div>
+              <div><div className="text-[10px] font-mono font-bold text-indigo-600">{w.mixLot}</div><div className="text-sm font-black">{getProductLabel(w.type)} {w.height}T<span className="text-slate-400 ml-1">({w.qty}개)</span></div></div>
               <button onClick={() => handleStartDrying(w.id)} className="bg-slate-800 text-white px-4 py-2 text-xs rounded-lg font-bold">건조 시작</button>
             </div>
           ))}
@@ -2590,7 +2751,7 @@ function Step7Drying({ wipList, dryingRoom: room, ctx }) {
             return (
               <div key={w.id} className="border-2 border-cyan-100 p-4 rounded-xl bg-cyan-50/30">
                 <div className="flex justify-between items-start mb-3">
-                  <div><div className="text-[10px] font-mono font-bold text-cyan-700">{w.mixLot}</div><div className="font-black text-slate-800">{w.type} {w.height}T<span className="text-cyan-600 ml-1">({w.qty}개)</span></div></div>
+                  <div><div className="text-[10px] font-mono font-bold text-cyan-700">{w.mixLot}</div><div className="font-black text-slate-800">{getProductLabel(w.type)} {w.height}T<span className="text-cyan-600 ml-1">({w.qty}개)</span></div></div>
                 </div>
                 <div className="grid grid-cols-2 gap-2 mb-2">
                   <SyncInput type="number" placeholder="불량 수량" value={cData.defects || ""} onChange={(val) => handleCompData(w.id, "defects", val)} className="border border-red-200 p-2 text-xs rounded bg-white text-red-600 font-bold" />
@@ -2654,7 +2815,10 @@ function Step8Packaging({ wipList, orderList, ctx }) {
     const defectQty = parseInt(data.defects) || 0;
     const finalQty = Math.max(0, wip.qty - defectQty);
     const finalLot = `F${getKSTDateOnly().slice(-5)}${wip.id.slice(-2)}`;
-    const productName = `Z1100VT${wip.type}${wip.height}`;
+    const productType = getProductLabel(wip.type);
+    const productSeries = getProductSeries(wip.type);
+    const productShade = getProductShade(wip.type);
+    const productName = `Z1100VT${productShade}${wip.height}`;
     const sizeDisplay = `Φ98 x ${wip.height}mm`;
     
     const s = Number(wip.shrinkageRate);
@@ -2663,7 +2827,7 @@ function Step8Packaging({ wipList, orderList, ctx }) {
     try {
       const database = getFirestore();
       await addDoc(collection(database, "print-queue"), {
-        productName, color: wip.type, height: wip.height, lotNumber: finalLot, shrinkage: wip.shrinkageRate, scaleFactor: calculatedScaleFactor,
+        productName, productType, series: productSeries, color: productShade, height: wip.height, lotNumber: finalLot, shrinkage: wip.shrinkageRate, scaleFactor: calculatedScaleFactor,
         mfgDate: getKST().split(" ")[0], size: sizeDisplay, quantity: finalQty, status: "pending", createdAt: serverTimestamp(),
       });
       ctx.showToast("라벨 출력 명령 전송 완료! 🖨️", "success");
@@ -2687,7 +2851,7 @@ function Step8Packaging({ wipList, orderList, ctx }) {
               return (
                 <tr key={wip.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
                   <td className="px-4 py-4"><div className="flex flex-col"><span className="text-[10px] text-slate-400 font-bold mb-1 uppercase">원로트: {wip.mixLot}</span><div className="text-lg font-black text-indigo-700 bg-indigo-50 px-4 py-1.5 rounded-lg border border-indigo-200 shadow-sm w-max tracking-widest">F{getKSTDateOnly().slice(-5)}{wip.id.slice(-2)}</div></div></td>
-                  <td className="px-4 py-4 font-bold text-slate-800">{wip.type} <span className="text-indigo-600">{wip.height}T</span></td>
+                  <td className="px-4 py-4 font-bold text-slate-800">{getProductLabel(wip.type)} <span className="text-indigo-600">{wip.height}T</span></td>
                   <td className="px-4 py-4 font-black text-indigo-700 text-xl text-center">{wip.qty}</td>
                   <td className="px-4 py-4"><div className="flex flex-col items-center bg-blue-50 px-4 py-1.5 rounded-lg border border-blue-100 shadow-sm min-w-[100px]"><div className="text-[10px] font-bold text-slate-500 mb-0.5">수축률: {wip.shrinkageRate}%</div><div className="text-lg font-black text-blue-700">{(1 / (1 - Number(wip.shrinkageRate) / 100)).toFixed(4)}</div></div></td>
                   <td className="px-4 py-4 w-40"><div className="flex flex-col space-y-1"><input type="number" placeholder="불량" value={data.defects || ""} onChange={(e) => handleDataChange(wip.id, "defects", e.target.value)} className="border border-red-200 rounded p-1.5 text-xs text-center text-red-600 bg-red-50" /><input type="text" placeholder="사유" value={data.defectReason || ""} onChange={(e) => handleDataChange(wip.id, "defectReason", e.target.value)} className="border rounded p-1.5 text-[10px]" /></div></td>
@@ -2720,7 +2884,7 @@ function Step9FinishedGoods({ wipList, shippingHistory, orderList, ctx }) {
       try {
         const hid = Date.now().toString();
         await setDoc(getDocRef("shippingHistory", hid), {
-          id: hid, orderId: wip.orderId || "", lot: wip.mixLot, type: wip.type, height: wip.height, weight: wip.weight || "", 
+          id: hid, orderId: wip.orderId || "", lot: wip.mixLot, type: getProductLabel(wip.type), height: wip.height, weight: wip.weight || "", 
           qty: safeQty, destination: d.destination, operator: d.operator, date: getKST().slice(0, 16), details: wip.details || "", createdAt: serverTimestamp(), 
         });
 
@@ -2739,8 +2903,9 @@ function Step9FinishedGoods({ wipList, shippingHistory, orderList, ctx }) {
   };
 
   const inventorySummary = finishedWip.reduce((acc, curr) => {
-    const k = `${curr.type}_${curr.height}`;
-    if (!acc[k]) acc[k] = { type: curr.type, height: curr.height, qty: 0 };
+    const productType = getProductLabel(curr.type);
+    const k = `${productType}_${curr.height}`;
+    if (!acc[k]) acc[k] = { type: productType, height: curr.height, qty: 0 };
     acc[k].qty += curr.qty; return acc;
   }, {});
 
@@ -2769,7 +2934,7 @@ function Step9FinishedGoods({ wipList, shippingHistory, orderList, ctx }) {
                 return (
                   <tr key={w.id} className="border-b hover:bg-slate-50">
                     <td className="p-3 font-bold text-slate-700">{w.mixLot}</td>
-                    <td className="p-3 font-bold">{w.type} {w.height}T</td>
+                    <td className="p-3 font-bold">{getProductLabel(w.type)} {w.height}T</td>
                     <td className="p-3 font-black text-indigo-600 text-lg">{w.qty}</td>
                     <td className="p-3"><input type="number" max={w.qty} min="1" placeholder="수량" value={d.qty || ""} onChange={(e) => setShipData({ ...shipData, [w.id]: { ...d, qty: e.target.value } }) } className="w-full border p-2 rounded text-center font-bold focus:border-indigo-400 outline-none" /></td>
                     <td className="p-3">
@@ -2798,7 +2963,7 @@ function Step9FinishedGoods({ wipList, shippingHistory, orderList, ctx }) {
             <tbody className="divide-y divide-slate-100">
               {shippingHistory.map((h) => (
                 <tr key={h.id} className="hover:bg-slate-50 transition-colors">
-                  <td className="p-3 text-xs text-slate-500">{h.date}</td><td className="p-3 font-mono font-bold text-slate-700">{h.lot}</td><td className="p-3 font-bold text-slate-800">{h.type} <span className="text-indigo-600">{h.height}T</span></td><td className="p-3 font-black text-indigo-600 text-right pr-6">{h.qty} EA</td><td className="p-3 font-bold text-slate-700">{h.destination}</td><td className="p-3 font-bold text-slate-600">{h.operator}</td>
+                  <td className="p-3 text-xs text-slate-500">{h.date}</td><td className="p-3 font-mono font-bold text-slate-700">{h.lot}</td><td className="p-3 font-bold text-slate-800">{getProductLabel(h.type)} <span className="text-indigo-600">{h.height}T</span></td><td className="p-3 font-black text-indigo-600 text-right pr-6">{h.qty} EA</td><td className="p-3 font-bold text-slate-700">{h.destination}</td><td className="p-3 font-bold text-slate-600">{h.operator}</td>
                 </tr>
               ))}
               {shippingHistory.length === 0 && <tr><td colSpan="6" className="text-center py-6 text-slate-400">출고 이력이 없습니다.</td></tr>}
@@ -2825,9 +2990,10 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
     setHasSearched(true);
     const searchTerms = searchLot.trim().toUpperCase().split(/\s+/);
     const isMatch = (item, isShipped) => {
+      const productLabel = item.type ? getProductLabel(item.type) : "";
       const searchableText = isShipped
-        ? `${item.lot || ""} ${item.originalLot || ""} ${item.type || ""} ${item.height || ""}T ${item.destination || ""} ${item.operator || ""} ${item.details || ""}`.toUpperCase()
-        : `${item.mixLot || ""} ${item.originalLot || ""} ${item.type || ""} ${item.height || ""}T ${item.details || ""}`.toUpperCase();
+        ? `${item.lot || ""} ${item.originalLot || ""} ${productLabel} ${item.height || ""}T ${item.destination || ""} ${item.operator || ""} ${item.details || ""}`.toUpperCase()
+        : `${item.mixLot || ""} ${item.originalLot || ""} ${productLabel} ${item.height || ""}T ${item.details || ""}`.toUpperCase();
       return searchTerms.every((term) => searchableText.includes(term));
     };
 
@@ -2873,7 +3039,7 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
           <span className="bg-red-100 text-red-700 px-3 py-1 rounded-full text-xs font-black border border-red-200 animate-pulse">Master Mode</span>
         </div>
         <div className="flex gap-3 mb-8">
-          <input type="text" placeholder="검색어 입력 (예: BL3 30T, 이엔씨, 담당자명, 또는 로트번호 일부)" className="flex-1 border-2 border-slate-300 rounded-xl p-4 font-bold text-lg focus:border-indigo-500 outline-none placeholder:text-sm" value={searchLot} onChange={(e) => { setSearchLot(e.target.value); setHasSearched(false); }} onKeyDown={(e) => e.key === "Enter" && handleSearch()} />
+          <input type="text" placeholder="검색어 입력 (예: 345 BL3 30T, 234 BL2, 이엔씨, 담당자명, 또는 로트번호 일부)" className="flex-1 border-2 border-slate-300 rounded-xl p-4 font-bold text-lg focus:border-indigo-500 outline-none placeholder:text-sm" value={searchLot} onChange={(e) => { setSearchLot(e.target.value); setHasSearched(false); }} onKeyDown={(e) => e.key === "Enter" && handleSearch()} />
           <button onClick={handleSearch} className="bg-indigo-600 text-white px-8 py-4 rounded-xl font-black text-lg shadow-md hover:bg-indigo-700 flex items-center transition-transform hover:scale-105"><Search className="w-5 h-5 mr-2" /> 통합 검색</button>
         </div>
 
@@ -2894,7 +3060,7 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
                     {result.data.originalLot && <div className="text-sm font-bold text-slate-400 mt-1">원로트: {result.data.originalLot}</div>}
                   </div>
                   <div className="text-left md:text-right flex flex-col items-start md:items-end">
-                    <div className="font-black text-xl text-indigo-700">{result.data.type} {result.data.height}T</div>
+                    <div className="font-black text-xl text-indigo-700">{getProductLabel(result.data.type)} {result.data.height}T</div>
                     <div className="text-sm font-bold text-slate-500 mt-1">현재 수량: {result.data.qty} EA</div>
                     {result.data.weight && <div className="mt-1.5 text-xs font-black text-blue-700 bg-blue-50 border border-blue-200 px-2.5 py-1 rounded shadow-sm">원료 투입량: {result.data.weight} kg</div>}
                   </div>
@@ -2951,8 +3117,11 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
 function Step10Settings({ masterSettings, ctx }) {
   const [settings, setSettings] = useState(masterSettings);
 
+  useEffect(() => { setSettings(masterSettings); }, [masterSettings]);
+
   const handleRatioChange = (color, material, value) => {
       const newSettings = cloneDeep(settings);
+      if (!newSettings.RATIO_BY_COLOR[color]) newSettings.RATIO_BY_COLOR[color] = {};
       newSettings.RATIO_BY_COLOR[color][material] = parseFloat(value) || 0;
       setSettings(newSettings);
   };
@@ -2976,7 +3145,7 @@ function Step10Settings({ masterSettings, ctx }) {
   const handleSafetyThresholdChange = (type, value) => {
       const newSettings = cloneDeep(settings);
       if (!newSettings.SAFETY_THRESHOLD || typeof newSettings.SAFETY_THRESHOLD !== "object") {
-          newSettings.SAFETY_THRESHOLD = { "4Y-W": "50", "4Y-Y": "50", "5E-P": "50", "4Y-G": "50" };
+          newSettings.SAFETY_THRESHOLD = { "4Y-W": "50", "4Y-W-S": "50", "4Y-Y": "50", "5E-P": "50", "4Y-G": "50" };
       }
       newSettings.SAFETY_THRESHOLD[type] = value;
       setSettings(newSettings);
@@ -3052,15 +3221,20 @@ function Step10Settings({ masterSettings, ctx }) {
               <div className="space-y-6">
                   <div className="bg-white rounded-xl shadow-sm border p-6">
                       <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">분류별 소재 배합 비율 (BOM)</h3>
-                      <div className="space-y-4 max-h-[700px] overflow-y-auto pr-2">
-                          {settings.PRODUCT_COLORS.map(color => (
-                              <div key={color} className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                                  <div className="font-black text-lg text-slate-800 mb-3">{color} 배합비율</div>
-                                  <div className="grid grid-cols-2 gap-3">
-                                      {settings.MATERIAL_TYPES.map(mat => (
-                                          <div key={mat} className="flex flex-col"><label className="text-[10px] font-bold text-slate-500 mb-1 pl-1">{mat}</label><input type="number" step="0.001" value={settings.RATIO_BY_COLOR[color][mat]} onChange={(e) => handleRatioChange(color, mat, e.target.value)} className="border rounded p-2 text-sm text-right font-mono" /></div>
-                                      ))}
-                                  </div>
+                      <div className="space-y-5 max-h-[700px] overflow-y-auto pr-2">
+                          {["345", "234"].map(series => (
+                              <div key={series} className="space-y-3">
+                                  <div className={`sticky top-0 z-10 px-3 py-2 rounded-lg text-sm font-black border ${series === "234" ? "bg-amber-50 text-amber-800 border-amber-200" : "bg-indigo-50 text-indigo-800 border-indigo-200"}`}>{series} 제품군 BOM</div>
+                                  {settings.PRODUCT_COLORS.filter(color => color.startsWith(`${series} `)).map(color => (
+                                      <div key={color} className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                                          <div className="font-black text-lg text-slate-800 mb-3">{color} 배합비율</div>
+                                          <div className="grid grid-cols-2 gap-3">
+                                              {settings.MATERIAL_TYPES.map(mat => (
+                                                  <div key={mat} className="flex flex-col"><label className="text-[10px] font-bold text-slate-500 mb-1 pl-1">{mat}</label><input type="number" step="0.0001" value={settings.RATIO_BY_COLOR?.[color]?.[mat] ?? 0} onChange={(e) => handleRatioChange(color, mat, e.target.value)} className="border rounded p-2 text-sm text-right font-mono" /></div>
+                                              ))}
+                                          </div>
+                                      </div>
+                                  ))}
                               </div>
                           ))}
                       </div>
