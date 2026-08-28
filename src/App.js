@@ -548,6 +548,15 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
   const [editInvData, setEditInvData] = React.useState({});
   const [showInvHistory, setShowInvHistory] = React.useState(false);
   const [selectedMaterial, setSelectedMaterial] = React.useState(null);
+  const [isInventoryAuditOpen, setIsInventoryAuditOpen] = React.useState(false);
+  const [inventoryAuditData, setInventoryAuditData] = React.useState({
+    type: masterSettings.MATERIAL_TYPES?.[0] || "",
+    lot: "",
+    actualWeight: "",
+    date: getKST().split(" ")[0],
+    operator: "",
+    reason: "실사 재고 보정",
+  });
 
   const WIP_STEPS = [
     { value: "step1", label: "소재창고 대기" },
@@ -784,17 +793,287 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
 
   const handleSaveInv = async (item) => {
     const safeWeight = Number(editInvData.weight);
-    if (isNaN(safeWeight) || safeWeight < 0) return ctx.showToast("올바른 중량을 입력해주세요.", "error");
-    try {
-      await setDoc(getDocRef("inventory", item.id), { ...item, weight: safeWeight, lot: editInvData.lot || item.lot });
-      setEditingInvId(null); ctx.showToast("수정 완료", "success");
-    } catch (e) { ctx.showToast("실패", "error"); }
+    const newLot = String(editInvData.lot || item.lot || "").trim().toUpperCase();
+    const reason = String(editInvData.adjustReason || "").trim();
+    const oldWeight = Number(item.weight) || 0;
+    const oldLot = String(item.lot || "").trim().toUpperCase();
+    const changed = safeWeight !== oldWeight || newLot !== oldLot;
+
+    if (!newLot) return ctx.showToast("LOT 번호를 입력해주세요.", "error");
+    if (!Number.isFinite(safeWeight) || safeWeight < 0) {
+      return ctx.showToast("올바른 중량을 입력해주세요.", "error");
+    }
+    if (changed && !reason) {
+      return ctx.showToast("재고 수정 시 보정 사유를 반드시 입력해주세요.", "error");
+    }
+
+    // 다른 살아있는 문서와 LOT가 겹치면 개별 수정 대신 실사보정에서 통합합니다.
+    const duplicate = (inventory || []).find(
+      (inv) =>
+        inv.id !== item.id &&
+        String(inv.lot || "").trim().toUpperCase() === newLot &&
+        inv.type === item.type &&
+        Number(inv.weight) > 0
+    );
+    if (newLot !== oldLot && duplicate) {
+      return ctx.showToast(
+        `같은 품목의 ${newLot} LOT가 이미 존재합니다. '실사 재고 보정 / LOT 복구' 기능으로 통합해주세요.`,
+        "error"
+      );
+    }
+
+    const save = async () => {
+      try {
+        await runTransaction(db, async (transaction) => {
+          const invRef = getDocRef("inventory", item.id);
+          const invSnap = await transaction.get(invRef);
+          if (!invSnap.exists()) throw new Error("재고 LOT가 존재하지 않습니다.");
+
+          const live = invSnap.data();
+          const liveWeight = Number(live.weight) || 0;
+          const liveLot = String(live.lot || "").trim().toUpperCase();
+          const now = getKST();
+          const finalStatus = safeWeight <= 0 ? "소진" : "실사보정";
+
+          transaction.update(invRef, {
+            lot: newLot,
+            weight: safeWeight,
+            status: finalStatus,
+            lastInventoryAdjustment: {
+              beforeWeight: liveWeight,
+              afterWeight: safeWeight,
+              beforeLot: liveLot,
+              afterLot: newLot,
+              reason,
+              adjustedAt: now,
+              adjustedBy: "MASTER",
+            },
+          });
+
+          if (changed) {
+            const histId = Date.now().toString() + Math.random().toString().slice(2, 7);
+            transaction.set(getDocRef("inventoryHistory", histId), {
+              id: histId,
+              date: now.slice(0, 16),
+              type: "ADJUST",
+              materialType: live.type || item.type,
+              lot: newLot,
+              qty: Number((safeWeight - liveWeight).toFixed(3)),
+              beforeWeight: liveWeight,
+              afterWeight: safeWeight,
+              note: `관리자 재고보정 | ${liveLot !== newLot ? `LOT:${liveLot}→${newLot} | ` : ""}${reason}`,
+              operator: "MASTER",
+              createdAt: serverTimestamp(),
+            });
+          }
+        });
+
+        setEditingInvId(null);
+        setEditInvData({});
+        ctx.showToast("재고 보정 완료 — 변경 이력이 보존되었습니다.", "success");
+      } catch (e) {
+        ctx.showToast(e?.message || "재고 수정 실패", "error");
+      }
+    };
+
+    if (!changed) {
+      setEditingInvId(null);
+      setEditInvData({});
+      return;
+    }
+
+    ctx.showConfirm(
+      `${item.type} ${oldLot}\n${oldWeight.toFixed(3)}kg → ${safeWeight.toFixed(3)}kg로 보정하시겠습니까?\n\n사유: ${reason}`,
+      save
+    );
   };
-  const handleDeleteInv = (id) => {
-    ctx.showConfirm("삭제하시겠습니까?", async () => { try { await deleteDoc(getDocRef("inventory", id)); ctx.showToast("삭제 완료", "success"); } catch (e) { ctx.showToast("실패", "error"); } });
+
+  // 원재료 LOT 문서는 추적성 때문에 절대 Hard Delete 하지 않습니다.
+  const handleDeleteInv = () => {
+    ctx.showToast(
+      "원재료 LOT 삭제는 안전장치로 차단되어 있습니다. 0kg 소진처리 또는 '실사 재고 보정 / LOT 복구'를 사용해주세요.",
+      "error"
+    );
   };
-  const handleDeleteInvHistory = (id) => {
-    ctx.showConfirm("삭제하시겠습니까?", async () => { try { await deleteDoc(getDocRef("inventoryHistory", id)); ctx.showToast("삭제 완료", "success"); } catch (e) { ctx.showToast("실패", "error"); } });
+
+  // 입출고/보정 이력 역시 감사 추적성을 위해 삭제를 금지합니다.
+  const handleDeleteInvHistory = () => {
+    ctx.showToast(
+      "원재료 이력 삭제는 안전장치로 차단되어 있습니다. 잘못된 재고는 새 '실사보정' 이력으로 정정해주세요.",
+      "error"
+    );
+  };
+
+  const resetInventoryAuditForm = () => {
+    setInventoryAuditData({
+      type: masterSettings.MATERIAL_TYPES?.[0] || "",
+      lot: "",
+      actualWeight: "",
+      date: getKST().split(" ")[0],
+      operator: "",
+      reason: "실사 재고 보정",
+    });
+  };
+
+  const handleInventoryAuditAdjust = async () => {
+    const type = String(inventoryAuditData.type || "").trim();
+    const lot = String(inventoryAuditData.lot || "").trim().toUpperCase();
+    const actualWeight = Number(inventoryAuditData.actualWeight);
+    const operator = String(inventoryAuditData.operator || "").trim();
+    const reason = String(inventoryAuditData.reason || "").trim();
+    const auditDate = inventoryAuditData.date || getKST().split(" ")[0];
+
+    if (!type) return ctx.showToast("품목을 선택해주세요.", "error");
+    if (!lot) return ctx.showToast("LOT 번호를 입력해주세요.", "error");
+    if (!Number.isFinite(actualWeight) || actualWeight < 0) {
+      return ctx.showToast("실재고 중량을 0 이상의 숫자로 입력해주세요.", "error");
+    }
+    if (!operator) return ctx.showToast("실사/보정 담당자를 입력해주세요.", "error");
+    if (!reason) return ctx.showToast("보정 사유를 입력해주세요.", "error");
+
+    const normalizedMatches = (inventory || []).filter(
+      (inv) =>
+        inv.type === type &&
+        String(inv.lot || "").trim().toUpperCase() === lot
+    );
+
+    const otherTypeMatch = (inventory || []).find(
+      (inv) =>
+        inv.type !== type &&
+        String(inv.lot || "").trim().toUpperCase() === lot &&
+        Number(inv.weight) > 0
+    );
+    if (otherTypeMatch) {
+      return ctx.showToast(
+        `${lot} LOT가 현재 ${otherTypeMatch.type} 품목에 등록되어 있습니다. 품목 오등록 여부를 먼저 확인해주세요.`,
+        "error"
+      );
+    }
+
+    const currentTotal = normalizedMatches.reduce(
+      (sum, inv) => sum + (Number(inv.weight) || 0),
+      0
+    );
+    const delta = Number((actualWeight - currentTotal).toFixed(3));
+    const docCount = normalizedMatches.length;
+
+    const applyAudit = async () => {
+      try {
+        await runTransaction(db, async (transaction) => {
+          // Firestore transaction은 READ를 먼저 끝낸 후 WRITE 합니다.
+          const sortedMatches = [...normalizedMatches].sort((a, b) => {
+            const da = String(a.date || "");
+            const dbb = String(b.date || "");
+            if (da !== dbb) return da.localeCompare(dbb);
+            return String(a.id).localeCompare(String(b.id));
+          });
+
+          const liveDocs = [];
+          for (const inv of sortedMatches) {
+            const ref = getDocRef("inventory", inv.id);
+            const snap = await transaction.get(ref);
+            if (snap.exists()) liveDocs.push({ ref, data: snap.data(), id: inv.id });
+          }
+
+          const liveBeforeTotal = liveDocs.reduce(
+            (sum, x) => sum + (Number(x.data.weight) || 0),
+            0
+          );
+          const now = getKST();
+          let primaryId = "";
+
+          if (liveDocs.length === 0) {
+            // 과거처럼 inventory 문서가 사라진 LOT도 대시보드에서 복구 가능.
+            const newId = Date.now().toString() + Math.random().toString().slice(2, 7);
+            primaryId = newId;
+            transaction.set(getDocRef("inventory", newId), {
+              id: newId,
+              lot,
+              type,
+              weight: actualWeight,
+              date: auditDate,
+              status: actualWeight <= 0 ? "소진" : "실사복구",
+              createdAt: serverTimestamp(),
+              lastInventoryAdjustment: {
+                beforeWeight: 0,
+                afterWeight: actualWeight,
+                reason,
+                adjustedAt: now,
+                adjustedBy: operator,
+                mode: "LOT_RECOVERY",
+              },
+            });
+          } else {
+            // 같은 LOT가 여러 inventory 문서로 나뉘어 있어도 삭제하지 않고
+            // 첫 문서에 실재고를 통합, 나머지는 0kg '실사통합'으로 보존.
+            const primary = liveDocs[0];
+            primaryId = primary.id;
+            transaction.update(primary.ref, {
+              lot,
+              type,
+              weight: actualWeight,
+              status: actualWeight <= 0 ? "소진" : "실사보정",
+              lastInventoryAdjustment: {
+                beforeWeight: liveBeforeTotal,
+                afterWeight: actualWeight,
+                reason,
+                adjustedAt: now,
+                adjustedBy: operator,
+                mode: liveDocs.length > 1 ? "LOT_CONSOLIDATION" : "STOCKTAKE",
+              },
+            });
+
+            for (const extra of liveDocs.slice(1)) {
+              transaction.update(extra.ref, {
+                weight: 0,
+                status: "실사통합",
+                mergedInto: primary.id,
+                lastInventoryAdjustment: {
+                  beforeWeight: Number(extra.data.weight) || 0,
+                  afterWeight: 0,
+                  reason: `${reason} (동일 LOT 통합)`,
+                  adjustedAt: now,
+                  adjustedBy: operator,
+                  mode: "LOT_CONSOLIDATION",
+                },
+              });
+            }
+          }
+
+          const histId = Date.now().toString() + Math.random().toString().slice(2, 7);
+          transaction.set(getDocRef("inventoryHistory", histId), {
+            id: histId,
+            date: now.slice(0, 16),
+            type: "ADJUST",
+            materialType: type,
+            lot,
+            qty: Number((actualWeight - liveBeforeTotal).toFixed(3)),
+            beforeWeight: liveBeforeTotal,
+            afterWeight: actualWeight,
+            note: `실사 재고 보정 | ${reason} | 문서:${liveDocs.length || 0}→1(보존통합)`,
+            operator,
+            primaryInventoryId: primaryId,
+            createdAt: serverTimestamp(),
+          });
+        });
+
+        resetInventoryAuditForm();
+        setIsInventoryAuditOpen(false);
+        ctx.showToast(
+          docCount === 0
+            ? `${lot} 누락 LOT 복구 완료 (${actualWeight.toFixed(3)}kg)`
+            : `${lot} 실사 재고 보정 완료 (${actualWeight.toFixed(3)}kg)`,
+          "success"
+        );
+      } catch (e) {
+        ctx.showToast(e?.message || "실사 재고 보정 실패", "error");
+      }
+    };
+
+    ctx.showConfirm(
+      `${type} ${lot}\n현재 MES 합계: ${currentTotal.toFixed(3)}kg (${docCount}개 문서)\n실사 재고: ${actualWeight.toFixed(3)}kg\n차이: ${delta >= 0 ? "+" : ""}${delta.toFixed(3)}kg\n\n실사 기준으로 보정하시겠습니까?\n※ 기존 LOT 문서는 삭제하지 않습니다.`,
+      applyAudit
+    );
   };
 
   return (
@@ -866,13 +1145,114 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
           <div className="flex items-center gap-2">
             <h3 className="text-lg font-bold text-slate-800">소재 창고 현황 및 필요 소요량 예측</h3>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            <button
+              onClick={() => {
+                if (!isInventoryAuditOpen) resetInventoryAuditForm();
+                setIsInventoryAuditOpen(!isInventoryAuditOpen);
+              }}
+              className="text-xs font-black px-3 py-1.5 rounded border transition-colors shadow-sm bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700"
+            >
+              {isInventoryAuditOpen ? "실사 보정 닫기" : "실사 재고 보정 / LOT 복구"}
+            </button>
             <button onClick={() => setShowInvHistory(!showInvHistory)} className="text-xs font-bold px-3 py-1.5 rounded border transition-colors shadow-sm bg-white text-slate-600 border-slate-300 hover:bg-slate-50">
-              입출고 내역 {showInvHistory ? "숨기기" : "보기"}
+              소진 LOT {showInvHistory ? "숨기기" : "포함"}
             </button>
             <span className="text-xs font-bold text-red-500 bg-red-50 px-2 py-1 rounded border border-red-100 uppercase">마스터 권한</span>
           </div>
         </div>
+
+        {isInventoryAuditOpen && (
+          <div className="bg-indigo-50 border-2 border-indigo-200 rounded-2xl p-5 shadow-sm">
+            <div className="flex flex-col lg:flex-row lg:items-end gap-4">
+              <div className="flex-1 min-w-[140px]">
+                <label className="block text-[11px] font-black text-slate-600 mb-1">품목</label>
+                <select
+                  value={inventoryAuditData.type}
+                  onChange={(e) => setInventoryAuditData({ ...inventoryAuditData, type: e.target.value })}
+                  className="w-full border-2 border-indigo-200 bg-white rounded-lg p-2.5 font-black text-indigo-700 outline-none focus:border-indigo-500"
+                >
+                  {masterSettings.MATERIAL_TYPES.map((mat) => <option key={mat} value={mat}>{mat}</option>)}
+                </select>
+              </div>
+              <div className="flex-[1.4] min-w-[180px]">
+                <label className="block text-[11px] font-black text-slate-600 mb-1">LOT No.</label>
+                <input
+                  type="text"
+                  placeholder="예: EN2600011"
+                  value={inventoryAuditData.lot}
+                  onChange={(e) => setInventoryAuditData({ ...inventoryAuditData, lot: e.target.value.toUpperCase() })}
+                  className="w-full border-2 border-indigo-200 bg-white rounded-lg p-2.5 font-mono font-black text-indigo-700 outline-none focus:border-indigo-500"
+                />
+              </div>
+              <div className="flex-1 min-w-[140px]">
+                <label className="block text-[11px] font-black text-slate-600 mb-1">실사 현재재고 (kg)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.001"
+                  placeholder="0.000"
+                  value={inventoryAuditData.actualWeight}
+                  onChange={(e) => setInventoryAuditData({ ...inventoryAuditData, actualWeight: e.target.value })}
+                  className="w-full border-2 border-indigo-200 bg-white rounded-lg p-2.5 text-right font-black text-indigo-700 outline-none focus:border-indigo-500"
+                />
+              </div>
+              <div className="flex-1 min-w-[140px]">
+                <label className="block text-[11px] font-black text-slate-600 mb-1">실사 기준일</label>
+                <input
+                  type="date"
+                  value={inventoryAuditData.date}
+                  onChange={(e) => setInventoryAuditData({ ...inventoryAuditData, date: e.target.value })}
+                  className="w-full border-2 border-indigo-200 bg-white rounded-lg p-2.5 font-bold outline-none focus:border-indigo-500"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-[180px_1fr_auto] gap-4 mt-4 items-end">
+              <div>
+                <label className="block text-[11px] font-black text-slate-600 mb-1">실사/보정 담당자</label>
+                <input
+                  type="text"
+                  placeholder="성명"
+                  value={inventoryAuditData.operator}
+                  onChange={(e) => setInventoryAuditData({ ...inventoryAuditData, operator: e.target.value })}
+                  className="w-full border-2 border-indigo-200 bg-white rounded-lg p-2.5 text-center font-bold outline-none focus:border-indigo-500"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-black text-slate-600 mb-1">보정 사유</label>
+                <input
+                  type="text"
+                  placeholder="예: 2026-08-28 원재료 실사 기준 재고 보정"
+                  value={inventoryAuditData.reason}
+                  onChange={(e) => setInventoryAuditData({ ...inventoryAuditData, reason: e.target.value })}
+                  className="w-full border-2 border-indigo-200 bg-white rounded-lg p-2.5 font-bold outline-none focus:border-indigo-500"
+                />
+              </div>
+              <button
+                onClick={handleInventoryAuditAdjust}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2.5 rounded-lg font-black shadow-md whitespace-nowrap"
+              >
+                실사 재고로 보정
+              </button>
+            </div>
+
+            {inventoryAuditData.lot && (() => {
+              const auditLot = String(inventoryAuditData.lot || "").trim().toUpperCase();
+              const matches = (inventory || []).filter(
+                (inv) => inv.type === inventoryAuditData.type && String(inv.lot || "").trim().toUpperCase() === auditLot
+              );
+              const current = matches.reduce((sum, inv) => sum + (Number(inv.weight) || 0), 0);
+              return (
+                <div className={`mt-4 p-3 rounded-xl border text-xs font-bold ${matches.length === 0 ? "bg-orange-50 border-orange-200 text-orange-700" : "bg-white border-indigo-100 text-slate-600"}`}>
+                  {matches.length === 0
+                    ? `현재 MES에 ${auditLot} LOT 문서가 없습니다. 저장 시 누락 LOT를 새로 복구합니다.`
+                    : `현재 MES ${auditLot}: ${current.toFixed(3)}kg / ${matches.length}개 문서 ${matches.length > 1 ? "(저장 시 한 LOT로 안전 통합, 기존 문서는 0kg로 보존)" : ""}`}
+                </div>
+              );
+            })()}
+          </div>
+        )}
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {stockForecast.map((item) => (
@@ -904,11 +1284,16 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
             <tbody className="divide-y divide-slate-100">
               {selectedMaterial ? (inventoryHistory || []).filter((h) => h.materialType === selectedMaterial).sort((a, b) => new Date(b.date) - new Date(a.date)).map((item) => (
                 <tr key={item.id} className="bg-slate-50/50 hover:bg-slate-100 transition-colors">
-                  <td className="px-4 py-3 text-slate-500 font-medium text-center">{item.date}<span className={`text-[10px] font-bold ml-1 ${item.type === "IN" ? "text-blue-500" : "text-red-400"}`}>({item.type === "IN" ? "입고" : "출고"})</span></td>
+                  <td className="px-4 py-3 text-slate-500 font-medium text-center">
+                    {item.date}
+                    <span className={`text-[10px] font-bold ml-1 ${item.type === "IN" ? "text-blue-500" : item.type === "ADJUST" ? "text-violet-600" : "text-red-400"}`}>
+                      ({item.type === "IN" ? "입고" : item.type === "ADJUST" ? "보정" : "출고"})
+                    </span>
+                  </td>
                   <td className="px-4 py-3 font-black text-slate-800">{item.materialType}</td>
                   <td className="px-4 py-3 font-mono text-indigo-600">{item.lot}</td>
-                  <td className="px-4 py-3 text-right font-black">{item.qty.toLocaleString()} <span className="text-[10px] font-normal text-slate-400">kg</span></td>
-                  <td className="px-4 py-3 text-center"><button onClick={() => handleDeleteInvHistory(item.id)} className="text-red-400 hover:bg-red-500 hover:text-white p-1 bg-white border rounded shadow-sm transition-colors">삭제</button></td>
+                  <td className={`px-4 py-3 text-right font-black ${item.type === "ADJUST" ? "text-violet-700" : ""}`}>{Number(item.qty || 0).toLocaleString()} <span className="text-[10px] font-normal text-slate-400">kg</span></td>
+                  <td className="px-4 py-3 text-center"><span className="inline-flex items-center gap-1 text-[10px] font-black text-slate-500 bg-slate-100 border px-2 py-1 rounded"><Lock className="w-3 h-3" /> 이력보호</span></td>
                 </tr>
               )) : inventory.filter((i) => (showInvHistory ? true : i.weight > 0)).map((item) => {
                 const isEditing = editingInvId === item.id;
@@ -918,13 +1303,20 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
                     <td className="px-4 py-3 text-slate-500 font-medium text-center">{item.date} {isDrained && <span className="text-[10px] text-red-400 ml-1">(소진)</span>}</td>
                     <td className="px-4 py-3 font-black text-slate-800">{item.type}</td>
                     <td className="px-4 py-3 font-mono text-indigo-600">{isEditing ? <input type="text" value={editInvData.lot} onChange={(e) => setEditInvData({ ...editInvData, lot: e.target.value })} className="border p-1 w-full rounded bg-orange-50 font-bold" /> : item.lot}</td>
-                    <td className="px-4 py-3 text-right font-black">{isEditing ? <input type="number" step="0.001" value={editInvData.weight} onChange={(e) => setEditInvData({ ...editInvData, weight: e.target.value })} className="border p-1 w-24 text-right rounded bg-orange-50" /> : item.weight.toLocaleString()}</td>
+                    <td className="px-4 py-3 text-right font-black">
+                      {isEditing ? (
+                        <div className="flex flex-col items-end gap-1">
+                          <input type="number" step="0.001" min="0" value={editInvData.weight} onChange={(e) => setEditInvData({ ...editInvData, weight: e.target.value })} className="border p-1 w-28 text-right rounded bg-orange-50" />
+                          <input type="text" placeholder="보정 사유 필수" value={editInvData.adjustReason || ""} onChange={(e) => setEditInvData({ ...editInvData, adjustReason: e.target.value })} className="border border-orange-200 p-1 w-44 text-[10px] rounded bg-orange-50" />
+                        </div>
+                      ) : Number(item.weight || 0).toLocaleString()}
+                    </td>
                     <td className="px-4 py-3 text-center">
-                      <div className="flex justify-center gap-1.5">
+                      <div className="flex justify-center gap-1.5 items-center">
                         {isEditing ? (
-                          <><button onClick={() => handleSaveInv(item)} className="bg-orange-500 text-white p-1.5 rounded shadow-sm">저장</button><button onClick={() => setEditingInvId(null)} className="bg-slate-200 text-slate-700 p-1.5 rounded shadow-sm">취소</button></>
+                          <><button onClick={() => handleSaveInv(item)} className="bg-orange-500 text-white p-1.5 rounded shadow-sm">저장</button><button onClick={() => { setEditingInvId(null); setEditInvData({}); }} className="bg-slate-200 text-slate-700 p-1.5 rounded shadow-sm">취소</button></>
                         ) : (
-                          <><button onClick={() => { setEditingInvId(item.id); setEditInvData(item); }} className="text-slate-500 hover:text-indigo-600 p-1 bg-white border rounded shadow-sm">수정</button><button onClick={() => handleDeleteInv(item.id)} className="text-red-400 hover:bg-red-500 hover:text-white p-1 bg-white border rounded shadow-sm transition-colors">삭제</button></>
+                          <><button onClick={() => { setEditingInvId(item.id); setEditInvData({ ...item, adjustReason: "" }); }} className="text-slate-500 hover:text-indigo-600 p-1 bg-white border rounded shadow-sm">수정</button><span title="LOT 문서는 삭제되지 않습니다" className="inline-flex items-center gap-1 text-[10px] font-black text-slate-500 bg-slate-100 border px-2 py-1 rounded"><Lock className="w-3 h-3" /> 삭제보호</span></>
                         )}
                       </div>
                     </td>
@@ -1481,10 +1873,30 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
                 <table className="w-full text-sm text-left bg-white border rounded-lg overflow-hidden shadow-sm">
                   <thead className="bg-slate-100 text-slate-500 text-xs uppercase"><tr><th className="p-3">입고일자</th><th className="p-3">로트 번호</th><th className="p-3 text-right">잔여 중량</th><th className="p-3 text-center">상태</th></tr></thead>
                   <tbody className="divide-y divide-slate-100">
-                    {inventory.filter((i) => i.type === detailModalType && i.weight > 0).map((item) => (
-                      <tr key={item.id} className="hover:bg-slate-50"><td className="p-3">{item.date}</td><td className="p-3 font-mono font-bold text-indigo-600">{item.lot}</td><td className="p-3 text-right font-black">{item.weight.toLocaleString()} kg</td><td className="p-3 text-center"><span className="bg-green-100 text-green-700 px-2 py-1 rounded text-[10px] font-bold">{item.status}</span></td></tr>
-                    ))}
-                    {inventory.filter((i) => i.type === detailModalType && i.weight > 0).length === 0 && <tr><td colSpan="4" className="text-center p-6 text-slate-400">잔여 로트가 없습니다.</td></tr>}
+                    {inventory
+                      .filter((i) => i.type === detailModalType)
+                      .sort((a, b) => {
+                        const aActive = Number(a.weight) > 0 ? 1 : 0;
+                        const bActive = Number(b.weight) > 0 ? 1 : 0;
+                        if (aActive !== bActive) return bActive - aActive;
+                        return String(b.date || "").localeCompare(String(a.date || ""));
+                      })
+                      .map((item) => {
+                        const isDepleted = Number(item.weight) <= 0;
+                        return (
+                          <tr key={item.id} className={isDepleted ? "bg-slate-50 opacity-60" : "hover:bg-slate-50"}>
+                            <td className="p-3">{item.date}</td>
+                            <td className="p-3 font-mono font-bold text-indigo-600">{item.lot}</td>
+                            <td className="p-3 text-right font-black">{Number(item.weight || 0).toLocaleString()} kg</td>
+                            <td className="p-3 text-center">
+                              <span className={`px-2 py-1 rounded text-[10px] font-bold ${isDepleted ? "bg-slate-200 text-slate-600" : "bg-green-100 text-green-700"}`}>
+                                {isDepleted ? (item.status || "소진") : (item.status || "사용중")}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    {inventory.filter((i) => i.type === detailModalType).length === 0 && <tr><td colSpan="4" className="text-center p-6 text-slate-400">등록된 LOT가 없습니다.</td></tr>}
                   </tbody>
                 </table>
               )}
@@ -1492,9 +1904,19 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
                 <table className="w-full text-sm text-left bg-white border rounded-lg overflow-hidden shadow-sm">
                   <thead className="bg-slate-100 text-slate-500 text-xs uppercase"><tr><th className="p-3">일시</th><th className="p-3 text-center">구분</th><th className="p-3">로트 번호</th><th className="p-3 text-right">수량</th><th className="p-3">비고</th></tr></thead>
                   <tbody className="divide-y divide-slate-100">
-                    {(inventoryHistory || []).filter((h) => h.materialType === detailModalType).map((h) => (
-                      <tr key={h.id} className="hover:bg-slate-50"><td className="p-3 text-xs text-slate-500">{h.date}</td><td className="p-3 text-center"><span className={`px-2 py-1 rounded text-[10px] font-bold ${h.type === "IN" ? "bg-blue-100 text-blue-700" : "bg-red-100 text-red-700"}`}>{h.type === "IN" ? "입고" : "출고"}</span></td><td className="p-3 font-mono font-bold text-slate-700">{h.lot}</td><td className="p-3 text-right font-black">{h.qty.toLocaleString()} kg</td><td className="p-3 text-xs text-slate-600">{h.note}</td></tr>
-                    ))}
+                    {(inventoryHistory || []).filter((h) => h.materialType === detailModalType).map((h) => {
+                      const historyLabel = h.type === "IN" ? "입고" : h.type === "ADJUST" ? "보정" : "출고";
+                      const historyClass = h.type === "IN" ? "bg-blue-100 text-blue-700" : h.type === "ADJUST" ? "bg-violet-100 text-violet-700" : "bg-red-100 text-red-700";
+                      return (
+                        <tr key={h.id} className="hover:bg-slate-50">
+                          <td className="p-3 text-xs text-slate-500">{h.date}</td>
+                          <td className="p-3 text-center"><span className={`px-2 py-1 rounded text-[10px] font-bold ${historyClass}`}>{historyLabel}</span></td>
+                          <td className="p-3 font-mono font-bold text-slate-700">{h.lot}</td>
+                          <td className={`p-3 text-right font-black ${h.type === "ADJUST" ? "text-violet-700" : ""}`}>{Number(h.qty || 0).toLocaleString()} kg</td>
+                          <td className="p-3 text-xs text-slate-600">{h.note}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               )}
@@ -1716,21 +2138,17 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
         ).toFixed(3)
       );
 
-      if (remainW <= 0) {
-
-        transaction.delete(
-          inventoryRefs[mat]
-        );
-
-      } else {
-
-        transaction.update(
-          inventoryRefs[mat],
-          {
-            weight: remainW
-          }
-        );
-      }
+      // LOT 추적성 보호: 잔량이 0이 되어도 inventory 문서를 삭제하지 않습니다.
+      // 과거처럼 삭제되면 입출고 이력은 남는데 현재 LOT가 사라지는 문제가 생길 수 있습니다.
+      const safeRemainW = Math.max(0, remainW);
+      transaction.update(
+        inventoryRefs[mat],
+        {
+          weight: safeRemainW,
+          status: safeRemainW <= 0 ? "소진" : "사용중",
+          lastUsedAt: curTime
+        }
+      );
 
 
       // ----------------------------------------
