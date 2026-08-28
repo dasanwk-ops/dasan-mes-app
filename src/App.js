@@ -18,7 +18,7 @@ const getKSTDateOnly = () => getKST().slice(2, 10).replace(/-/g, "");
 const cloneDeep = (value) => JSON.parse(JSON.stringify(value));
 
 // ==========================================
-// 제품군(345 / 234) 표시 및 호환 유틸리티
+// 제품군(345 / 234) 표시 및 기존 데이터 호환 유틸리티
 // 기존 데이터가 BL3처럼 색상만 저장되어 있으면 345 제품군으로 간주합니다.
 // ==========================================
 const normalizeProductType = (value = "") => {
@@ -28,7 +28,6 @@ const normalizeProductType = (value = "") => {
   return `345 ${raw}`;
 };
 
-const getProductSeries = (value = "") => normalizeProductType(value).split(" ")[0] || "345";
 const getProductShade = (value = "") => {
   const normalized = normalizeProductType(value);
   const parts = normalized.split(" ");
@@ -37,50 +36,29 @@ const getProductShade = (value = "") => {
 const getProductLabel = (value = "") => normalizeProductType(value);
 
 // ==========================================
-// [2] TEST / PROD 완전 분리 환경 설정
+// [2] TEST MES 안전 격리 환경
 // ==========================================
-// 기본값은 TEST입니다.
-// 양산 배포 시 빌드 환경변수 REACT_APP_MES_ENV=production 만 지정하면
-// 동일한 소스코드가 양산 Firebase로 연결됩니다.
-//
-// 중요:
-// - TEST/PROD 모두 Firestore 내부 컬렉션명과 경로는 동일합니다.
-// - 실제 데이터 분리는 Firebase 프로젝트 자체로 수행합니다.
-// - TEST에서는 Google Sheets 외부 전송을 강제로 차단합니다.
-// - TEST/PROD projectId가 예상값과 다르면 앱 실행을 즉시 중단합니다.
-const BUILD_ENV = (typeof process !== "undefined" && process.env) ? process.env : {};
-const MES_ENV_RAW = String(BUILD_ENV.REACT_APP_MES_ENV || "test").toLowerCase();
-const IS_PRODUCTION = MES_ENV_RAW === "production" || MES_ENV_RAW === "prod";
-const IS_TEST = !IS_PRODUCTION;
-const MES_ENV = IS_PRODUCTION ? "production" : "test";
+// 이 파일은 TEST 전용입니다.
+// - Firebase 프로젝트는 dasan-mes-test로 강제 고정합니다.
+// - Firestore 내부 컬렉션명/경로는 양산과 동일하게 유지합니다.
+// - Google Sheets 등 양산 외부 전송은 강제로 차단합니다.
+// - 양산 Firebase projectId로 변경되면 앱 실행을 즉시 중단합니다.
+const IS_TEST = true;
+const MES_ENV = "test";
 
-const FIREBASE_CONFIGS = {
-  test: {
-    apiKey: "AIzaSyAhFnQLQGvkC7Fzq0C5w9o7th5fOBmu--8",
-    authDomain: "dasan-mes-test.firebaseapp.com",
-    projectId: "dasan-mes-test",
-    storageBucket: "dasan-mes-test.firebasestorage.app",
-    messagingSenderId: "41323517813",
-    appId: "1:41323517813:web:c33e9386b0315a1f39653c",
-  },
-  production: {
-    apiKey: "AIzaSyDxHU5KH8Wdq6Ct73S-gUOvK2YqD7J23kI",
-    authDomain: "dasanind-mes.firebaseapp.com",
-    projectId: "dasanind-mes",
-    storageBucket: "dasanind-mes.firebasestorage.app",
-    messagingSenderId: "782401133060",
-    appId: "1:782401133060:web:e6997bdb37fad09dd1f351",
-  },
+const firebaseConfig = {
+  apiKey: "AIzaSyAhFnQLQGvkC7Fzq0C5w9o7th5fOBmu--8",
+  authDomain: "dasan-mes-test.firebaseapp.com",
+  projectId: "dasan-mes-test",
+  storageBucket: "dasan-mes-test.firebasestorage.app",
+  messagingSenderId: "41323517813",
+  appId: "1:41323517813:web:c33e9386b0315a1f39653c",
 };
 
-const firebaseConfig = IS_PRODUCTION ? FIREBASE_CONFIGS.production : FIREBASE_CONFIGS.test;
-const EXPECTED_FIREBASE_PROJECT_ID = IS_PRODUCTION ? "dasanind-mes" : "dasan-mes-test";
-
-// 🚨 안전장치: 실행 환경과 Firebase 프로젝트가 일치하지 않으면 즉시 중단
-if (firebaseConfig.projectId !== EXPECTED_FIREBASE_PROJECT_ID) {
+// 🚨 TEST 안전장치: 어떤 배포 설정에서도 양산 Firebase 접속 금지
+if (firebaseConfig.projectId !== "dasan-mes-test") {
   throw new Error(
-    `[MES 안전차단] ${MES_ENV} 환경의 Firebase projectId가 올바르지 않습니다. ` +
-    `expected=${EXPECTED_FIREBASE_PROJECT_ID}, actual=${firebaseConfig.projectId}`
+    `[MES 안전차단] TEST MES는 dasan-mes-test Firebase만 사용할 수 있습니다. actual=${firebaseConfig.projectId}`
   );
 }
 
@@ -88,130 +66,93 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// TEST / PROD 내부 데이터 구조는 완전히 동일합니다.
-// 실제 양산 Firestore가 사용하는 경로와 동일하게 고정합니다.
-// artifacts/dasan-mes-app/public/data/{collection}
+// 양산과 TEST의 내부 데이터 구조는 동일.
+// 데이터 격리는 Firebase 프로젝트 자체로 수행합니다.
 const appId = "dasan-mes-app";
 const getColRef = (colName) => collection(db, "artifacts", appId, "public", "data", colName);
 const getDocRef = (colName, docId) => doc(db, "artifacts", appId, "public", "data", colName, String(docId));
 
 // ==========================================
-// [3] Google Sheets 외부 전송 제어
+// [3] TEST 외부 전송 차단
 // ==========================================
-// 양산에서 현재 사용 중인 Apps Script URL.
-// TEST에서는 아래 URL이 코드에 있어도 절대로 호출되지 않습니다.
-const PROD_GOOGLE_SHEETS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbxFqyQaps_suzkAmQnOgDDOU_A1p--lmvAIOLZEo8LSPIAQ5mVLofzfFZo0Rmvq7LI7DA/exec";
-const GOOGLE_SHEETS_ENABLED = IS_PRODUCTION;
-const GOOGLE_SHEETS_WEBHOOK_URL = IS_PRODUCTION ? PROD_GOOGLE_SHEETS_WEBHOOK_URL : "";
-
 const syncToGoogleSheets = async (orderList, wipList, inventoryHistory, shippingHistory, ctx) => {
-  if (!GOOGLE_SHEETS_ENABLED) {
-    console.log("[TEST MES] 실제 Google Sheets 전송이 차단되었습니다.");
-    if (ctx) ctx.showToast("[TEST] Google Sheets 전송이 차단되었습니다.", "success");
-    return;
-  }
-
-  const mergedLots = {};
-  const wipFinished = (wipList || []).filter((w) => w.currentStep === "done");
-  wipFinished.forEach((w) => {
-    mergedLots[w.mixLot] = { mixLot: w.mixLot, type: getProductLabel(w.type), height: w.height, qty: Number(w.qty), details: w.details || "", shrinkageRate: w.shrinkageRate || "-" };
-  });
-
-  (shippingHistory || []).forEach((h) => {
-    if (!mergedLots[h.lot]) {
-      mergedLots[h.lot] = { mixLot: h.lot, type: getProductLabel(h.type), height: h.height, qty: 0, details: h.details || "", shrinkageRate: "-" };
-    }
-    mergedLots[h.lot].qty += Number(h.qty);
-    if (mergedLots[h.lot].shrinkageRate === "-") {
-      const shrinkMatch = (h.details || "").match(/\[수축률:\s*([0-9.]+)/);
-      if (shrinkMatch) mergedLots[h.lot].shrinkageRate = shrinkMatch[1];
-    }
-  });
-
-  const finishedLots = Object.values(mergedLots);
-  if (finishedLots.length === 0) {
-    if (ctx) ctx.showToast("동기화할 생산 완료/출고 데이터가 없습니다.", "error");
-    return;
-  }
-
-  const lotRecords = finishedLots.map((w) => {
-    const details = w.details || "";
-    const defectMatch = details.match(/불량\s*(\d+)개:\s*([^\]]+)/);
-    const defectQty = defectMatch ? parseInt(defectMatch[1]) : 0;
-    const defectReason = defectMatch ? defectMatch[2] : "-";
-    const dateMatch = details.match(/\[(\d{4}-\d{2}-\d{2})\s/);
-    const finishDate = dateMatch ? dateMatch[1] : getKST().split(" ")[0];
-    return [finishDate, w.mixLot, w.type, `${w.height}T`, Number(w.qty), defectQty, defectReason, w.shrinkageRate || "-", details];
-  });
-
-  const monthlyData = {};
-  lotRecords.forEach((record) => {
-    const month = record[0].substring(0, 7);
-    const goodQty = record[4];
-    const defQty = record[5];
-    if (!monthlyData[month]) monthlyData[month] = { total: 0, defect: 0 };
-    monthlyData[month].total += goodQty + defQty;
-    monthlyData[month].defect += defQty;
-  });
-
-  const monthlySummary = Object.keys(monthlyData).sort((a, b) => b.localeCompare(a)).map((month) => {
-    const data = monthlyData[month];
-    const defectRate = data.total > 0 ? data.defect / data.total : 0;
-    return [month, data.total, data.defect, defectRate];
-  });
-
-  try {
-    await fetch(GOOGLE_SHEETS_WEBHOOK_URL, {
-      method: "POST",
-      mode: "no-cors",
-      headers: { "Content-Type": "text/plain" },
-      body: JSON.stringify({ lotRecords, monthlySummary })
-    });
-    if (ctx) ctx.showToast("주주 보고용 구글 시트 동기화 완료", "success");
-  } catch (e) {
-    console.error("Google Sheets 동기화 실패:", e);
-    if (ctx) ctx.showToast("시트 동기화 실패", "error");
-  }
+  console.log("[TEST MES] 실제 Google Sheets 전송이 안전하게 차단되었습니다.");
+  if (ctx) ctx.showToast("[TEST] Google Sheets 전송이 차단되었습니다.", "success");
+  return;
 };
 
 const logProcessToGoogleSheet = async (stepId, wipItem, operator, extraData = {}) => {
-  if (!GOOGLE_SHEETS_ENABLED) {
-    console.log(`[TEST MES 공정 로그 차단] ${stepId}`, wipItem, operator, extraData);
-    return;
-  }
-
-  try {
-    const payload = {
-      type: "PROCESS_LOG",
-      data: {
-        stepId: stepId,
-        timestamp: getKST(),
-        lot: wipItem.mixLot || wipItem.lot || wipItem.orderNo || "N/A",
-        product: wipItem.type ? `${getProductLabel(wipItem.type)} ${wipItem.height}T` : (wipItem.productCode || "N/A"),
-        qty: Number(wipItem.qty) || 0,
-        defects: extraData.defects || 0,
-        defectReason: extraData.defectReason || "-",
-        worker: operator || "현장작업자",
-        equipment: extraData.equipment || "-",
-        conditions: extraData.conditions || "-",
-        measurements: extraData.measurements || "-",
-        details: extraData.details || "-"
-      }
-    };
-    await fetch(GOOGLE_SHEETS_WEBHOOK_URL, {
-      method: "POST",
-      mode: "no-cors",
-      headers: { "Content-Type": "text/plain" },
-      body: JSON.stringify(payload)
-    });
-  } catch (error) {
-    console.error(`[${stepId}] 기록 전송 실패:`, error);
-  }
+  console.log(`[TEST MES 공정 로그 차단] ${stepId}`, wipItem, operator, extraData);
+  return;
 };
+
+// ==========================================
+// 발주 수량 통합 계산 엔진
+// Source of Truth: 현재 WIP + 누적 출고 이력
+// releasedQty는 기존 데이터 호환용으로만 남기고 잔량 계산에는 사용하지 않습니다.
+// ==========================================
+const getOrderProgress = (order, wipList = [], shippingHistory = []) => {
+  const orderQty = Math.max(0, Number(order?.qty) || 0);
+  const orderId = String(order?.id || "");
+
+  const linkedWip = (wipList || []).filter(
+    (w) => String(w.orderId || "") === orderId
+  );
+  const linkedShipping = (shippingHistory || []).filter(
+    (h) => String(h.orderId || "") === orderId
+  );
+
+  const wipQty = linkedWip.reduce(
+    (sum, w) => sum + Math.max(0, Number(w.qty) || 0),
+    0
+  );
+
+  const finishedStockQty = linkedWip
+    .filter((w) => w.currentStep === "done")
+    .reduce((sum, w) => sum + Math.max(0, Number(w.qty) || 0), 0);
+
+  const shippedQty = linkedShipping.reduce(
+    (sum, h) => sum + Math.max(0, Number(h.qty) || 0),
+    0
+  );
+
+  // 과거 데이터 중 이미 완전히 종료됐지만 WIP/출고 이력이 남아있지 않은 건 보호
+  const legacyClosed =
+    linkedWip.length === 0 &&
+    linkedShipping.length === 0 &&
+    ["완료", "출고완료"].includes(order?.status);
+
+  const rawCoveredQty = legacyClosed ? orderQty : wipQty + shippedQty;
+  const coveredQty = Math.min(orderQty, rawCoveredQty);
+  const remainingQty = Math.max(0, orderQty - coveredQty);
+  const overQty = Math.max(0, rawCoveredQty - orderQty);
+
+  let status = "대기중";
+  if (order?.status === "취소") status = "취소";
+  else if (legacyClosed || (orderQty > 0 && shippedQty >= orderQty)) status = "출고완료";
+  else if (orderQty > 0 && finishedStockQty + shippedQty >= orderQty) status = "생산완료";
+  else if (orderQty > 0 && coveredQty >= orderQty) status = "생산중";
+  else if (coveredQty > 0) status = "부분투입";
+
+  return {
+    orderQty,
+    wipQty,
+    finishedStockQty,
+    shippedQty,
+    rawCoveredQty,
+    coveredQty,
+    remainingQty,
+    overQty,
+    percent: orderQty > 0
+      ? Math.min(100, Math.floor((coveredQty / orderQty) * 100))
+      : 0,
+    status,
+  };
+};
+
 
 const DEFAULT_MASTER_SETTINGS = {
   MATERIAL_TYPES: ["4Y-W", "4Y-W-S", "4Y-Y", "5E-P", "4Y-G"],
-  // 분류값 자체에 제품군을 포함시켜 전 공정에서 "345 BL3", "234 BL3"처럼 표시합니다.
   PRODUCT_COLORS: [
     "345 BL0", "345 BL1", "345 BL2", "345 BL3", "345 A1", "345 A2", "345 B1",
     "234 BL2", "234 BL3", "234 B1"
@@ -219,7 +160,7 @@ const DEFAULT_MASTER_SETTINGS = {
   PRODUCT_HEIGHTS: ["20", "22", "25", "30", "35"],
   WEIGHT_BY_HEIGHT: { 20: 502, 22: 553, 25: 628, 30: 754, 35: 879 },
   RATIO_BY_COLOR: {
-    // 3:45 제품군 (기존 BOM 유지)
+    // 3:45 제품군: 기존 BOM 그대로 유지
     "345 BL0": { "4Y-W": 1.0,   "4Y-W-S": 0.0, "4Y-Y": 0.0,   "5E-P": 0.0,   "4Y-G": 0.0 },
     "345 BL1": { "4Y-W": 0.961, "4Y-W-S": 0.0, "4Y-Y": 0.03,  "5E-P": 0.004, "4Y-G": 0.005 },
     "345 BL2": { "4Y-W": 0.931, "4Y-W-S": 0.0, "4Y-Y": 0.055, "5E-P": 0.006, "4Y-G": 0.008 },
@@ -228,8 +169,7 @@ const DEFAULT_MASTER_SETTINGS = {
     "345 A2":  { "4Y-W": 0.786, "4Y-W-S": 0.0, "4Y-Y": 0.174, "5E-P": 0.02,  "4Y-G": 0.02 },
     "345 B1":  { "4Y-W": 0.869, "4Y-W-S": 0.0, "4Y-Y": 0.12,  "5E-P": 0.011, "4Y-G": 0.0 },
 
-    // 2:34 제품군
-    // 2:34 제품군은 전용 주원료 4Y-W-S를 사용합니다.
+    // 2:34 제품군: 4Y-W-S 전용 주원료 사용
     "234 BL2": { "4Y-W": 0.0, "4Y-W-S": 0.9565, "4Y-Y": 0.0390, "5E-P": 0.0045, "4Y-G": 0.0 },
     "234 BL3": { "4Y-W": 0.0, "4Y-W-S": 0.9380, "4Y-Y": 0.0560, "5E-P": 0.0060, "4Y-G": 0.0 },
     "234 B1":  { "4Y-W": 0.0, "4Y-W-S": 0.9004, "4Y-Y": 0.0920, "5E-P": 0.0076, "4Y-G": 0.0 },
@@ -239,8 +179,8 @@ const DEFAULT_MASTER_SETTINGS = {
   SAFETY_THRESHOLD: { "4Y-W": "50", "4Y-W-S": "50", "4Y-Y": "50", "5E-P": "50", "4Y-G": "50" }
 };
 
-// 기존 TEST Firebase에 저장된 마스터 설정과 새 기본 설정을 안전하게 병합합니다.
-// 과거 키(BL0~B1)는 자동으로 345 제품군으로 변환하여 기존 사용자 설정을 보존합니다.
+// 기존 MAIN Firebase 설정은 유지하면서 새 원재료/제품군만 안전하게 병합합니다.
+// 기존 BL0~B1 키는 345 제품군으로 해석하여 저장된 BOM 값을 보존합니다.
 const mergeMasterSettings = (loaded = {}) => {
   const merged = cloneDeep(DEFAULT_MASTER_SETTINGS);
   if (!loaded || typeof loaded !== "object") return merged;
@@ -251,7 +191,6 @@ const mergeMasterSettings = (loaded = {}) => {
     ...loadedMaterialTypes.filter((t) => !DEFAULT_MASTER_SETTINGS.MATERIAL_TYPES.includes(t)),
   ];
 
-  // 제품 분류는 새 345/234 체계를 기준으로 고정합니다.
   merged.PRODUCT_COLORS = cloneDeep(DEFAULT_MASTER_SETTINGS.PRODUCT_COLORS);
   merged.PRODUCT_HEIGHTS = Array.isArray(loaded.PRODUCT_HEIGHTS) && loaded.PRODUCT_HEIGHTS.length > 0
     ? loaded.PRODUCT_HEIGHTS
@@ -284,7 +223,6 @@ const mergeMasterSettings = (loaded = {}) => {
     };
   });
 
-  // 모든 제품에 모든 원재료 키를 보장합니다.
   merged.PRODUCT_COLORS.forEach((product) => {
     if (!merged.RATIO_BY_COLOR[product]) merged.RATIO_BY_COLOR[product] = {};
     merged.MATERIAL_TYPES.forEach((mat) => {
@@ -383,71 +321,35 @@ export default function DasanMES() {
   }, []);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-      console.log(`[${MES_ENV.toUpperCase()} MES] Firebase Auth:`, firebaseUser?.uid || "로그인 안됨");
-      setUser(firebaseUser);
-    });
-
-    signInAnonymously(auth)
-      .then((result) => {
-        console.log(`[${MES_ENV.toUpperCase()} MES] 익명 로그인 성공:`, result.user.uid);
-      })
-      .catch((error) => {
-        console.error(`[${MES_ENV.toUpperCase()} MES] 익명 로그인 실패:`, error);
-        showToast(`Firebase 인증 실패: ${error.message}`, "error");
-      });
-
-    return () => unsubscribe();
+    signInAnonymously(auth);
+    onAuthStateChanged(auth, setUser);
   }, []);
 
   useEffect(() => {
     if (!user || !isUnlocked) return;
-
-    const unsubscribers = [];
-    const setupListener = (col, setter) => {
-      const unsub = onSnapshot(
-        getColRef(col),
-        (snap) => setter(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
-        (error) => {
-          console.error(`[${MES_ENV.toUpperCase()} MES] ${col} 읽기 실패:`, error);
-          showToast(`${col} DB 연결 실패: ${error.message}`, "error");
-        }
-      );
-      unsubscribers.push(unsub);
-    };
-
+    const setupListener = (col, setter) => onSnapshot(getColRef(col), (snap) => setter(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
     setupListener("inventory", setInventory);
     setupListener("inventoryHistory", (d) => setInventoryHistory(d.sort((a, b) => b.id - a.id)));
     setupListener("wipList", setWipList);
     setupListener("orderList", (d) => setOrderList(d.sort((a, b) => new Date(b.orderDate) - new Date(a.orderDate))));
     setupListener("shippingHistory", (d) => setShippingHistory(d.sort((a, b) => b.id - a.id)));
-
-    const equipmentUnsub = onSnapshot(
-      getColRef("equipment"),
-      (snap) => {
-        snap.docs.forEach((d) => {
-          if (d.id === "furnaces") {
-            const loaded = d.data();
-            const mergedFurnaces = cloneDeep(DEFAULT_FURNACES);
-            Object.keys(mergedFurnaces).forEach(k => {
-              if (loaded[k]) mergedFurnaces[k] = { ...mergedFurnaces[k], ...loaded[k] };
-            });
-            setFurnaces(mergedFurnaces);
-          }
-          if (d.id === "dryingRoom") setDryingRoom(d.data());
-          if (d.id === "settings") {
-            if (d.data() && Object.keys(d.data()).length > 0) setMasterSettings(mergeMasterSettings(d.data()));
-          }
-        });
-      },
-      (error) => {
-        console.error(`[${MES_ENV.toUpperCase()} MES] equipment 읽기 실패:`, error);
-        showToast(`equipment DB 연결 실패: ${error.message}`, "error");
-      }
-    );
-    unsubscribers.push(equipmentUnsub);
-
-    return () => unsubscribers.forEach((unsub) => unsub());
+    
+    onSnapshot(getColRef("equipment"), (snap) => {
+      snap.docs.forEach((d) => {
+        if (d.id === "furnaces") {
+          const loaded = d.data();
+          const mergedFurnaces = cloneDeep(DEFAULT_FURNACES);
+          Object.keys(mergedFurnaces).forEach(k => {
+             if (loaded[k]) mergedFurnaces[k] = { ...mergedFurnaces[k], ...loaded[k] };
+          });
+          setFurnaces(mergedFurnaces);
+        }
+        if (d.id === "dryingRoom") setDryingRoom(d.data());
+        if (d.id === "settings") {
+            if(d.data() && Object.keys(d.data()).length > 0) setMasterSettings(mergeMasterSettings(d.data()));
+        }
+      });
+    });
   }, [user, isUnlocked]);
 
   if (!isUnlocked) {
@@ -456,7 +358,7 @@ export default function DasanMES() {
         {toast && <div className="absolute top-10 px-6 py-3 bg-red-500 text-white rounded-xl shadow-2xl font-bold animate-in fade-in slide-in-from-top-4">{toast.msg}</div>}
         <div className="bg-slate-800 p-10 rounded-3xl shadow-2xl flex flex-col items-center border border-slate-700 w-full max-w-sm">
           <div className="bg-indigo-500/20 p-4 rounded-full mb-6"><Lock className="w-10 h-10 text-indigo-400" /></div>
-          <h1 className="text-2xl font-black mb-2 tracking-tight text-center">다산산업 {IS_TEST ? "TEST MES" : "MES"}<br />보안 시스템</h1>
+          <h1 className="text-2xl font-black mb-2 tracking-tight text-center">다산산업 TEST MES<br />보안 시스템</h1>
           <p className="text-slate-400 text-sm mb-8 text-center">허가된 관계자 외의 접근을 엄격히 금지합니다.</p>
           <form onSubmit={(e) => {
               e.preventDefault();
@@ -514,8 +416,8 @@ export default function DasanMES() {
       {isAdmin && (
         <div className="w-64 bg-slate-900 text-slate-300 flex flex-col shadow-xl z-20">
           <div className="p-5 bg-slate-950 border-b border-slate-800 text-center">
-            <div className="text-xl font-bold text-white tracking-wide">다산산업 {IS_TEST ? "TEST MES" : "MES"}</div>
-            <div className={`text-xs mt-1 ${IS_TEST ? "text-amber-400" : "text-blue-400"}`}>{IS_TEST ? "공정관리 TEST · 양산 DB 완전 분리" : "첨단소재 디스크 공정관리"}</div>
+            <div className="text-xl font-bold text-white tracking-wide">다산산업 TEST MES</div>
+            <div className="text-xs text-amber-400 mt-1">공정관리 TEST · 양산 DB 완전 분리</div>
           </div>
           <div className="flex-1 overflow-y-auto py-4">
             <ul className="space-y-1">
@@ -540,11 +442,11 @@ export default function DasanMES() {
         <header className="bg-white border-b border-slate-200 px-8 py-5 flex justify-between items-center shadow-sm z-10">
           <div className="flex items-center">
             <h1 className="text-2xl font-bold text-slate-800">{PROCESS_STEPS.find((s) => s.id === activeStep)?.name}</h1>
-            {IS_TEST && <span className="ml-4 bg-amber-100 text-amber-800 px-3 py-1 rounded-full text-xs font-black border border-amber-300">TEST 환경</span>}
-            {!isAdmin && <span className="ml-2 bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-xs font-black border border-orange-200">현장 전용 모드</span>}
+            <span className="ml-4 bg-amber-100 text-amber-800 px-3 py-1 rounded-full text-xs font-black border border-amber-300">TEST 환경</span>
+            {!isAdmin && <span className="ml-4 bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-xs font-black border border-orange-200">현장 전용 모드</span>}
           </div>
           <div className="text-sm text-slate-600 bg-slate-100 px-3 py-1.5 rounded-full flex items-center font-bold">
-            <span className={`w-2 h-2 rounded-full mr-2 animate-pulse ${IS_TEST ? "bg-amber-500" : "bg-green-500"}`}></span> {IS_TEST ? `TEST Firebase: ${firebaseConfig.projectId}` : "양산 클라우드 실시간 동기화"}
+            <span className="w-2 h-2 rounded-full bg-amber-500 mr-2 animate-pulse"></span> TEST Firebase: {firebaseConfig.projectId}
           </div>
         </header>
         <main className="flex-1 overflow-y-auto bg-slate-50 p-8">
@@ -558,7 +460,7 @@ export default function DasanMES() {
 // ==========================================
 // Dashboard View 
 // ==========================================
-function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, shippingHistory, setActiveStep, ctx, masterSettings }) {
+function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, shippingHistory, furnaces, setActiveStep, ctx, masterSettings }) {
   const stockForecast = React.useMemo(() => {
     const getBOM = (color, singleWeight, qty) => {
       const baseKg = (Number(singleWeight) * Number(qty)) / 1000;
@@ -572,23 +474,29 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
     };
     return masterSettings.MATERIAL_TYPES.map((type) => {
       const currentStock = inventory.filter((i) => i.type === type).reduce((sum, i) => sum + i.weight, 0);
-      const reqFromOrders = orderList.filter((o) => o.status === "대기중" || o.status === "부분투입").reduce((sum, o) => {
-          const remainQty = o.qty - (o.releasedQty || 0);
-          if (remainQty <= 0) return sum;
-          const bom = getBOM(o.color, o.singleWeight, remainQty);
-          return sum + (bom[type] || 0);
-        }, 0);
-      const reqFromPendingLots = (wipList || []).filter((w) => w.currentStep === "step1").reduce((sum, w) => {
-          const bom = getBOM(w.type, w.singleWeight || 628, w.qty);
-          return sum + (bom[type] || 0);
-        }, 0);
+      const reqFromOrders = orderList.reduce((sum, o) => {
+        if (o.status === "취소") return sum;
+        const { remainingQty } = getOrderProgress(o, wipList, shippingHistory);
+        if (remainingQty <= 0) return sum;
+        const bom = getBOM(o.color, o.singleWeight, remainingQty);
+        return sum + (bom[type] || 0);
+      }, 0);
+     const reqFromPendingLots = (wipList || [])
+  .filter((w) => ["step1", "step2"].includes(w.currentStep))
+  .reduce((sum, w) => {
+    const bom = getBOM(w.type, w.singleWeight || 628, w.qty);
+    return sum + (bom[type] || 0);
+  }, 0);
       const totalRequired = reqFromOrders + reqFromPendingLots;
       const expectedStock = currentStock - totalRequired;
       return { type, current: currentStock, required: totalRequired, expected: expectedStock, isShort: expectedStock < 0 };
     });
-  }, [inventory, orderList, wipList, masterSettings]);
+  }, [inventory, orderList, wipList, shippingHistory, masterSettings]);
 
-  const pendingOrdersQty = orderList.filter((o) => o.status === "대기중").reduce((sum, o) => sum + (Number(o.qty) || 0), 0);
+  const pendingOrdersQty = orderList.reduce((sum, o) => {
+    if (o.status === "취소") return sum;
+    return sum + getOrderProgress(o, wipList, shippingHistory).remainingQty;
+  }, 0);
   const wipQty = (wipList || []).filter((w) => w.currentStep !== "done").reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
   const readyToShipQty = (wipList || []).filter((w) => w.currentStep === "done").reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
   const pipelineSteps = PROCESS_STEPS.filter((s) => s.id.startsWith("step") && !["step0", "step1", "step9"].includes(s.id));
@@ -600,45 +508,532 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
   const [editInvData, setEditInvData] = React.useState({});
   const [showInvHistory, setShowInvHistory] = React.useState(false);
   const [selectedMaterial, setSelectedMaterial] = React.useState(null);
+  const [isInventoryAuditOpen, setIsInventoryAuditOpen] = React.useState(false);
+  const [inventoryAuditData, setInventoryAuditData] = React.useState({
+    type: masterSettings.MATERIAL_TYPES?.[0] || "",
+    lot: "",
+    actualWeight: "",
+    date: getKST().split(" ")[0],
+    operator: "",
+    reason: "실사 재고 보정",
+  });
 
   const WIP_STEPS = [
-    { value: "step2", label: "배합 대기" }, { value: "step3", label: "1차 성형 대기" }, { value: "step4", label: "2차 성형 대기" },
-    { value: "step5", label: "열처리 대기" }, { value: "step5_shrink", label: "수축률 측정 대기" }, // 🌟 스텝 업데이트
-    { value: "step6", label: "검수 대기" }, { value: "step7", label: "건조 대기" },
-    { value: "step7_drying", label: "건조 진행중" }, { value: "step8", label: "포장 대기" },
+    { value: "step1", label: "소재창고 대기" },
+    { value: "step2", label: "배합 대기" },
+    { value: "step3", label: "1차 성형 대기" },
+    { value: "step4", label: "2차 성형 대기" },
+    { value: "step5", label: "열처리 대기" },
+    { value: "step5_shrink", label: "수축률 측정 대기" },
+    { value: "step6", label: "검수 대기" },
+    { value: "step7", label: "건조 대기" },
+    { value: "step7_drying", label: "건조 진행중" },
+    { value: "step8", label: "포장 대기" },
   ];
 
   const handleSyncGoogleSheet = async () => { await syncToGoogleSheets(orderList, wipList, inventoryHistory, shippingHistory, ctx); };
 
- const handleSaveWip = async (wip) => {
+  const handleSaveWip = async (wip) => {
     const safeQty = Number(editData.qty);
-    if (isNaN(safeQty) || safeQty < 0) return ctx.showToast("올바른 숫자를 입력해주세요.", "error");
-    try {
-      await setDoc(getDocRef("wipList", wip.id), {
-        ...wip,
-        qty: safeQty,
-        currentStep: editData.currentStep || wip.currentStep,
-        shrinkageRate: editData.shrinkageRate || wip.shrinkageRate || ""
-      });
-      setEditingId(null); ctx.showToast("수정 완료", "success");
-    } catch (e) { ctx.showToast("실패", "error"); }
+    if (!Number.isInteger(safeQty) || safeQty < 0) {
+      return ctx.showToast("수량은 0 이상의 정수로 입력해주세요.", "error");
+    }
+
+    const targetStep = editData.currentStep || wip.currentStep;
+    const currentIndex = WIP_STEPS.findIndex((s) => s.value === wip.currentStep);
+    const targetIndex = WIP_STEPS.findIndex((s) => s.value === targetStep);
+    const correctionReason = String(editData.correctionReason || "").trim();
+    const qtyChanged = safeQty !== Number(wip.qty);
+
+    // 대시보드 수정에서는 현재 공정보다 뒤 단계로 건너뛰는 것은 막습니다.
+    if (currentIndex >= 0 && targetIndex > currentIndex) {
+      return ctx.showToast(
+        "대시보드에서는 현재 또는 이전 공정으로만 변경할 수 있습니다.",
+        "error"
+      );
+    }
+
+    // 작업자 오입력 보정은 반드시 사유를 남겨 추후 추적 가능하게 합니다.
+    if (qtyChanged && !correctionReason) {
+      return ctx.showToast(
+        "수량을 수정할 때는 관리자 보정 사유를 입력해주세요.",
+        "error"
+      );
+    }
+
+    const saveChanges = async () => {
+      try {
+        await runTransaction(db, async (transaction) => {
+          const wipRef = getDocRef("wipList", wip.id);
+          const liveSnap = await transaction.get(wipRef);
+
+          if (!liveSnap.exists()) {
+            throw new Error("수정 대상 작업지시가 존재하지 않습니다.");
+          }
+
+          const live = liveSnap.data();
+          const liveQty = Number(live.qty) || 0;
+          const liveStep = live.currentStep;
+          const structuralChange =
+            safeQty !== liveQty || targetStep !== liveStep;
+
+          // 전기로 슬롯에 이미 배정된 상태에서 WIP만 수정하면
+          // 슬롯 합계와 WIP 수량이 달라지므로 수정 금지.
+          if (structuralChange && liveStep === "step5") {
+            const furnaceRef = getDocRef("equipment", "furnaces");
+            const furnaceSnap = await transaction.get(furnaceRef);
+            const liveFurnaces = furnaceSnap.exists() ? furnaceSnap.data() : {};
+
+            let allocatedQty = 0;
+            Object.values(liveFurnaces || {}).forEach((f) => {
+              Object.values(f?.slotData || {}).forEach((slot) => {
+                if (String(slot?.wipId || "") === String(wip.id)) {
+                  allocatedQty += Number(slot?.qty) || 0;
+                }
+              });
+            });
+
+            if (allocatedQty > 0) {
+              throw new Error(
+                `전기로에 ${allocatedQty}EA가 이미 배정되어 있습니다. 가동 전이면 열처리 화면에서 슬롯 배정을 먼저 해제한 뒤 수정해주세요.`
+              );
+            }
+          }
+
+          // 수축률 측정대는 슬롯별 수량이 이후 최종 WIP 수량의 근거가 되므로
+          // WIP만 수정하면 다음 단계에서 다시 원래 슬롯 합계로 덮어써집니다.
+          if (structuralChange && liveStep === "step5_shrink") {
+            const shrinkRef = getDocRef("equipment", "shrinkDesks");
+            const shrinkSnap = await transaction.get(shrinkRef);
+            const desks = shrinkSnap.exists() ? shrinkSnap.data() : {};
+
+            let slotQty = 0;
+            Object.values(desks || {}).forEach((desk) => {
+              Object.values(desk?.slotData || {}).forEach((slot) => {
+                if (String(slot?.wipId || "") === String(wip.id)) {
+                  slotQty += Number(slot?.qty) || 0;
+                }
+              });
+            });
+
+            if (slotQty > 0) {
+              throw new Error(
+                `수축률 측정대에 슬롯 수량 ${slotQty}EA가 연결되어 있습니다. 이 단계는 슬롯별 수량을 함께 보정해야 하므로 WIP 단독 수정은 차단됩니다.`
+              );
+            }
+          }
+
+          const now = getKST();
+          const notes = [];
+
+          if (safeQty !== liveQty) {
+            notes.push(
+              `[${now}] [관리자 수량보정] ${liveQty}EA → ${safeQty}EA | 사유:${correctionReason}`
+            );
+          }
+
+          if (targetStep !== liveStep) {
+            const fromLabel =
+              WIP_STEPS.find((s) => s.value === liveStep)?.label || liveStep;
+            const toLabel =
+              WIP_STEPS.find((s) => s.value === targetStep)?.label || targetStep;
+            notes.push(
+              `[${now}] [관리자 공정롤백] ${fromLabel} → ${toLabel}`
+            );
+          }
+
+          const updateData = {
+            qty: safeQty,
+            currentStep: targetStep,
+            shrinkageRate:
+              editData.shrinkageRate || live.shrinkageRate || "",
+            details:
+              notes.length > 0
+                ? `${live.details || ""}\n${notes.join("\n")}`
+                : live.details || "",
+          };
+
+          // step1/step2는 아직 실제 배합 완료 전이므로 수량을 고치면
+          // 배합 지시 중량도 새 수량 기준으로 다시 맞춥니다.
+          if (
+            safeQty !== liveQty &&
+            ["step1", "step2"].includes(liveStep)
+          ) {
+            const totalWeight =
+              safeQty > 0
+                ? ((Number(live.singleWeight || 0) * safeQty) / 1000) *
+                    1.01 +
+                  0.2
+                : 0;
+            updateData.weight = totalWeight.toFixed(3);
+          }
+
+          if (safeQty !== liveQty) {
+            updateData.lastQtyCorrection = {
+              before: liveQty,
+              after: safeQty,
+              reason: correctionReason,
+              correctedAt: now,
+              correctedBy: "MASTER",
+            };
+          }
+
+          transaction.update(wipRef, updateData);
+        });
+
+        setEditingId(null);
+        setEditData({});
+        ctx.showToast(
+          targetStep !== wip.currentStep
+            ? "관리자 보정 및 공정 롤백 완료"
+            : qtyChanged
+            ? "수량 보정 완료 — 발주 잔량에 자동 반영됩니다."
+            : "수정 완료",
+          "success"
+        );
+      } catch (e) {
+        ctx.showToast(e?.message || "수정 실패", "error");
+      }
+    };
+
+    if (targetStep !== wip.currentStep) {
+      const fromLabel =
+        WIP_STEPS.find((s) => s.value === wip.currentStep)?.label ||
+        wip.currentStep;
+      const toLabel =
+        WIP_STEPS.find((s) => s.value === targetStep)?.label || targetStep;
+      ctx.showConfirm(
+        `${fromLabel} → ${toLabel}로 롤백하시겠습니까?\n\n※ 진행 상태만 변경되며 기존 공정 기록, 원재료 입출고 이력, 장비 데이터는 자동으로 삭제하거나 복원하지 않습니다.`,
+        saveChanges
+      );
+      return;
+    }
+
+    if (qtyChanged) {
+      ctx.showConfirm(
+        `${wip.mixLot} 수량을 ${wip.qty}EA → ${safeQty}EA로 보정하시겠습니까?\n\n사유: ${correctionReason}\n발주 잔량은 보정 직후 자동 재계산됩니다.`,
+        saveChanges
+      );
+      return;
+    }
+
+    await saveChanges();
   };
+
   const handleDeleteWip = (id) => {
-    ctx.showConfirm("삭제하시겠습니까?", async () => { try { await deleteDoc(getDocRef("wipList", id)); ctx.showToast("삭제 완료", "success"); } catch (e) { ctx.showToast("실패", "error"); } });
+    const target = (wipList || []).find((w) => w.id === id);
+    if (!target) {
+      return ctx.showToast("해당 작업지시를 찾을 수 없습니다.", "error");
+    }
+
+    // step1은 원재료가 실제 차감되기 전이라 삭제 가능.
+    // 이후 공정은 원재료/장비/공정 이력이 연결되므로 강제 삭제 금지.
+    if (target.currentStep !== "step1") {
+      return ctx.showToast(
+        "원재료 창고 이후의 작업은 강제 삭제할 수 없습니다. 수량 오입력은 '수정' 기능의 관리자 보정으로 처리해주세요.",
+        "error"
+      );
+    }
+
+    ctx.showConfirm(
+      `${target.mixLot} 작업지시 ${target.qty}EA를 삭제하시겠습니까?\n삭제 즉시 해당 수량은 발주 잔량으로 자동 복구됩니다.`,
+      async () => {
+        try {
+          await deleteDoc(getDocRef("wipList", id));
+          ctx.showToast(
+            "작업지시 삭제 완료 — 발주 잔량 자동 복구",
+            "success"
+          );
+        } catch (e) {
+          ctx.showToast("삭제 실패", "error");
+        }
+      }
+    );
   };
+
   const handleSaveInv = async (item) => {
     const safeWeight = Number(editInvData.weight);
-    if (isNaN(safeWeight) || safeWeight < 0) return ctx.showToast("올바른 중량을 입력해주세요.", "error");
-    try {
-      await setDoc(getDocRef("inventory", item.id), { ...item, weight: safeWeight, lot: editInvData.lot || item.lot });
-      setEditingInvId(null); ctx.showToast("수정 완료", "success");
-    } catch (e) { ctx.showToast("실패", "error"); }
+    const newLot = String(editInvData.lot || item.lot || "").trim().toUpperCase();
+    const reason = String(editInvData.adjustReason || "").trim();
+    const oldWeight = Number(item.weight) || 0;
+    const oldLot = String(item.lot || "").trim().toUpperCase();
+    const changed = safeWeight !== oldWeight || newLot !== oldLot;
+
+    if (!newLot) return ctx.showToast("LOT 번호를 입력해주세요.", "error");
+    if (!Number.isFinite(safeWeight) || safeWeight < 0) {
+      return ctx.showToast("올바른 중량을 입력해주세요.", "error");
+    }
+    if (changed && !reason) {
+      return ctx.showToast("재고 수정 시 보정 사유를 반드시 입력해주세요.", "error");
+    }
+
+    // 다른 살아있는 문서와 LOT가 겹치면 개별 수정 대신 실사보정에서 통합합니다.
+    const duplicate = (inventory || []).find(
+      (inv) =>
+        inv.id !== item.id &&
+        String(inv.lot || "").trim().toUpperCase() === newLot &&
+        inv.type === item.type &&
+        Number(inv.weight) > 0
+    );
+    if (newLot !== oldLot && duplicate) {
+      return ctx.showToast(
+        `같은 품목의 ${newLot} LOT가 이미 존재합니다. '실사 재고 보정 / LOT 복구' 기능으로 통합해주세요.`,
+        "error"
+      );
+    }
+
+    const save = async () => {
+      try {
+        await runTransaction(db, async (transaction) => {
+          const invRef = getDocRef("inventory", item.id);
+          const invSnap = await transaction.get(invRef);
+          if (!invSnap.exists()) throw new Error("재고 LOT가 존재하지 않습니다.");
+
+          const live = invSnap.data();
+          const liveWeight = Number(live.weight) || 0;
+          const liveLot = String(live.lot || "").trim().toUpperCase();
+          const now = getKST();
+          const finalStatus = safeWeight <= 0 ? "소진" : "실사보정";
+
+          transaction.update(invRef, {
+            lot: newLot,
+            weight: safeWeight,
+            status: finalStatus,
+            lastInventoryAdjustment: {
+              beforeWeight: liveWeight,
+              afterWeight: safeWeight,
+              beforeLot: liveLot,
+              afterLot: newLot,
+              reason,
+              adjustedAt: now,
+              adjustedBy: "MASTER",
+            },
+          });
+
+          if (changed) {
+            const histId = Date.now().toString() + Math.random().toString().slice(2, 7);
+            transaction.set(getDocRef("inventoryHistory", histId), {
+              id: histId,
+              date: now.slice(0, 16),
+              type: "ADJUST",
+              materialType: live.type || item.type,
+              lot: newLot,
+              qty: Number((safeWeight - liveWeight).toFixed(3)),
+              beforeWeight: liveWeight,
+              afterWeight: safeWeight,
+              note: `관리자 재고보정 | ${liveLot !== newLot ? `LOT:${liveLot}→${newLot} | ` : ""}${reason}`,
+              operator: "MASTER",
+              createdAt: serverTimestamp(),
+            });
+          }
+        });
+
+        setEditingInvId(null);
+        setEditInvData({});
+        ctx.showToast("재고 보정 완료 — 변경 이력이 보존되었습니다.", "success");
+      } catch (e) {
+        ctx.showToast(e?.message || "재고 수정 실패", "error");
+      }
+    };
+
+    if (!changed) {
+      setEditingInvId(null);
+      setEditInvData({});
+      return;
+    }
+
+    ctx.showConfirm(
+      `${item.type} ${oldLot}\n${oldWeight.toFixed(3)}kg → ${safeWeight.toFixed(3)}kg로 보정하시겠습니까?\n\n사유: ${reason}`,
+      save
+    );
   };
-  const handleDeleteInv = (id) => {
-    ctx.showConfirm("삭제하시겠습니까?", async () => { try { await deleteDoc(getDocRef("inventory", id)); ctx.showToast("삭제 완료", "success"); } catch (e) { ctx.showToast("실패", "error"); } });
+
+  // 원재료 LOT 문서는 추적성 때문에 절대 Hard Delete 하지 않습니다.
+  const handleDeleteInv = () => {
+    ctx.showToast(
+      "원재료 LOT 삭제는 안전장치로 차단되어 있습니다. 0kg 소진처리 또는 '실사 재고 보정 / LOT 복구'를 사용해주세요.",
+      "error"
+    );
   };
-  const handleDeleteInvHistory = (id) => {
-    ctx.showConfirm("삭제하시겠습니까?", async () => { try { await deleteDoc(getDocRef("inventoryHistory", id)); ctx.showToast("삭제 완료", "success"); } catch (e) { ctx.showToast("실패", "error"); } });
+
+  // 입출고/보정 이력 역시 감사 추적성을 위해 삭제를 금지합니다.
+  const handleDeleteInvHistory = () => {
+    ctx.showToast(
+      "원재료 이력 삭제는 안전장치로 차단되어 있습니다. 잘못된 재고는 새 '실사보정' 이력으로 정정해주세요.",
+      "error"
+    );
+  };
+
+  const resetInventoryAuditForm = () => {
+    setInventoryAuditData({
+      type: masterSettings.MATERIAL_TYPES?.[0] || "",
+      lot: "",
+      actualWeight: "",
+      date: getKST().split(" ")[0],
+      operator: "",
+      reason: "실사 재고 보정",
+    });
+  };
+
+  const handleInventoryAuditAdjust = async () => {
+    const type = String(inventoryAuditData.type || "").trim();
+    const lot = String(inventoryAuditData.lot || "").trim().toUpperCase();
+    const actualWeight = Number(inventoryAuditData.actualWeight);
+    const operator = String(inventoryAuditData.operator || "").trim();
+    const reason = String(inventoryAuditData.reason || "").trim();
+    const auditDate = inventoryAuditData.date || getKST().split(" ")[0];
+
+    if (!type) return ctx.showToast("품목을 선택해주세요.", "error");
+    if (!lot) return ctx.showToast("LOT 번호를 입력해주세요.", "error");
+    if (!Number.isFinite(actualWeight) || actualWeight < 0) {
+      return ctx.showToast("실재고 중량을 0 이상의 숫자로 입력해주세요.", "error");
+    }
+    if (!operator) return ctx.showToast("실사/보정 담당자를 입력해주세요.", "error");
+    if (!reason) return ctx.showToast("보정 사유를 입력해주세요.", "error");
+
+    const normalizedMatches = (inventory || []).filter(
+      (inv) =>
+        inv.type === type &&
+        String(inv.lot || "").trim().toUpperCase() === lot
+    );
+
+    const otherTypeMatch = (inventory || []).find(
+      (inv) =>
+        inv.type !== type &&
+        String(inv.lot || "").trim().toUpperCase() === lot &&
+        Number(inv.weight) > 0
+    );
+    if (otherTypeMatch) {
+      return ctx.showToast(
+        `${lot} LOT가 현재 ${otherTypeMatch.type} 품목에 등록되어 있습니다. 품목 오등록 여부를 먼저 확인해주세요.`,
+        "error"
+      );
+    }
+
+    const currentTotal = normalizedMatches.reduce(
+      (sum, inv) => sum + (Number(inv.weight) || 0),
+      0
+    );
+    const delta = Number((actualWeight - currentTotal).toFixed(3));
+    const docCount = normalizedMatches.length;
+
+    const applyAudit = async () => {
+      try {
+        await runTransaction(db, async (transaction) => {
+          // Firestore transaction은 READ를 먼저 끝낸 후 WRITE 합니다.
+          const sortedMatches = [...normalizedMatches].sort((a, b) => {
+            const da = String(a.date || "");
+            const dbb = String(b.date || "");
+            if (da !== dbb) return da.localeCompare(dbb);
+            return String(a.id).localeCompare(String(b.id));
+          });
+
+          const liveDocs = [];
+          for (const inv of sortedMatches) {
+            const ref = getDocRef("inventory", inv.id);
+            const snap = await transaction.get(ref);
+            if (snap.exists()) liveDocs.push({ ref, data: snap.data(), id: inv.id });
+          }
+
+          const liveBeforeTotal = liveDocs.reduce(
+            (sum, x) => sum + (Number(x.data.weight) || 0),
+            0
+          );
+          const now = getKST();
+          let primaryId = "";
+
+          if (liveDocs.length === 0) {
+            // 과거처럼 inventory 문서가 사라진 LOT도 대시보드에서 복구 가능.
+            const newId = Date.now().toString() + Math.random().toString().slice(2, 7);
+            primaryId = newId;
+            transaction.set(getDocRef("inventory", newId), {
+              id: newId,
+              lot,
+              type,
+              weight: actualWeight,
+              date: auditDate,
+              status: actualWeight <= 0 ? "소진" : "실사복구",
+              createdAt: serverTimestamp(),
+              lastInventoryAdjustment: {
+                beforeWeight: 0,
+                afterWeight: actualWeight,
+                reason,
+                adjustedAt: now,
+                adjustedBy: operator,
+                mode: "LOT_RECOVERY",
+              },
+            });
+          } else {
+            // 같은 LOT가 여러 inventory 문서로 나뉘어 있어도 삭제하지 않고
+            // 첫 문서에 실재고를 통합, 나머지는 0kg '실사통합'으로 보존.
+            const primary = liveDocs[0];
+            primaryId = primary.id;
+            transaction.update(primary.ref, {
+              lot,
+              type,
+              weight: actualWeight,
+              status: actualWeight <= 0 ? "소진" : "실사보정",
+              lastInventoryAdjustment: {
+                beforeWeight: liveBeforeTotal,
+                afterWeight: actualWeight,
+                reason,
+                adjustedAt: now,
+                adjustedBy: operator,
+                mode: liveDocs.length > 1 ? "LOT_CONSOLIDATION" : "STOCKTAKE",
+              },
+            });
+
+            for (const extra of liveDocs.slice(1)) {
+              transaction.update(extra.ref, {
+                weight: 0,
+                status: "실사통합",
+                mergedInto: primary.id,
+                lastInventoryAdjustment: {
+                  beforeWeight: Number(extra.data.weight) || 0,
+                  afterWeight: 0,
+                  reason: `${reason} (동일 LOT 통합)`,
+                  adjustedAt: now,
+                  adjustedBy: operator,
+                  mode: "LOT_CONSOLIDATION",
+                },
+              });
+            }
+          }
+
+          const histId = Date.now().toString() + Math.random().toString().slice(2, 7);
+          transaction.set(getDocRef("inventoryHistory", histId), {
+            id: histId,
+            date: now.slice(0, 16),
+            type: "ADJUST",
+            materialType: type,
+            lot,
+            qty: Number((actualWeight - liveBeforeTotal).toFixed(3)),
+            beforeWeight: liveBeforeTotal,
+            afterWeight: actualWeight,
+            note: `실사 재고 보정 | ${reason} | 문서:${liveDocs.length || 0}→1(보존통합)`,
+            operator,
+            primaryInventoryId: primaryId,
+            createdAt: serverTimestamp(),
+          });
+        });
+
+        resetInventoryAuditForm();
+        setIsInventoryAuditOpen(false);
+        ctx.showToast(
+          docCount === 0
+            ? `${lot} 누락 LOT 복구 완료 (${actualWeight.toFixed(3)}kg)`
+            : `${lot} 실사 재고 보정 완료 (${actualWeight.toFixed(3)}kg)`,
+          "success"
+        );
+      } catch (e) {
+        ctx.showToast(e?.message || "실사 재고 보정 실패", "error");
+      }
+    };
+
+    ctx.showConfirm(
+      `${type} ${lot}\n현재 MES 합계: ${currentTotal.toFixed(3)}kg (${docCount}개 문서)\n실사 재고: ${actualWeight.toFixed(3)}kg\n차이: ${delta >= 0 ? "+" : ""}${delta.toFixed(3)}kg\n\n실사 기준으로 보정하시겠습니까?\n※ 기존 LOT 문서는 삭제하지 않습니다.`,
+      applyAudit
+    );
   };
 
   return (
@@ -655,7 +1050,7 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="bg-white rounded-xl p-6 shadow-sm border border-slate-100 flex flex-col items-center">
-          <div className="text-slate-500 text-xs font-bold mb-1">대기중 생산지시(건)</div>
+          <div className="text-slate-500 text-xs font-bold mb-1">추가 생산 필요 수량</div>
           <div className="text-3xl font-black text-indigo-600">{pendingOrdersQty.toLocaleString()} EA</div>
         </div>
         <div className="bg-white rounded-xl p-6 shadow-sm border border-slate-100 flex flex-col items-center">
@@ -672,7 +1067,22 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
         <h3 className="text-lg font-bold mb-6 text-slate-800 flex items-center"><ArrowRight className="w-5 h-5 mr-2 text-blue-600" /> 공정 상황 퀵 네비게이션</h3>
         <div className="flex justify-between items-start w-full">
           {pipelineSteps.map((step, idx) => {
-            const count = wipList.filter((w) => w.currentStep.startsWith(step.id)).reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
+  const dashboardStepMap = {
+    step2: ["step2"],
+    step3: ["step3"],
+    step4: ["step4"],
+    step5: ["step5"],
+    step5_shrink: ["step5_shrink"],
+    step6: ["step6"],
+    step7: ["step7", "step7_drying"],
+    step8: ["step8"],
+  };
+
+  const validSteps = dashboardStepMap[step.id] || [step.id];
+
+  const count = wipList
+    .filter((w) => validSteps.includes(w.currentStep))
+    .reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
             const Icon = step.icon;
             return (
               <div key={step.id} onClick={() => setActiveStep(step.id)} className="flex-1 flex flex-col items-center relative group cursor-pointer hover:bg-slate-50 rounded-xl py-2">
@@ -695,13 +1105,114 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
           <div className="flex items-center gap-2">
             <h3 className="text-lg font-bold text-slate-800">소재 창고 현황 및 필요 소요량 예측</h3>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            <button
+              onClick={() => {
+                if (!isInventoryAuditOpen) resetInventoryAuditForm();
+                setIsInventoryAuditOpen(!isInventoryAuditOpen);
+              }}
+              className="text-xs font-black px-3 py-1.5 rounded border transition-colors shadow-sm bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700"
+            >
+              {isInventoryAuditOpen ? "실사 보정 닫기" : "실사 재고 보정 / LOT 복구"}
+            </button>
             <button onClick={() => setShowInvHistory(!showInvHistory)} className="text-xs font-bold px-3 py-1.5 rounded border transition-colors shadow-sm bg-white text-slate-600 border-slate-300 hover:bg-slate-50">
-              입출고 내역 {showInvHistory ? "숨기기" : "보기"}
+              소진 LOT {showInvHistory ? "숨기기" : "포함"}
             </button>
             <span className="text-xs font-bold text-red-500 bg-red-50 px-2 py-1 rounded border border-red-100 uppercase">마스터 권한</span>
           </div>
         </div>
+
+        {isInventoryAuditOpen && (
+          <div className="bg-indigo-50 border-2 border-indigo-200 rounded-2xl p-5 shadow-sm">
+            <div className="flex flex-col lg:flex-row lg:items-end gap-4">
+              <div className="flex-1 min-w-[140px]">
+                <label className="block text-[11px] font-black text-slate-600 mb-1">품목</label>
+                <select
+                  value={inventoryAuditData.type}
+                  onChange={(e) => setInventoryAuditData({ ...inventoryAuditData, type: e.target.value })}
+                  className="w-full border-2 border-indigo-200 bg-white rounded-lg p-2.5 font-black text-indigo-700 outline-none focus:border-indigo-500"
+                >
+                  {masterSettings.MATERIAL_TYPES.map((mat) => <option key={mat} value={mat}>{mat}</option>)}
+                </select>
+              </div>
+              <div className="flex-[1.4] min-w-[180px]">
+                <label className="block text-[11px] font-black text-slate-600 mb-1">LOT No.</label>
+                <input
+                  type="text"
+                  placeholder="예: EN2600011"
+                  value={inventoryAuditData.lot}
+                  onChange={(e) => setInventoryAuditData({ ...inventoryAuditData, lot: e.target.value.toUpperCase() })}
+                  className="w-full border-2 border-indigo-200 bg-white rounded-lg p-2.5 font-mono font-black text-indigo-700 outline-none focus:border-indigo-500"
+                />
+              </div>
+              <div className="flex-1 min-w-[140px]">
+                <label className="block text-[11px] font-black text-slate-600 mb-1">실사 현재재고 (kg)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.001"
+                  placeholder="0.000"
+                  value={inventoryAuditData.actualWeight}
+                  onChange={(e) => setInventoryAuditData({ ...inventoryAuditData, actualWeight: e.target.value })}
+                  className="w-full border-2 border-indigo-200 bg-white rounded-lg p-2.5 text-right font-black text-indigo-700 outline-none focus:border-indigo-500"
+                />
+              </div>
+              <div className="flex-1 min-w-[140px]">
+                <label className="block text-[11px] font-black text-slate-600 mb-1">실사 기준일</label>
+                <input
+                  type="date"
+                  value={inventoryAuditData.date}
+                  onChange={(e) => setInventoryAuditData({ ...inventoryAuditData, date: e.target.value })}
+                  className="w-full border-2 border-indigo-200 bg-white rounded-lg p-2.5 font-bold outline-none focus:border-indigo-500"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-[180px_1fr_auto] gap-4 mt-4 items-end">
+              <div>
+                <label className="block text-[11px] font-black text-slate-600 mb-1">실사/보정 담당자</label>
+                <input
+                  type="text"
+                  placeholder="성명"
+                  value={inventoryAuditData.operator}
+                  onChange={(e) => setInventoryAuditData({ ...inventoryAuditData, operator: e.target.value })}
+                  className="w-full border-2 border-indigo-200 bg-white rounded-lg p-2.5 text-center font-bold outline-none focus:border-indigo-500"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-black text-slate-600 mb-1">보정 사유</label>
+                <input
+                  type="text"
+                  placeholder="예: 2026-08-28 원재료 실사 기준 재고 보정"
+                  value={inventoryAuditData.reason}
+                  onChange={(e) => setInventoryAuditData({ ...inventoryAuditData, reason: e.target.value })}
+                  className="w-full border-2 border-indigo-200 bg-white rounded-lg p-2.5 font-bold outline-none focus:border-indigo-500"
+                />
+              </div>
+              <button
+                onClick={handleInventoryAuditAdjust}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2.5 rounded-lg font-black shadow-md whitespace-nowrap"
+              >
+                실사 재고로 보정
+              </button>
+            </div>
+
+            {inventoryAuditData.lot && (() => {
+              const auditLot = String(inventoryAuditData.lot || "").trim().toUpperCase();
+              const matches = (inventory || []).filter(
+                (inv) => inv.type === inventoryAuditData.type && String(inv.lot || "").trim().toUpperCase() === auditLot
+              );
+              const current = matches.reduce((sum, inv) => sum + (Number(inv.weight) || 0), 0);
+              return (
+                <div className={`mt-4 p-3 rounded-xl border text-xs font-bold ${matches.length === 0 ? "bg-orange-50 border-orange-200 text-orange-700" : "bg-white border-indigo-100 text-slate-600"}`}>
+                  {matches.length === 0
+                    ? `현재 MES에 ${auditLot} LOT 문서가 없습니다. 저장 시 누락 LOT를 새로 복구합니다.`
+                    : `현재 MES ${auditLot}: ${current.toFixed(3)}kg / ${matches.length}개 문서 ${matches.length > 1 ? "(저장 시 한 LOT로 안전 통합, 기존 문서는 0kg로 보존)" : ""}`}
+                </div>
+              );
+            })()}
+          </div>
+        )}
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {stockForecast.map((item) => (
@@ -733,11 +1244,16 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
             <tbody className="divide-y divide-slate-100">
               {selectedMaterial ? (inventoryHistory || []).filter((h) => h.materialType === selectedMaterial).sort((a, b) => new Date(b.date) - new Date(a.date)).map((item) => (
                 <tr key={item.id} className="bg-slate-50/50 hover:bg-slate-100 transition-colors">
-                  <td className="px-4 py-3 text-slate-500 font-medium text-center">{item.date}<span className={`text-[10px] font-bold ml-1 ${item.type === "IN" ? "text-blue-500" : "text-red-400"}`}>({item.type === "IN" ? "입고" : "출고"})</span></td>
+                  <td className="px-4 py-3 text-slate-500 font-medium text-center">
+                    {item.date}
+                    <span className={`text-[10px] font-bold ml-1 ${item.type === "IN" ? "text-blue-500" : item.type === "ADJUST" ? "text-violet-600" : "text-red-400"}`}>
+                      ({item.type === "IN" ? "입고" : item.type === "ADJUST" ? "보정" : "출고"})
+                    </span>
+                  </td>
                   <td className="px-4 py-3 font-black text-slate-800">{item.materialType}</td>
                   <td className="px-4 py-3 font-mono text-indigo-600">{item.lot}</td>
-                  <td className="px-4 py-3 text-right font-black">{item.qty.toLocaleString()} <span className="text-[10px] font-normal text-slate-400">kg</span></td>
-                  <td className="px-4 py-3 text-center"><button onClick={() => handleDeleteInvHistory(item.id)} className="text-red-400 hover:bg-red-500 hover:text-white p-1 bg-white border rounded shadow-sm transition-colors">삭제</button></td>
+                  <td className={`px-4 py-3 text-right font-black ${item.type === "ADJUST" ? "text-violet-700" : ""}`}>{Number(item.qty || 0).toLocaleString()} <span className="text-[10px] font-normal text-slate-400">kg</span></td>
+                  <td className="px-4 py-3 text-center"><span className="inline-flex items-center gap-1 text-[10px] font-black text-slate-500 bg-slate-100 border px-2 py-1 rounded"><Lock className="w-3 h-3" /> 이력보호</span></td>
                 </tr>
               )) : inventory.filter((i) => (showInvHistory ? true : i.weight > 0)).map((item) => {
                 const isEditing = editingInvId === item.id;
@@ -747,13 +1263,20 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
                     <td className="px-4 py-3 text-slate-500 font-medium text-center">{item.date} {isDrained && <span className="text-[10px] text-red-400 ml-1">(소진)</span>}</td>
                     <td className="px-4 py-3 font-black text-slate-800">{item.type}</td>
                     <td className="px-4 py-3 font-mono text-indigo-600">{isEditing ? <input type="text" value={editInvData.lot} onChange={(e) => setEditInvData({ ...editInvData, lot: e.target.value })} className="border p-1 w-full rounded bg-orange-50 font-bold" /> : item.lot}</td>
-                    <td className="px-4 py-3 text-right font-black">{isEditing ? <input type="number" step="0.001" value={editInvData.weight} onChange={(e) => setEditInvData({ ...editInvData, weight: e.target.value })} className="border p-1 w-24 text-right rounded bg-orange-50" /> : item.weight.toLocaleString()}</td>
+                    <td className="px-4 py-3 text-right font-black">
+                      {isEditing ? (
+                        <div className="flex flex-col items-end gap-1">
+                          <input type="number" step="0.001" min="0" value={editInvData.weight} onChange={(e) => setEditInvData({ ...editInvData, weight: e.target.value })} className="border p-1 w-28 text-right rounded bg-orange-50" />
+                          <input type="text" placeholder="보정 사유 필수" value={editInvData.adjustReason || ""} onChange={(e) => setEditInvData({ ...editInvData, adjustReason: e.target.value })} className="border border-orange-200 p-1 w-44 text-[10px] rounded bg-orange-50" />
+                        </div>
+                      ) : Number(item.weight || 0).toLocaleString()}
+                    </td>
                     <td className="px-4 py-3 text-center">
-                      <div className="flex justify-center gap-1.5">
+                      <div className="flex justify-center gap-1.5 items-center">
                         {isEditing ? (
-                          <><button onClick={() => handleSaveInv(item)} className="bg-orange-500 text-white p-1.5 rounded shadow-sm">저장</button><button onClick={() => setEditingInvId(null)} className="bg-slate-200 text-slate-700 p-1.5 rounded shadow-sm">취소</button></>
+                          <><button onClick={() => handleSaveInv(item)} className="bg-orange-500 text-white p-1.5 rounded shadow-sm">저장</button><button onClick={() => { setEditingInvId(null); setEditInvData({}); }} className="bg-slate-200 text-slate-700 p-1.5 rounded shadow-sm">취소</button></>
                         ) : (
-                          <><button onClick={() => { setEditingInvId(item.id); setEditInvData(item); }} className="text-slate-500 hover:text-indigo-600 p-1 bg-white border rounded shadow-sm">수정</button><button onClick={() => handleDeleteInv(item.id)} className="text-red-400 hover:bg-red-500 hover:text-white p-1 bg-white border rounded shadow-sm transition-colors">삭제</button></>
+                          <><button onClick={() => { setEditingInvId(item.id); setEditInvData({ ...item, adjustReason: "" }); }} className="text-slate-500 hover:text-indigo-600 p-1 bg-white border rounded shadow-sm">수정</button><span title="LOT 문서는 삭제되지 않습니다" className="inline-flex items-center gap-1 text-[10px] font-black text-slate-500 bg-slate-100 border px-2 py-1 rounded"><Lock className="w-3 h-3" /> 삭제보호</span></>
                         )}
                       </div>
                     </td>
@@ -778,20 +1301,65 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
             <tbody className="divide-y divide-slate-100">
               {activeWipList.map((wip) => {
                 const isEditing = editingId === wip.id;
+                const currentStepIndex = WIP_STEPS.findIndex((s) => s.value === wip.currentStep);
+                const rollbackSteps = currentStepIndex >= 0 ? WIP_STEPS.slice(0, currentStepIndex + 1) : WIP_STEPS;
                 return (
                   <tr key={wip.id} className="hover:bg-slate-50 transition-colors">
                     <td className="px-4 py-3 font-medium text-blue-600">{wip.mixLot}</td>
                     <td className="px-4 py-3 font-bold text-slate-800">{getProductLabel(wip.type)} {wip.height}T</td>
                     <td className="px-4 py-3 text-center font-bold">
-                      {isEditing ? <input type="number" value={editData.qty} onChange={(e) => setEditData({ ...editData, qty: e.target.value })} className="border p-1 w-16 text-center rounded bg-orange-50" /> : wip.qty}
+                      {isEditing ? (
+                        <div className="flex flex-col items-center gap-1">
+                          <input
+                            type="number"
+                            min="0"
+                            step="1"
+                            value={editData.qty}
+                            onChange={(e) =>
+                              setEditData({ ...editData, qty: e.target.value })
+                            }
+                            className="border p-1 w-20 text-center rounded bg-orange-50 font-black"
+                          />
+                          {Number(editData.qty) !== Number(wip.qty) && (
+                            <input
+                              type="text"
+                              value={editData.correctionReason || ""}
+                              onChange={(e) =>
+                                setEditData({
+                                  ...editData,
+                                  correctionReason: e.target.value,
+                                })
+                              }
+                              placeholder="수정 사유 필수"
+                              className="border border-orange-300 p-1 w-32 text-[10px] rounded bg-orange-50"
+                            />
+                          )}
+                        </div>
+                      ) : (
+                        wip.qty
+                      )}
                     </td>
                     <td className="px-4 py-3 text-center font-bold text-indigo-600">
                       {isEditing ? <input type="number" step="0.01" value={editData.shrinkageRate || ""} onChange={(e) => setEditData({ ...editData, shrinkageRate: e.target.value })} className="border p-1 w-16 text-center rounded bg-orange-50 font-black" /> : wip.shrinkageRate || "0.00"}
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`px-2 py-1 border rounded text-[10px] font-bold ${wip.currentStep.includes("heating") ? "bg-orange-50 text-orange-700" : "bg-white text-slate-600"}`}>
-                        {WIP_STEPS.find((s) => s.value === wip.currentStep)?.label || "대기중"}
-                      </span>
+                      {isEditing ? (
+                        <select
+                          value={editData.currentStep || wip.currentStep}
+                          onChange={(e) => setEditData({ ...editData, currentStep: e.target.value })}
+                          className="border border-orange-300 bg-orange-50 rounded p-1.5 text-[11px] font-black text-orange-700 outline-none focus:border-orange-500"
+                        >
+                          {rollbackSteps.map((step) => (
+                            <option key={step.value} value={step.value}>
+                              {step.value === wip.currentStep ? `현재: ${step.label}` : `↩ ${step.label}`}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className={`px-2 py-1 border rounded text-[10px] font-bold ${wip.currentStep.includes("heating") ? "bg-orange-50 text-orange-700" : "bg-white text-slate-600"}`}>
+                          {WIP_STEPS.find((s) => s.value === wip.currentStep)?.label || "대기중"}
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-500 truncate max-w-[150px] text-center">{wip.details}</td>
                    <td className="px-4 py-3 text-center">
@@ -799,7 +1367,7 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
                         {isEditing ? (
                           <><button onClick={() => handleSaveWip(wip)} className="bg-orange-500 text-white p-1.5 rounded shadow-sm">저장</button><button onClick={() => setEditingId(null)} className="bg-slate-200 text-slate-700 p-1.5 rounded shadow-sm">취소</button></>
                         ) : (
-                          <><button onClick={() => { setEditingId(wip.id); setEditData(wip); }} className="text-slate-500 hover:text-indigo-600 p-1 bg-white border rounded shadow-sm">수정</button><button onClick={() => handleDeleteWip(wip.id)} className="text-red-400 hover:bg-red-500 hover:text-white p-1 bg-white border rounded shadow-sm transition-colors">삭제</button></>
+                          <><button onClick={() => { setEditingId(wip.id); setEditData({ ...wip, correctionReason: "" }); }} className="text-slate-500 hover:text-indigo-600 p-1 bg-white border rounded shadow-sm">수정</button><button onClick={() => handleDeleteWip(wip.id)} className="text-red-400 hover:bg-red-500 hover:text-white p-1 bg-white border rounded shadow-sm transition-colors">삭제</button></>
                         )}
                       </div>
                     </td>
@@ -817,7 +1385,7 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
 // ==========================================
 // Step 0: Order Management 
 // ==========================================
-function Step0OrderManagement({ orderList, masterSettings, ctx }) {
+function Step0OrderManagement({ orderList, wipList, shippingHistory, masterSettings, ctx }) {
   const [newOrder, setNewOrder] = useState({ date: getKST().split(" ")[0], color: "345 BL3", height: "25", singleWeight: masterSettings.WEIGHT_BY_HEIGHT["25"] || 628, qty: 100 });
   const [editingId, setEditingId] = useState(null);
   const [editData, setEditData] = useState({});
@@ -839,10 +1407,7 @@ function Step0OrderManagement({ orderList, masterSettings, ctx }) {
     const reqBOM = calcBOM(newOrder.color, sWeight, newOrder.qty);
     const newItem = {
       id: Date.now().toString(), orderNo: `ORD-${newOrder.date.replace(/-/g, "").slice(2)}-${Math.floor(Math.random() * 1000)}`,
-      orderDate: newOrder.date,
-      productCode: `HR-${getProductSeries(newOrder.color)}-${getProductShade(newOrder.color)}${newOrder.height}`,
-      color: normalizeProductType(newOrder.color),
-      height: newOrder.height,
+      orderDate: newOrder.date, productCode: `HR-${getProductShade(newOrder.color)}${newOrder.height}`, color: normalizeProductType(newOrder.color), height: newOrder.height,
       singleWeight: sWeight, qty: parseInt(newOrder.qty), releasedQty: 0, reqBOM, status: "대기중", createdAt: serverTimestamp(),
     };
     try { await setDoc(getDocRef("orderList", newItem.id), newItem); ctx.showToast("생산 지시가 등록되었습니다.", "success"); } catch (err) { ctx.showToast("등록 실패", "error"); }
@@ -850,29 +1415,95 @@ function Step0OrderManagement({ orderList, masterSettings, ctx }) {
 
   const handleReleaseToWIP = async (order) => {
     const inputQty = parseInt(releaseQtyMap[order.id]);
-    const alreadyReleased = order.releasedQty || 0;
-    const remaining = order.qty - alreadyReleased;
-    if (!inputQty || inputQty <= 0) return ctx.showToast("투입할 수량을 입력해주세요.");
-    if (inputQty > remaining) return ctx.showToast(`잔량보다 많이 투입할 수 없습니다.`, "error");
+    const progress = getOrderProgress(order, wipList, shippingHistory);
+    const remaining = progress.remainingQty;
 
-    ctx.showConfirm(`${getProductLabel(order.color)} ${order.height}T 내열 부품 ${inputQty}개를 소재 창고로 보내시겠습니까?`, async () => {
+    if (!inputQty || inputQty <= 0) {
+      return ctx.showToast("투입할 수량을 입력해주세요.");
+    }
+    if (inputQty > remaining) {
+      return ctx.showToast(
+        `현재 추가 생산 필요 수량은 ${remaining}EA입니다.`,
+        "error"
+      );
+    }
+
+    ctx.showConfirm(
+      `${getProductLabel(order.color)} ${order.height}T ${inputQty}개를 소재 창고로 보내시겠습니까?\n\n현재 추가 생산 필요: ${remaining}EA`,
+      async () => {
+        try {
+          const newWipId =
+            Date.now().toString() + Math.random().toString().slice(2, 6);
+
+          // releasedQty를 잔량의 근거로 사용하지 않습니다.
+          // WIP 생성 자체가 발주 확보수량으로 자동 집계됩니다.
+          await setDoc(getDocRef("wipList", newWipId), {
+            id: newWipId,
+            orderId: order.id,
+            mixLot: `MIX-${getKSTDateOnly()}-${
+              Math.floor(Math.random() * 900) + 100
+            }`,
+            type: normalizeProductType(order.color),
+            height: order.height,
+            singleWeight: order.singleWeight,
+            qty: inputQty,
+            currentStep: "step1",
+            details: `[${getKST()}] 지시분할투입 (원본:${order.orderNo})`,
+          });
+
+          setReleaseQtyMap({ ...releaseQtyMap, [order.id]: "" });
+          ctx.showToast(
+            `${inputQty}개 소재 창고로 전송 완료`,
+            "success"
+          );
+          logProcessToGoogleSheet(
+            "step0",
+            {
+              mixLot: `투입-${order.orderNo}`,
+              type: normalizeProductType(order.color),
+              height: order.height,
+              qty: inputQty,
+            },
+            "시스템",
+            { details: `[발주 투입] 원본번호: ${order.orderNo}` }
+          );
+        } catch (e) {
+          ctx.showToast("투입 처리 중 오류 발생", "error");
+        }
+      }
+    );
+  };
+
+  const handleDel = async (id) => {
+    const linkedWipCount = (wipList || []).filter(
+      (w) => String(w.orderId || "") === String(id)
+    ).length;
+    const linkedShippingCount = (shippingHistory || []).filter(
+      (h) => String(h.orderId || "") === String(id)
+    ).length;
+
+    if (linkedWipCount > 0 || linkedShippingCount > 0) {
+      return ctx.showToast(
+        "생산 또는 출고 이력이 연결된 발주는 삭제할 수 없습니다.",
+        "error"
+      );
+    }
+
+    ctx.showConfirm("삭제하시겠습니까?", async () => {
       try {
-        const newWipId = Date.now().toString();
-        const totalReleased = alreadyReleased + inputQty;
-        await setDoc(getDocRef("orderList", order.id), { ...order, releasedQty: totalReleased, status: totalReleased >= order.qty ? "생산중" : "부분투입" });
-        await setDoc(getDocRef("wipList", newWipId), {
-          id: newWipId, orderId: order.id, mixLot: `MIX-${getKSTDateOnly()}-${Math.floor(Math.random() * 900) + 100}`,
-          type: normalizeProductType(order.color), height: order.height, singleWeight: order.singleWeight, qty: inputQty, currentStep: "step1", details: `[${getKST()}] 지시분할투입 (원본:${order.orderNo})`,
-        });
-       setReleaseQtyMap({ ...releaseQtyMap, [order.id]: "" }); ctx.showToast(`${inputQty}개 소재 창고로 전송 완료`, "success");
-        logProcessToGoogleSheet("step0", { mixLot: `투입-${order.orderNo}`, type: normalizeProductType(order.color), height: order.height, qty: inputQty }, "시스템", { details: `[발주 투입] 원본번호: ${order.orderNo}` });
-      } catch (e) { ctx.showToast("투입 처리 중 오류 발생", "error"); }
+        await deleteDoc(getDocRef("orderList", id));
+        ctx.showToast("삭제됨", "success");
+      } catch (e) {
+        ctx.showToast("삭제 실패", "error");
+      }
     });
   };
 
-  const handleDel = async (id) => { ctx.showConfirm("삭제하시겠습니까?", async () => { try { await deleteDoc(getDocRef("orderList", id)); ctx.showToast("삭제됨", "success"); } catch (e) { ctx.showToast("삭제 실패", "error"); } }); };
+  const activeOrders = orderList.filter((o) => {
+    if (o.status === "취소") return false;
+    return getOrderProgress(o, wipList, shippingHistory).remainingQty > 0;
+  });
 
-  const activeOrders = orderList.filter((o) => o.status !== "완료" && o.status !== "취소" && o.status !== "생산중");
   const pbBOM = calcBOM(newOrder.color, newOrder.singleWeight || masterSettings.WEIGHT_BY_HEIGHT[newOrder.height], newOrder.qty || 0);
 
   return (
@@ -929,16 +1560,21 @@ function Step0OrderManagement({ orderList, masterSettings, ctx }) {
             </thead>
             <tbody>
               {activeOrders.map((order) => {
-                const released = order.releasedQty || 0;
-                const remaining = order.qty - released;
-                const percent = Math.floor((released / order.qty) * 100);
+                const progress = getOrderProgress(order, wipList, shippingHistory);
+                const released = progress.coveredQty;
+                const remaining = progress.remainingQty;
+                const percent = progress.percent;
                 return (
                   <tr key={order.id} className="border-b hover:bg-slate-50 transition-colors">
                     <td className="px-4 py-4"><div className="text-[10px] text-slate-400 font-mono mb-1">{order.orderNo}</div><div className="font-black text-slate-800 text-base">{getProductLabel(order.color)} {order.height}T</div></td>
                     <td className="px-4 py-4"><div className="font-bold text-slate-700">{order.qty} EA</div><div className="text-xs font-black text-orange-600">잔량: {remaining} EA</div></td>
                     <td className="px-4 py-4 min-w-[120px]">
                       <div className="flex items-center gap-2"><div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-indigo-500 transition-all" style={{ width: `${percent}%` }}></div></div><span className="text-[10px] font-black text-slate-500">{percent}%</span></div>
-                      <div className="text-[10px] font-bold text-slate-400 mt-1">{order.status}</div>
+                      <div className="text-[10px] font-bold text-slate-400 mt-1">{progress.status}</div>
+                      <div className="text-[9px] text-slate-400 mt-0.5">
+                        공정/재고 {progress.wipQty} · 출고 {progress.shippedQty}
+                        {progress.overQty > 0 ? ` · 초과생산 ${progress.overQty}` : ""}
+                      </div>
                     </td>
                     <td className="px-4 py-4">
                       <div className="flex items-center justify-center gap-2">
@@ -1197,10 +1833,30 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
                 <table className="w-full text-sm text-left bg-white border rounded-lg overflow-hidden shadow-sm">
                   <thead className="bg-slate-100 text-slate-500 text-xs uppercase"><tr><th className="p-3">입고일자</th><th className="p-3">로트 번호</th><th className="p-3 text-right">잔여 중량</th><th className="p-3 text-center">상태</th></tr></thead>
                   <tbody className="divide-y divide-slate-100">
-                    {inventory.filter((i) => i.type === detailModalType && i.weight > 0).map((item) => (
-                      <tr key={item.id} className="hover:bg-slate-50"><td className="p-3">{item.date}</td><td className="p-3 font-mono font-bold text-indigo-600">{item.lot}</td><td className="p-3 text-right font-black">{item.weight.toLocaleString()} kg</td><td className="p-3 text-center"><span className="bg-green-100 text-green-700 px-2 py-1 rounded text-[10px] font-bold">{item.status}</span></td></tr>
-                    ))}
-                    {inventory.filter((i) => i.type === detailModalType && i.weight > 0).length === 0 && <tr><td colSpan="4" className="text-center p-6 text-slate-400">잔여 로트가 없습니다.</td></tr>}
+                    {inventory
+                      .filter((i) => i.type === detailModalType)
+                      .sort((a, b) => {
+                        const aActive = Number(a.weight) > 0 ? 1 : 0;
+                        const bActive = Number(b.weight) > 0 ? 1 : 0;
+                        if (aActive !== bActive) return bActive - aActive;
+                        return String(b.date || "").localeCompare(String(a.date || ""));
+                      })
+                      .map((item) => {
+                        const isDepleted = Number(item.weight) <= 0;
+                        return (
+                          <tr key={item.id} className={isDepleted ? "bg-slate-50 opacity-60" : "hover:bg-slate-50"}>
+                            <td className="p-3">{item.date}</td>
+                            <td className="p-3 font-mono font-bold text-indigo-600">{item.lot}</td>
+                            <td className="p-3 text-right font-black">{Number(item.weight || 0).toLocaleString()} kg</td>
+                            <td className="p-3 text-center">
+                              <span className={`px-2 py-1 rounded text-[10px] font-bold ${isDepleted ? "bg-slate-200 text-slate-600" : "bg-green-100 text-green-700"}`}>
+                                {isDepleted ? (item.status || "소진") : (item.status || "사용중")}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    {inventory.filter((i) => i.type === detailModalType).length === 0 && <tr><td colSpan="4" className="text-center p-6 text-slate-400">등록된 LOT가 없습니다.</td></tr>}
                   </tbody>
                 </table>
               )}
@@ -1208,9 +1864,19 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
                 <table className="w-full text-sm text-left bg-white border rounded-lg overflow-hidden shadow-sm">
                   <thead className="bg-slate-100 text-slate-500 text-xs uppercase"><tr><th className="p-3">일시</th><th className="p-3 text-center">구분</th><th className="p-3">로트 번호</th><th className="p-3 text-right">수량</th><th className="p-3">비고</th></tr></thead>
                   <tbody className="divide-y divide-slate-100">
-                    {(inventoryHistory || []).filter((h) => h.materialType === detailModalType).map((h) => (
-                      <tr key={h.id} className="hover:bg-slate-50"><td className="p-3 text-xs text-slate-500">{h.date}</td><td className="p-3 text-center"><span className={`px-2 py-1 rounded text-[10px] font-bold ${h.type === "IN" ? "bg-blue-100 text-blue-700" : "bg-red-100 text-red-700"}`}>{h.type === "IN" ? "입고" : "출고"}</span></td><td className="p-3 font-mono font-bold text-slate-700">{h.lot}</td><td className="p-3 text-right font-black">{h.qty.toLocaleString()} kg</td><td className="p-3 text-xs text-slate-600">{h.note}</td></tr>
-                    ))}
+                    {(inventoryHistory || []).filter((h) => h.materialType === detailModalType).map((h) => {
+                      const historyLabel = h.type === "IN" ? "입고" : h.type === "ADJUST" ? "보정" : "출고";
+                      const historyClass = h.type === "IN" ? "bg-blue-100 text-blue-700" : h.type === "ADJUST" ? "bg-violet-100 text-violet-700" : "bg-red-100 text-red-700";
+                      return (
+                        <tr key={h.id} className="hover:bg-slate-50">
+                          <td className="p-3 text-xs text-slate-500">{h.date}</td>
+                          <td className="p-3 text-center"><span className={`px-2 py-1 rounded text-[10px] font-bold ${historyClass}`}>{historyLabel}</span></td>
+                          <td className="p-3 font-mono font-bold text-slate-700">{h.lot}</td>
+                          <td className={`p-3 text-right font-black ${h.type === "ADJUST" ? "text-violet-700" : ""}`}>{Number(h.qty || 0).toLocaleString()} kg</td>
+                          <td className="p-3 text-xs text-slate-600">{h.note}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               )}
@@ -1223,7 +1889,7 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
 }
 
 // ==========================================
-// Step 2: Mixing (로트 지정 차감 및 부족 수량 발주 롤백)
+// Step 2: Mixing (로트 지정 차감 및 실 생산수량 자동 반영)
 // ==========================================
 function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSettings, ctx }) {
   const pendingWip = (wipList || []).filter((w) => w.currentStep === "step2");
@@ -1276,7 +1942,7 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
     : 0;
   const shortageQty = activeJob ? Math.max(0, activeJob.qty - actualQty) : 0;
 
-  // 배합 완료 처리 (원재료 창고 실물 로트 차감 + 발주 롤백)
+  // 배합 완료 처리 (원재료 창고 실물 로트 차감 + 실 생산수량 반영)
   const handleCompleteMix = async () => {
     if (!activeJob) return ctx.showToast("진행할 배합 작업이 없습니다.", "error");
     if (!operator) return ctx.showToast("작업자 성명을 입력해주세요.", "error");
@@ -1314,27 +1980,154 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
       }
     }
 
-    try {
-      const curTime = getKST();
-      const usedLotInfoStr = activeMaterials.map((m) => {
-        const lotItem = (inventory || []).find((i) => i.id === selectedLots[m]);
-        return `${m}:${lotItem?.lot || "N/A"}(${consumedBOM[m]}kg)`;
-      }).join(", ");
+  try {
+  const curTime = getKST();
 
-      // 1. 원재료 창고 재고 차감 및 입출고 이력 기록
-      for (const mat of activeMaterials) {
-        const targetLotId = selectedLots[mat];
-        const invItem = (inventory || []).find((i) => i.id === targetLotId);
-        const remainW = Number((Number(invItem.weight) - consumedBOM[mat]).toFixed(3));
-        const histId = Date.now().toString() + Math.random().toString().slice(2, 7);
+  // Firestore Transaction:
+  // 재고 차감 + 출고이력 + WIP 이동을 한 번에 처리
+  let recordDetails = "";
 
-        if (remainW <= 0) {
-          await deleteDoc(getDocRef("inventory", targetLotId));
-        } else {
-          await setDoc(getDocRef("inventory", targetLotId), { ...invItem, weight: remainW });
+  await runTransaction(db, async (transaction) => {
+
+    // ==========================================
+    // 1. 필요한 문서 REF 준비
+    // ==========================================
+    const inventoryRefs = {};
+
+    for (const mat of activeMaterials) {
+      inventoryRefs[mat] = getDocRef(
+        "inventory",
+        selectedLots[mat]
+      );
+    }
+
+    const wipRef = getDocRef("wipList", activeJob.id);
+
+
+    // ==========================================
+    // 2. READ 단계
+    //    반드시 실제 Firestore 최신값 기준
+    // ==========================================
+
+    const inventorySnaps = {};
+
+    for (const mat of activeMaterials) {
+      inventorySnaps[mat] =
+        await transaction.get(inventoryRefs[mat]);
+    }
+
+    const wipSnap = await transaction.get(wipRef);
+
+
+    // ==========================================
+    // 3. WIP 중복 처리 방지
+    // ==========================================
+
+    if (!wipSnap.exists()) {
+      throw new Error("배합 대상 로트가 존재하지 않습니다.");
+    }
+
+    if (wipSnap.data().currentStep !== "step2") {
+      throw new Error(
+        "이미 다른 작업자가 처리한 배합 로트입니다."
+      );
+    }
+
+
+    // ==========================================
+    // 4. 실제 재고 최신값 검증
+    // ==========================================
+
+    const liveInventory = {};
+
+    for (const mat of activeMaterials) {
+
+      const snap = inventorySnaps[mat];
+
+      if (!snap.exists()) {
+        throw new Error(
+          `[${mat}] 선택한 원재료 LOT가 존재하지 않습니다.`
+        );
+      }
+
+      const invItem = snap.data();
+
+      if (
+        Number(invItem.weight) <
+        Number(consumedBOM[mat])
+      ) {
+        throw new Error(
+          `[${mat}] LOT ${invItem.lot} 재고 부족 ` +
+          `(필요 ${consumedBOM[mat]}kg / ` +
+          `현재 ${invItem.weight}kg)`
+        );
+      }
+
+      liveInventory[mat] = invItem;
+    }
+
+
+    // ==========================================
+    // 5. 사용 LOT 정보 생성
+    // ==========================================
+
+    const usedLotInfoStr = activeMaterials
+      .map((mat) => {
+        const invItem = liveInventory[mat];
+
+        return (
+          `${mat}:${invItem.lot}` +
+          `(${consumedBOM[mat]}kg)`
+        );
+      })
+      .join(", ");
+
+
+    // ==========================================
+    // 6. 원재료 실제 차감
+    // ==========================================
+
+    for (const mat of activeMaterials) {
+
+      const invItem = liveInventory[mat];
+
+      const remainW = Number(
+        (
+          Number(invItem.weight) -
+          Number(consumedBOM[mat])
+        ).toFixed(3)
+      );
+
+      // LOT 추적성 보호: 잔량이 0이 되어도 inventory 문서를 삭제하지 않습니다.
+      // 과거처럼 삭제되면 입출고 이력은 남는데 현재 LOT가 사라지는 문제가 생길 수 있습니다.
+      const safeRemainW = Math.max(0, remainW);
+      transaction.update(
+        inventoryRefs[mat],
+        {
+          weight: safeRemainW,
+          status: safeRemainW <= 0 ? "소진" : "사용중",
+          lastUsedAt: curTime
         }
+      );
 
-        await setDoc(getDocRef("inventoryHistory", histId), {
+
+      // ----------------------------------------
+      // 출고 이력 생성
+      // ----------------------------------------
+
+      const histId =
+        Date.now().toString() +
+        Math.random().toString().slice(2, 7);
+
+      const histRef =
+        getDocRef(
+          "inventoryHistory",
+          histId
+        );
+
+      transaction.set(
+        histRef,
+        {
           id: histId,
           date: curTime.slice(0, 16),
           type: "OUT",
@@ -1343,46 +2136,82 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
           qty: consumedBOM[mat],
           note: `배합투입(${activeJob.mixLot})`,
           createdAt: serverTimestamp()
-        });
-      }
-
-      // 2. 원료 부족 시 발주 관리(Step 0)로 잔여 수량 롤백
-      if (isShortageMode && shortageQty > 0 && activeJob.orderId) {
-        const targetOrder = (orderList || []).find((o) => o.id === activeJob.orderId);
-        if (targetOrder) {
-          const newReleasedQty = Math.max(0, (targetOrder.releasedQty || targetOrder.qty) - shortageQty);
-          await setDoc(getDocRef("orderList", activeJob.orderId), {
-            ...targetOrder,
-            releasedQty: newReleasedQty,
-            status: newReleasedQty === 0 ? "대기중" : (newReleasedQty >= targetOrder.qty ? "생산중" : "부분투입")
-          });
         }
-      }
+      );
+    }
 
-      // 3. WIP 로트 업데이트 및 다음 공정(1차 성형) 이관
-      const shortageNote = isShortageMode ? ` [원료부족 부분배합: ${shortageQty}EA 발주 롤백]` : "";
-      const recordDetails = `[${curTime}] [배합완료] 투입로트(${usedLotInfoStr})${shortageNote} | 담당:${operator} ${specialNote ? `[메모:${specialNote}]` : ""}`;
+    // ==========================================
+    // 7. WIP → Step 3 (실 생산수량이 발주 잔량에 자동 반영)
 
-      await setDoc(getDocRef("wipList", activeJob.id), {
-        ...activeJob,
+    // ==========================================
+
+    const shortageNote =
+      isShortageMode
+        ? ` [원료부족 부분배합: ${shortageQty}EA 추가 생산 필요 자동 반영]`
+        : "";
+
+    recordDetails =
+      `[${curTime}] [배합완료] ` +
+      `투입로트(${usedLotInfoStr})` +
+      `${shortageNote} | 담당:${operator} ` +
+      `${specialNote ? `[메모:${specialNote}]` : ""}`;
+
+    const currentWip = wipSnap.data();
+
+    transaction.update(
+      wipRef,
+      {
         qty: finalProducedQty,
         weight: finalMixedWeight.toFixed(3),
         currentStep: "step3",
-        details: `${activeJob.details || ""}\n${recordDetails}`
-      });
+        details:
+          `${currentWip.details || ""}\n` +
+          recordDetails
+      }
+    );
+  });
 
-      setOperator("");
-      setSpecialNote("");
-      setIsShortageMode(false);
-      setCompletedBatches("");
-      setResidualGrams("");
-      setSelectedLots({});
-      ctx.showToast(`배합 완료! ${finalProducedQty}EA 1차 성형으로 이관되었습니다.`, "success");
-      logProcessToGoogleSheet("step2", { ...activeJob, qty: finalProducedQty }, operator, { details: recordDetails });
-    } catch (err) {
-      console.error("배합 처리 오류:", err);
-      ctx.showToast(`배합 처리 중 오류 발생: ${err.message || err}`, "error");
+
+  // ==========================================
+  // Transaction 성공 이후 화면 초기화
+  // ==========================================
+
+  setOperator("");
+  setSpecialNote("");
+  setIsShortageMode(false);
+  setCompletedBatches("");
+  setResidualGrams("");
+  setSelectedLots({});
+
+  ctx.showToast(
+    `배합 완료! ${finalProducedQty}EA 1차 성형으로 이관되었습니다.`,
+    "success"
+  );
+
+  logProcessToGoogleSheet(
+    "step2",
+    {
+      ...activeJob,
+      qty: finalProducedQty
+    },
+    operator,
+    {
+      details: recordDetails
     }
+  );
+
+} catch (err) {
+
+  console.error(
+    "배합 처리 오류:",
+    err
+  );
+
+  ctx.showToast(
+    `배합 처리 중 오류 발생: ${err.message || err}`,
+    "error"
+  );
+}
   };
 
   return (
@@ -1416,7 +2245,7 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
               <Cylinder className="w-4 h-4 mr-2" /> 정상 전체 배합 (15kg 기준)
             </button>
             <button onClick={() => setIsShortageMode(true)} className={`flex-1 py-4 text-sm font-bold flex items-center justify-center ${isShortageMode ? "bg-orange-50 text-orange-700 border-b-2 border-orange-600" : "text-slate-500"}`}>
-              <Split className="w-4 h-4 mr-2" /> 원료 부족 부분 배합 (발주 자동 롤백)
+              <Split className="w-4 h-4 mr-2" /> 원료 부족 부분 배합 (추가 생산 자동 반영)
             </button>
           </div>
 
@@ -1495,7 +2324,7 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
               </>
             ) : (
               <div className="bg-orange-50 border border-orange-200 rounded-2xl p-6 mb-8">
-                <div className="mb-6"><h4 className="text-lg font-black text-orange-800 flex items-center mb-1"><AlertCircle className="w-5 h-5 mr-2 text-orange-500" /> 원료 부족 시 실배합량 입력 (자동 롤백)</h4><p className="text-xs text-orange-600 font-bold">실제로 배합 완료된 통 수와 마지막 잔여 분말의 양을 입력하면 실 생산수량이 재계산되고 부족량은 발주관리로 반환됩니다.</p></div>
+                <div className="mb-6"><h4 className="text-lg font-black text-orange-800 flex items-center mb-1"><AlertCircle className="w-5 h-5 mr-2 text-orange-500" /> 원료 부족 시 실배합량 입력 (자동 롤백)</h4><p className="text-xs text-orange-600 font-bold">실제로 배합 완료된 통 수와 마지막 잔여 분말의 양을 입력하면 실 생산수량이 재계산되고 부족량은 발주관리의 추가 생산 필요 수량에 자동 반영됩니다.</p></div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6 bg-white p-6 rounded-xl border border-orange-200 mb-6">
                   <div>
@@ -1517,7 +2346,7 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                   <div className="bg-white border-2 border-orange-300 rounded-xl p-4 text-center"><div className="text-xs font-bold text-slate-500 mb-1">실제 배합 완료 중량</div><div className="text-2xl font-black text-indigo-700">{actualMixedTotalKg.toFixed(3)} kg</div></div>
                   <div className="bg-white border-2 border-emerald-300 rounded-xl p-4 text-center"><div className="text-xs font-bold text-slate-500 mb-1">실제 생산 진행 수량</div><div className="text-2xl font-black text-emerald-600">{actualQty} EA</div></div>
-                  <div className="bg-white border-2 border-red-300 rounded-xl p-4 text-center"><div className="text-xs font-bold text-slate-500 mb-1">발주관리 자동 롤백 수량</div><div className="text-2xl font-black text-red-600">{shortageQty} EA</div></div>
+                  <div className="bg-white border-2 border-red-300 rounded-xl p-4 text-center"><div className="text-xs font-bold text-slate-500 mb-1">추가 생산 필요 수량</div><div className="text-2xl font-black text-red-600">{shortageQty} EA</div></div>
                 </div>
               </div>
             )}
@@ -2798,10 +3627,6 @@ function Step8Packaging({ wipList, orderList, ctx }) {
         details: `${wip.details || ""}\n[${getKST()}] [포장완료] 담당: ${data.operator} [수축률: ${wip.shrinkageRate}]${defectStr}`,
       });
 
-      if (wip.orderId) {
-        const targetOrder = (orderList || []).find((o) => o.id === wip.orderId);
-        if (targetOrder) await setDoc(getDocRef("orderList", wip.orderId), { ...targetOrder, status: "생산완료" });
-      }
       ctx.showToast("포장 및 수축률 기록 완료", "success");
       logProcessToGoogleSheet("step8", { ...wip, qty: wip.qty - defectQty }, data.operator, { defects: defectQty, defectReason: data.defectReason || "-", measurements: `S.F:${wip.shrinkageRate}`, details: data.specialNote || "-" });
     } catch (err) { console.error(err); ctx.showToast("오류 발생", "error"); }
@@ -2815,10 +3640,7 @@ function Step8Packaging({ wipList, orderList, ctx }) {
     const defectQty = parseInt(data.defects) || 0;
     const finalQty = Math.max(0, wip.qty - defectQty);
     const finalLot = `F${getKSTDateOnly().slice(-5)}${wip.id.slice(-2)}`;
-    const productType = getProductLabel(wip.type);
-    const productSeries = getProductSeries(wip.type);
-    const productShade = getProductShade(wip.type);
-    const productName = `Z1100VT${productShade}${wip.height}`;
+    const productName = `Z1100VT${getProductShade(wip.type)}${wip.height}`;
     const sizeDisplay = `Φ98 x ${wip.height}mm`;
     
     const s = Number(wip.shrinkageRate);
@@ -2827,7 +3649,7 @@ function Step8Packaging({ wipList, orderList, ctx }) {
     try {
       const database = getFirestore();
       await addDoc(collection(database, "print-queue"), {
-        productName, productType, series: productSeries, color: productShade, height: wip.height, lotNumber: finalLot, shrinkage: wip.shrinkageRate, scaleFactor: calculatedScaleFactor,
+        productName, color: getProductShade(wip.type), height: wip.height, lotNumber: finalLot, shrinkage: wip.shrinkageRate, scaleFactor: calculatedScaleFactor,
         mfgDate: getKST().split(" ")[0], size: sizeDisplay, quantity: finalQty, status: "pending", createdAt: serverTimestamp(),
       });
       ctx.showToast("라벨 출력 명령 전송 완료! 🖨️", "success");
@@ -2877,29 +3699,98 @@ function Step9FinishedGoods({ wipList, shippingHistory, orderList, ctx }) {
   const handleShip = async (wip) => {
     const d = shipData[wip.id] || {};
     const safeQty = parseInt(d.qty);
-    if (isNaN(safeQty) || safeQty <= 0) return ctx.showToast("출고 수량을 올바른 숫자로 입력해주세요.", "error");
-    if (!d.destination || !d.operator) return ctx.showToast("출고처와 담당자를 모두 입력해주세요.", "error");
 
-    ctx.showConfirm("출고 처리하시겠습니까?", async () => {
-      try {
-        const hid = Date.now().toString();
-        await setDoc(getDocRef("shippingHistory", hid), {
-          id: hid, orderId: wip.orderId || "", lot: wip.mixLot, type: getProductLabel(wip.type), height: wip.height, weight: wip.weight || "", 
-          qty: safeQty, destination: d.destination, operator: d.operator, date: getKST().slice(0, 16), details: wip.details || "", createdAt: serverTimestamp(), 
-        });
+    if (isNaN(safeQty) || safeQty <= 0) {
+      return ctx.showToast(
+        "출고 수량을 올바른 숫자로 입력해주세요.",
+        "error"
+      );
+    }
+    if (!d.destination || !d.operator) {
+      return ctx.showToast(
+        "출고처와 담당자를 모두 입력해주세요.",
+        "error"
+      );
+    }
+    if (safeQty > Number(wip.qty)) {
+      return ctx.showToast(
+        `현재고 ${wip.qty}EA보다 많이 출고할 수 없습니다.`,
+        "error"
+      );
+    }
 
-        if (wip.orderId) {
-          const targetOrder = (orderList || []).find((o) => o.id === wip.orderId);
-          if (targetOrder) await setDoc(getDocRef("orderList", wip.orderId), { ...targetOrder, status: "출고완료" });
+    ctx.showConfirm(
+      `${wip.mixLot} ${safeQty}EA를 출고 처리하시겠습니까?`,
+      async () => {
+        try {
+          const hid =
+            Date.now().toString() + Math.random().toString().slice(2, 6);
+          const curTime = getKST();
+
+          await runTransaction(db, async (transaction) => {
+            const wipRef = getDocRef("wipList", wip.id);
+            const liveSnap = await transaction.get(wipRef);
+
+            if (!liveSnap.exists()) {
+              throw new Error("이미 출고되었거나 삭제된 완제품입니다.");
+            }
+
+            const live = liveSnap.data();
+            const liveQty = Number(live.qty) || 0;
+
+            if (live.currentStep !== "done") {
+              throw new Error("완제품 창고에 있는 제품만 출고할 수 있습니다.");
+            }
+            if (safeQty > liveQty) {
+              throw new Error(
+                `현재 최신 재고는 ${liveQty}EA입니다. 출고 수량을 다시 확인해주세요.`
+              );
+            }
+
+            transaction.set(getDocRef("shippingHistory", hid), {
+              id: hid,
+              orderId: live.orderId || "",
+              lot: live.mixLot,
+              type: live.type,
+              height: live.height,
+              weight: live.weight || "",
+              qty: safeQty,
+              destination: d.destination,
+              operator: d.operator,
+              date: curTime.slice(0, 16),
+              details: live.details || "",
+              createdAt: serverTimestamp(),
+            });
+
+            const remainQty = liveQty - safeQty;
+            if (remainQty <= 0) {
+              transaction.delete(wipRef);
+            } else {
+              transaction.update(wipRef, { qty: remainQty });
+            }
+          });
+
+          ctx.showToast(
+            "출고 완료 — 발주 진행률에 자동 반영되었습니다.",
+            "success"
+          );
+          logProcessToGoogleSheet(
+            "step9",
+            { ...wip, qty: safeQty },
+            d.operator,
+            {
+              equipment: d.destination,
+              details: wip.details ? "이력포함출고" : "일반출고",
+            }
+          );
+        } catch (e) {
+          ctx.showToast(
+            e?.message || "출고 중 오류가 발생했습니다.",
+            "error"
+          );
         }
-
-        if (Number(wip.qty) - safeQty <= 0) await deleteDoc(getDocRef("wipList", wip.id));
-        else await setDoc(getDocRef("wipList", wip.id), { ...wip, qty: wip.qty - safeQty });
-
-        ctx.showToast("출고 및 출고완료 처리됨", "success");
-        logProcessToGoogleSheet("step9", { ...wip, qty: safeQty }, d.operator, { equipment: d.destination, details: wip.details ? "이력포함출고" : "일반출고" });
-      } catch (e) { ctx.showToast("출고 중 오류가 발생했습니다.", "error"); }
-    });
+      }
+    );
   };
 
   const inventorySummary = finishedWip.reduce((acc, curr) => {
