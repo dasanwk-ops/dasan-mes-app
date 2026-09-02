@@ -2991,17 +2991,23 @@ function Step5_5Shrinkage({ wipList, ctx }) {
     1: { step: 0, operator: "", memo: "", slotData: {} },
     2: { step: 0, operator: "", memo: "", slotData: {} }
   });
+  const shrinkDesksRef = useRef(shrinkDesks);
 
   useEffect(() => {
     const db = getFirestore();
     const unsub = onSnapshot(getDocRef("equipment", "shrinkDesks"), (docSnap) => {
-      if (docSnap.exists()) {
-        const loaded = docSnap.data();
-        setShrinkDesks({
-          1: { step: 0, operator: "", memo: "", slotData: {}, ...loaded[1] },
-          2: { step: 0, operator: "", memo: "", slotData: {}, ...loaded[2] }
-        });
-      } else {
+    if (docSnap.exists()) {
+  const loaded = docSnap.data();
+
+  const nextDesks = {
+    1: { step: 0, operator: "", memo: "", slotData: {}, ...loaded[1] },
+    2: { step: 0, operator: "", memo: "", slotData: {}, ...loaded[2] }
+  };
+
+  shrinkDesksRef.current = nextDesks;
+  setShrinkDesks(nextDesks);
+}
+    else {
         setDoc(getDocRef("equipment", "shrinkDesks"), {
           1: { step: 0, operator: "", memo: "", slotData: {} },
           2: { step: 0, operator: "", memo: "", slotData: {} }
@@ -3011,11 +3017,22 @@ function Step5_5Shrinkage({ wipList, ctx }) {
     return () => unsub();
   }, []);
 
-  const updateDesk = async (fid, newData) => {
-    const updatedDesks = cloneDeep(shrinkDesks);
-    updatedDesks[fid] = newData;
-    await setDoc(getDocRef("equipment", "shrinkDesks"), updatedDesks);
-  };
+ const updateDesk = async (fid, newData) => {
+  const updatedDesks = cloneDeep(shrinkDesksRef.current);
+
+  updatedDesks[fid] = newData;
+
+  // 화면 및 검사용 데이터를 즉시 갱신
+  shrinkDesksRef.current = updatedDesks;
+  setShrinkDesks(updatedDesks);
+
+  // 해당 측정대 데이터만 Firebase에 병합 저장
+  await setDoc(
+    getDocRef("equipment", "shrinkDesks"),
+    { [fid]: newData },
+    { merge: true }
+  );
+};
 
   const [alertModal, setAlertModal] = useState({ isOpen: false, message: "", type: "info" });
   const [lotSplitModal, setLotSplitModal] = useState({ isOpen: false, fid: null, lotsToSplit: [], lotsToMerge: [], newSlotDataCache: null });
@@ -3030,12 +3047,12 @@ function Step5_5Shrinkage({ wipList, ctx }) {
   ];
 
   const handleDeskInfo = async (fid, field, val) => {
-    const d = shrinkDesks[fid] || {};
+    const d = shrinkDesksRef.current[fid] || {};
     await updateDesk(fid, { ...d, [field]: val });
   };
 
   const addMeasurement = async (fid, slotId) => {
-    const d = shrinkDesks[fid] || {};
+    const d = shrinkDesksRef.current[fid] || {};
     const newData = cloneDeep(d.slotData);
     if (newData[slotId].measurements.length >= 5) return; 
     newData[slotId].measurements.push({ preArea: "", postArea: "", calcShrink: "", calcExpand: "" });
@@ -3043,14 +3060,14 @@ function Step5_5Shrinkage({ wipList, ctx }) {
   };
 
   const removeMeasurement = async (fid, slotId, idx) => {
-    const d = shrinkDesks[fid] || {};
+   const d = shrinkDesksRef.current[fid] || {};
     const newData = cloneDeep(d.slotData);
     newData[slotId].measurements = newData[slotId].measurements.filter((_, i) => i !== idx);
     await updateDesk(fid, { ...d, slotData: newData });
   };
 
   const handleAreaInput = async (fid, slotId, idx, field, val) => {
-    const d = shrinkDesks[fid] || {};
+    const d = shrinkDesksRef.current[fid] || {};
     const newData = cloneDeep(d.slotData);
     const m = newData[slotId].measurements[idx];
     m[field] = val;
@@ -3075,7 +3092,7 @@ function Step5_5Shrinkage({ wipList, ctx }) {
   };
 
   const confirmPreSintering = async (fid) => {
-    const d = shrinkDesks[fid] || {};
+   const d = shrinkDesksRef.current[fid] || {};
     if (Object.keys(d.slotData || {}).length === 0) return;
 
     const hasEmptyPreArea = Object.values(d.slotData).some(s => s.measurements.some(m => !m.preArea));
@@ -3088,13 +3105,13 @@ function Step5_5Shrinkage({ wipList, ctx }) {
   };
 
   const unlockPreSintering = async (fid) => {
-    const d = shrinkDesks[fid] || {};
+const d = shrinkDesksRef.current[fid] || {};
     await updateDesk(fid, { ...d, step: 1 });
   };
 
   const analyzeAndSaveLots = async (fid) => {
     try {
-      const d = shrinkDesks[fid] || {};
+      const d = shrinkDesksRef.current[fid] || {};
       if (!d.operator || d.operator.trim() === "") {
         return setAlertModal({ isOpen: true, message: "담당자 성명을 입력해주세요.", type: "warning" });
       }
