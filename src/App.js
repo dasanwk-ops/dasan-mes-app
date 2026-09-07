@@ -3872,22 +3872,23 @@ nextProcessLogs.push({
                       return (
                         <div key={slot.id} className={`relative border-2 rounded-xl p-3 flex flex-col justify-start bg-white shadow-sm transition-all ${slotBorder}`}>
                           
-                          <div className="flex justify-between items-center mb-3">
-                           <div className="flex items-center gap-2">
-  <span className="px-2 py-1 rounded text-xs font-black bg-slate-800 text-white">
-    {id}호기
-  </span>
+                         <div className="flex justify-between items-center mb-3">
+  <div className="flex items-center gap-2">
+    <span className="px-2 py-1 rounded text-xs font-black bg-slate-800 text-white">
+      {id}호기
+    </span>
 
-  <span className={`px-2 py-1 rounded text-xs font-black ${titleBg}`}>
-    {slot.label}
-  </span>
+    <span className={`px-2 py-1 rounded text-xs font-black ${titleBg}`}>
+      {slot.label}
+    </span>
 
-  <span className="text-xs font-bold text-slate-500">
-    수량: {sData.qty}개
-  </span>
+    <span className="text-xs font-bold text-slate-500">
+      수량: {sData.qty}개
+    </span>
+  </div>
 </div>
-                          
-                          <div className="text-center mb-3">
+
+<div className="text-center mb-3">
                             <div className="text-[10px] text-slate-400 font-bold bg-slate-100 inline-block px-2 py-0.5 rounded-full mb-1">{sData.mixLot.slice(-6)}</div>
                             <div className="font-black text-slate-800 text-lg">{getProductLabel(sData.type)} {sData.height}T</div>
                           </div>
