@@ -44,7 +44,7 @@ const syncToGoogleSheets = async (
   ctx
 ) => {
   const APPS_SCRIPT_URL =
-    "https://script.google.com/macros/s/AKfycbxFqyQaps_suzkAmQnOgDDOU_A1p--lmvAIOLZEo8LSPIAQ5mVLofzfFZo0Rmvq7LI7DA/exec";
+   "https://script.google.com/macros/s/AKfycbwSFCG4atzwDP7QNKtI-DtAVpiNyWwVgINjPTS4NBmKnHPeehNJDAhQtMGaZR1jQL-Ulw/exec";
 
   // ==========================================
   // 1. 완료 LOT + 출고 LOT 통합
@@ -359,7 +359,7 @@ const logProcessToGoogleSheet = async (
   extraData = {}
 ) => {
   const APPS_SCRIPT_URL =
-    "https://script.google.com/macros/s/AKfycbxFqyQaps_suzkAmQnOgDDOU_A1p--lmvAIOLZEo8LSPIAQ5mVLofzfFZo0Rmvq7LI7DA/exec";
+    "https://script.google.com/macros/s/AKfycbwSFCG4atzwDP7QNKtI-DtAVpiNyWwVgINjPTS4NBmKnHPeehNJDAhQtMGaZR1jQL-Ulw/exec";
 
   try {
     const payload = {
