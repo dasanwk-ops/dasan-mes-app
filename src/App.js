@@ -3859,7 +3859,9 @@ nextProcessLogs.push({
                       if (isEmpty) {
                         return (
                           <div key={slot.id} className="border-2 border-dashed border-slate-300 rounded-xl p-2 min-h-[60px] flex items-center justify-center bg-white/50">
-                            <span className="text-xs text-slate-400 font-bold">{slot.label} (비어있음)</span>
+                           <span className="text-xs text-slate-400 font-bold">
+  {id}호기 · {slot.label} (비어있음)
+</span>
                           </div>
                         );
                       }
@@ -3871,11 +3873,19 @@ nextProcessLogs.push({
                         <div key={slot.id} className={`relative border-2 rounded-xl p-3 flex flex-col justify-start bg-white shadow-sm transition-all ${slotBorder}`}>
                           
                           <div className="flex justify-between items-center mb-3">
-                            <div className="flex items-center gap-2">
-                                <span className={`px-2 py-1 rounded text-xs font-black ${titleBg}`}>{slot.label}</span>
-                                <span className="text-xs font-bold text-slate-500">수량: {sData.qty}개</span>
-                            </div>
-                          </div>
+                           <div className="flex items-center gap-2">
+  <span className="px-2 py-1 rounded text-xs font-black bg-slate-800 text-white">
+    {id}호기
+  </span>
+
+  <span className={`px-2 py-1 rounded text-xs font-black ${titleBg}`}>
+    {slot.label}
+  </span>
+
+  <span className="text-xs font-bold text-slate-500">
+    수량: {sData.qty}개
+  </span>
+</div>
                           
                           <div className="text-center mb-3">
                             <div className="text-[10px] text-slate-400 font-bold bg-slate-100 inline-block px-2 py-0.5 rounded-full mb-1">{sData.mixLot.slice(-6)}</div>
