@@ -3142,7 +3142,15 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
            Object.entries(slotData).forEach(([slotId, s]) => {
               newShrinkSlotData[slotId] = {
                   wipId: s.wipId, mixLot: s.mixLot, type: s.type, height: s.height, qty: s.qty,
-                  measurements: [{ preArea: "", postArea: "", calcShrink: "", calcExpand: "" }]
+                  measurements: [
+  {
+    position: "",
+    preArea: "",
+    postArea: "",
+    calcShrink: "",
+    calcExpand: ""
+  }
+]
               };
            });
            currentDesks[fid] = {
@@ -3401,6 +3409,31 @@ function Step5_5Shrinkage({ wipList, ctx }) {
     { id: "L2", label: "좌측 2층" }, { id: "R2", label: "우측 2층" },
     { id: "L1", label: "좌측 1층" }, { id: "R1", label: "우측 1층" }
   ];
+  const buildSpecimenMeasurementText = (
+  fid,
+  slotIds,
+  slotData
+) => {
+  return slotIds
+    .flatMap((sId) => {
+      const targetSlot = slotData?.[sId];
+
+      if (!targetSlot) return [];
+
+      const slotLabel =
+        slots.find((s) => s.id === sId)?.label || sId;
+
+      return (targetSlot.measurements || []).map(
+        (m, idx) =>
+          `${fid}호기/${slotLabel}/시편${idx + 1}` +
+          `/위치:${m.position || "-"}` +
+          `/소결전:${m.preArea || "-"}` +
+          `/소결후:${m.postArea || "-"}` +
+          `/수축률:${m.calcShrink || "-"}%`
+      );
+    })
+    .join(" | ");
+};
 
   const handleDeskInfo = async (fid, field, val) => {
     const d = shrinkDesksRef.current[fid] || {};
@@ -3411,7 +3444,13 @@ function Step5_5Shrinkage({ wipList, ctx }) {
     const d = shrinkDesksRef.current[fid] || {};
     const newData = cloneDeep(d.slotData);
     if (newData[slotId].measurements.length >= 5) return; 
-    newData[slotId].measurements.push({ preArea: "", postArea: "", calcShrink: "", calcExpand: "" });
+    newData[slotId].measurements.push({
+  position: "",
+  preArea: "",
+  postArea: "",
+  calcShrink: "",
+  calcExpand: ""
+});
     await updateDesk(fid, { ...d, slotData: newData });
   };
 
@@ -3451,10 +3490,22 @@ function Step5_5Shrinkage({ wipList, ctx }) {
    const d = shrinkDesksRef.current[fid] || {};
     if (Object.keys(d.slotData || {}).length === 0) return;
 
-    const hasEmptyPreArea = Object.values(d.slotData).some(s => s.measurements.some(m => !m.preArea));
-    if (hasEmptyPreArea) {
-      return setAlertModal({ isOpen: true, message: "모든 칸의 '소결 전 면적'을 입력해주세요.", type: "warning" });
-    }
+    const hasIncompleteMeasurement = Object.values(d.slotData).some(
+  s =>
+    s.measurements.some(
+      m =>
+        !String(m.position || "").trim() ||
+        !String(m.preArea || "").trim()
+    )
+);
+
+if (hasIncompleteMeasurement) {
+  return setAlertModal({
+    isOpen: true,
+    message: "모든 시편의 '위치'와 '소결 전 면적'을 입력해주세요.",
+    type: "warning"
+  });
+}
     
     await updateDesk(fid, { ...d, step: 2 });
     setAlertModal({ isOpen: true, message: "✅ 소결 전 면적이 안전하게 잠금 처리되었습니다.\n하루 뒤 소결 공정이 끝나면, 이어서 '소결 후 면적'을 입력해주세요.", type: "success" });
@@ -3601,12 +3652,20 @@ ${recordDetails}`,
 
           transaction.set(getDocRef("wipList", newId), newWip);
 
-          nextProcessLogs.push({
-            wip: newWip,
-            operator: d.operator,
-            measurements: `수축률:${m.finalShrink}%`,
-            details: d.memo || "-",
-          });
+         const specimenMeasurements =
+  buildSpecimenMeasurementText(
+    fid,
+    m.slots.map((s) => s.sId),
+    d.slotData
+  );
+
+nextProcessLogs.push({
+  wip: newWip,
+  operator: d.operator,
+  measurements:
+    `평균수축률:${m.finalShrink}% | ${specimenMeasurements}`,
+  details: d.memo || "-",
+});
         });
 
         // ------------------------------------------
@@ -3659,12 +3718,21 @@ ${recordDetails}`,
 
             transaction.set(getDocRef("wipList", newId), newWip);
 
-            nextProcessLogs.push({
-              wip: newWip,
-              operator: d.operator,
-              measurements: `수축률:${gAvg}%`,
-              details: `${d.memo || "-"} / 수축률 편차로 ${gName} 그룹 분할`,
-            });
+           const specimenMeasurements =
+  buildSpecimenMeasurementText(
+    fid,
+    sArr.map((s) => s.sId),
+    d.slotData
+  );
+
+nextProcessLogs.push({
+  wip: newWip,
+  operator: d.operator,
+  measurements:
+    `평균수축률:${gAvg}% | ${specimenMeasurements}`,
+  details:
+    `${d.memo || "-"} / 수축률 편차로 ${gName} 그룹 분할`,
+});
           });
         });
 
@@ -3741,13 +3809,13 @@ ${recordDetails}`,
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 sm:p-6 font-sans">
-      <div className="max-w-[1200px] mx-auto">
+      <div className="w-full mx-auto">
         <div className="bg-white rounded-2xl shadow-lg border-b-4 border-teal-500 mb-6 overflow-hidden flex items-center p-5">
           <Calculator className="w-8 h-8 text-teal-500 mr-3" />
           <h1 className="font-black text-2xl text-slate-800 tracking-wide">수축률 측정 및 로트 분석</h1>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 gap-8">
           {[1, 2].map(id => {
             const d = shrinkDesks[id] || { step: 0, slotData: {} };
             const hasData = Object.keys(d.slotData).length > 0;
@@ -3816,15 +3884,16 @@ ${recordDetails}`,
 
                           <div className="flex flex-col gap-2 w-full mt-auto">
                             {/* 헤더 부분 */}
-                            <div className="flex text-[9px] font-bold text-slate-500 text-center mb-1">
-                                <div className="flex-1">소결 전 면적</div>
-                                <div className="flex-1">소결 후 면적</div>
-                                <div className="w-12">수축률</div>
-                            </div>
-                       {sData.measurements.map((m, idx) => (
+                            <div className="grid grid-cols-[110px_minmax(0,1fr)_minmax(0,1fr)_70px] gap-2 text-[10px] font-bold text-slate-500 text-center mb-1">
+  <div>시편 위치</div>
+  <div>소결 전 면적</div>
+  <div>소결 후 면적</div>
+  <div>수축률</div>
+</div>
+                    {sData.measurements.map((m, idx) => (
   <div
     key={idx}
-    className="relative grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_48px] items-center gap-1 w-full animate-fade-in"
+    className="relative grid grid-cols-[110px_minmax(0,1fr)_minmax(0,1fr)_70px] items-center gap-2 w-full animate-fade-in"
   >
     {isStep1 && sData.measurements.length > 1 && (
       <button
@@ -3834,37 +3903,91 @@ ${recordDetails}`,
         ✕
       </button>
     )}
-    
+
     {isStep1 ? (
       <>
+        <select
+          value={m.position || ""}
+          onChange={(e) =>
+            handleAreaInput(
+              id,
+              slot.id,
+              idx,
+              "position",
+              e.target.value
+            )
+          }
+          className="w-full min-w-0 border border-indigo-300 rounded p-1.5 text-[11px] font-black text-indigo-800 bg-white outline-none focus:border-indigo-500"
+        >
+          <option value="">위치 선택</option>
+          <option value="문쪽">문쪽</option>
+          <option value="안쪽">안쪽</option>
+          <option value="왼쪽">왼쪽</option>
+          <option value="오른쪽">오른쪽</option>
+          <option value="가운데">가운데</option>
+        </select>
+
         <SyncInput
           type="number"
           value={m.preArea}
-          onChange={(val) => handleAreaInput(id, slot.id, idx, 'preArea', val)}
+          onChange={(val) =>
+            handleAreaInput(
+              id,
+              slot.id,
+              idx,
+              "preArea",
+              val
+            )
+          }
           placeholder="입력"
           className="w-full min-w-0 text-[11px] text-center border border-indigo-300 rounded p-1.5 font-black focus:outline-none focus:border-indigo-500 text-indigo-900"
         />
+
         <div className="w-full min-w-0 bg-slate-100 border border-slate-200 rounded p-1.5 text-center text-[10px] font-bold text-slate-400">
           대기
         </div>
-        <div className="w-12 bg-slate-50 border border-slate-200 rounded p-1.5 text-center text-[10px] font-black text-slate-400">
+
+        <div className="w-full min-w-0 bg-slate-50 border border-slate-200 rounded p-1.5 text-center text-[10px] font-black text-slate-400">
           -
         </div>
       </>
     ) : (
       <>
+        <select
+          value={m.position || ""}
+          disabled
+          className="w-full min-w-0 border border-slate-200 rounded p-1.5 text-[11px] font-black text-slate-600 bg-slate-100"
+        >
+          <option value="">미지정</option>
+          <option value="문쪽">문쪽</option>
+          <option value="안쪽">안쪽</option>
+          <option value="왼쪽">왼쪽</option>
+          <option value="오른쪽">오른쪽</option>
+          <option value="가운데">가운데</option>
+        </select>
+
         <div className="w-full min-w-0 bg-slate-100 border border-slate-200 rounded p-1.5 text-center text-[11px] font-bold text-slate-500">
           {m.preArea}
         </div>
+
         <SyncInput
           type="number"
           value={m.postArea}
-          onChange={(val) => handleAreaInput(id, slot.id, idx, 'postArea', val)}
+          onChange={(val) =>
+            handleAreaInput(
+              id,
+              slot.id,
+              idx,
+              "postArea",
+              val
+            )
+          }
           placeholder="입력"
           className="w-full min-w-0 text-[11px] text-center border border-orange-400 rounded p-1.5 font-black focus:outline-none focus:border-orange-600 text-orange-900 bg-white"
         />
-        <div className="w-12 bg-teal-50 border border-teal-200 rounded p-1.5 text-center text-[10px] font-black text-teal-700">
-          {m.calcShrink ? `${m.calcShrink}` : '-'}
+
+        <div className="w-full min-w-0 bg-teal-50 border border-teal-200 rounded p-1.5 text-center text-[10px] font-black text-teal-700">
+          {m.calcShrink ? `${m.calcShrink}` : "-"}
         </div>
       </>
     )}
