@@ -13,7 +13,7 @@ const formatKST = (date = new Date()) => {
   const get = (type) => parts.find((p) => p.type === type)?.value || "00";
   return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
 };
-const getKST = () => formatKST();
+const getKST = () => formatKST(); 
 const getKSTDateOnly = () => getKST().slice(2, 10).replace(/-/g, "");
 const cloneDeep = (value) => JSON.parse(JSON.stringify(value));
 
