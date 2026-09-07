@@ -35,80 +35,391 @@ const getProductShade = (value = "") => {
 };
 const getProductLabel = (value = "") => normalizeProductType(value);
 
-// 🚀 [글로벌 엔진] 구글 시트 데이터 전송 및 리포트 자동 생성
-const syncToGoogleSheets = async (orderList, wipList, inventoryHistory, shippingHistory, ctx) => {
-  const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxFqyQaps_suzkAmQnOgDDOU_A1p--lmvAIOLZEo8LSPIAQ5mVLofzfFZo0Rmvq7LI7DA/exec";
+// 🚀 [글로벌 엔진] 구글 시트 전체 데이터 동기화
+const syncToGoogleSheets = async (
+  orderList,
+  wipList,
+  inventoryHistory,
+  shippingHistory,
+  ctx
+) => {
+  const APPS_SCRIPT_URL =
+    "https://script.google.com/macros/s/AKfycbxFqyQaps_suzkAmQnOgDDOU_A1p--lmvAIOLZEo8LSPIAQ5mVLofzfFZo0Rmvq7LI7DA/exec";
+
+  // ==========================================
+  // 1. 완료 LOT + 출고 LOT 통합
+  // ==========================================
   const mergedLots = {};
 
-  const wipFinished = (wipList || []).filter((w) => w.currentStep === "done");
+  const wipFinished = (wipList || []).filter(
+    (w) => w.currentStep === "done"
+  );
+
   wipFinished.forEach((w) => {
-    mergedLots[w.mixLot] = { mixLot: w.mixLot, type: w.type, height: w.height, qty: Number(w.qty), details: w.details || "", shrinkageRate: w.shrinkageRate || "-" };
+    mergedLots[w.mixLot] = {
+      mixLot: w.mixLot,
+      type: w.type,
+      height: w.height,
+      qty: Number(w.qty) || 0,
+      details: w.details || "",
+      shrinkageRate: w.shrinkageRate || "-",
+    };
   });
 
   (shippingHistory || []).forEach((h) => {
     if (!mergedLots[h.lot]) {
-      mergedLots[h.lot] = { mixLot: h.lot, type: h.type, height: h.height, qty: 0, details: h.details || "", shrinkageRate: "-" };
+      mergedLots[h.lot] = {
+        mixLot: h.lot,
+        type: h.type,
+        height: h.height,
+        qty: 0,
+        details: h.details || "",
+        shrinkageRate: "-",
+      };
     }
-    mergedLots[h.lot].qty += Number(h.qty);
+
+    mergedLots[h.lot].qty += Number(h.qty) || 0;
+
     if (mergedLots[h.lot].shrinkageRate === "-") {
-      const shrinkMatch = (h.details || "").match(/\[수축률:\s*([0-9.]+)/);
-      if (shrinkMatch) mergedLots[h.lot].shrinkageRate = shrinkMatch[1];
+      const shrinkMatch = (h.details || "").match(
+        /\[수축률:\s*([0-9.]+)/
+      );
+
+      if (shrinkMatch) {
+        mergedLots[h.lot].shrinkageRate = shrinkMatch[1];
+      }
     }
   });
 
   const finishedLots = Object.values(mergedLots);
-  if (finishedLots.length === 0) {
-    if (ctx) ctx.showToast("동기화할 생산 완료/출고 데이터가 없습니다.", "error");
-    return;
-  }
 
-  const lotRecords = finishedLots.map((w) => {
-    const details = w.details || "";
-    const defectMatch = details.match(/불량\s*(\d+)개:\s*([^\]]+)/);
-    const defectQty = defectMatch ? parseInt(defectMatch[1]) : 0;
-    const defectReason = defectMatch ? defectMatch[2] : "-";
-    const dateMatch = details.match(/\[(\d{4}-\d{2}-\d{2})\s/);
-    const finishDate = dateMatch ? dateMatch[1] : getKST().split(" ")[0];
-    return [finishDate, w.mixLot, w.type, `${w.height}T`, Number(w.qty), defectQty, defectReason, w.shrinkageRate || "-", details];
-  });
+  // ==========================================
+  // 2. 생산 완료 LOT 데이터
+  // ==========================================
+  const lotRecords = finishedLots
+    .map((w) => {
+      const details = w.details || "";
 
+      const defectMatch = details.match(
+        /불량\s*(\d+)개:\s*([^\]]+)/
+      );
+
+      const defectQty = defectMatch
+        ? parseInt(defectMatch[1], 10)
+        : 0;
+
+      const defectReason = defectMatch
+        ? defectMatch[2]
+        : "-";
+
+      // 가장 마지막 공정 날짜를 완료일로 사용
+      const dateMatches = [
+        ...details.matchAll(
+          /\[(\d{4}-\d{2}-\d{2})\s/g
+        ),
+      ];
+
+      const finishDate =
+        dateMatches.length > 0
+          ? dateMatches[dateMatches.length - 1][1]
+          : getKST().split(" ")[0];
+
+      return [
+        finishDate,
+        w.mixLot,
+        getProductLabel(w.type),
+        `${w.height}T`,
+        Number(w.qty) || 0,
+        defectQty,
+        defectReason,
+        w.shrinkageRate || "-",
+        details,
+      ];
+    })
+    .sort((a, b) =>
+      String(b[0]).localeCompare(String(a[0]))
+    );
+
+  // ==========================================
+  // 3. 월별 주주 보고용 요약
+  // ==========================================
   const monthlyData = {};
+
   lotRecords.forEach((record) => {
     const month = record[0].substring(0, 7);
-    const goodQty = record[4];
-    const defQty = record[5];
-    if (!monthlyData[month]) monthlyData[month] = { total: 0, defect: 0 };
-    monthlyData[month].total += goodQty + defQty;
-    monthlyData[month].defect += defQty;
+    const goodQty = Number(record[4]) || 0;
+    const defQty = Number(record[5]) || 0;
+
+    if (!monthlyData[month]) {
+      monthlyData[month] = {
+        total: 0,
+        defect: 0,
+      };
+    }
+
+    monthlyData[month].total +=
+      goodQty + defQty;
+
+    monthlyData[month].defect +=
+      defQty;
   });
 
-  const monthlySummary = Object.keys(monthlyData).sort((a, b) => b.localeCompare(a)).map((month) => {
-    const data = monthlyData[month];
-    const defectRate = data.total > 0 ? data.defect / data.total : 0;
-    return [month, data.total, data.defect, defectRate];
-  });
+  const monthlySummary = Object.keys(monthlyData)
+    .sort((a, b) => b.localeCompare(a))
+    .map((month) => {
+      const data = monthlyData[month];
+
+      const defectRate =
+        data.total > 0
+          ? data.defect / data.total
+          : 0;
+
+      return [
+        month,
+        data.total,
+        data.defect,
+        defectRate,
+      ];
+    });
+
+  // ==========================================
+  // 4. 발주리스트
+  // ==========================================
+  const orderRows = [
+    [
+      "발주일자",
+      "발주번호",
+      "제품",
+      "두께",
+      "단중(g)",
+      "발주수량(EA)",
+      "현재 WIP(EA)",
+      "누적 출고(EA)",
+      "추가 생산 필요(EA)",
+      "진행률",
+      "상태",
+    ],
+    ...(orderList || []).map((order) => {
+      const progress = getOrderProgress(
+        order,
+        wipList,
+        shippingHistory
+      );
+
+      return [
+        order.orderDate || "",
+        order.orderNo || "",
+        getProductLabel(order.color),
+        `${order.height || ""}T`,
+        Number(order.singleWeight) || 0,
+        Number(order.qty) || 0,
+        progress.wipQty,
+        progress.shippedQty,
+        progress.remainingQty,
+        `${progress.percent}%`,
+        progress.status,
+      ];
+    }),
+  ];
+
+  // ==========================================
+  // 5. 원재료 입출고 내역
+  // ==========================================
+  const inventoryRows = [
+    [
+      "일시",
+      "구분",
+      "소재 종류",
+      "LOT",
+      "수량(kg)",
+      "보정 전(kg)",
+      "보정 후(kg)",
+      "작업자",
+      "비고",
+    ],
+    ...(inventoryHistory || []).map((h) => [
+      h.date || "",
+      h.type || "",
+      h.materialType || "",
+      h.lot || "",
+      Number(h.qty) || 0,
+      h.beforeWeight !== undefined
+        ? Number(h.beforeWeight)
+        : "",
+      h.afterWeight !== undefined
+        ? Number(h.afterWeight)
+        : "",
+      h.operator || "",
+      h.note || "",
+    ]),
+  ];
+
+  // ==========================================
+  // 6. 생산이력
+  // ==========================================
+  const productionRows = [
+    [
+      "완료일",
+      "생산 LOT",
+      "제품",
+      "두께",
+      "양품수량(EA)",
+      "불량수량(EA)",
+      "불량사유",
+      "수축률(%)",
+      "상세 공정이력",
+    ],
+    ...lotRecords,
+  ];
+
+  // ==========================================
+  // 7. 완제품 출고이력
+  // ==========================================
+  const shippingRows = [
+    [
+      "출고일시",
+      "포장 LOT",
+      "제품",
+      "두께",
+      "출고수량(EA)",
+      "출고처",
+      "담당자",
+      "발주 ID",
+      "상세이력",
+    ],
+    ...(shippingHistory || []).map((h) => [
+      h.date || "",
+      h.lot || "",
+      getProductLabel(h.type),
+      `${h.height || ""}T`,
+      Number(h.qty) || 0,
+      h.destination || "",
+      h.operator || "",
+      h.orderId || "",
+      h.details || "",
+    ]),
+  ];
+
+  // ==========================================
+  // 8. Apps Script 전송
+  // ==========================================
+  const payload = {
+    type: "FULL_SYNC",
+
+    "발주리스트": orderRows,
+    "원재료 입출고 내역": inventoryRows,
+    "생산이력": productionRows,
+    "완제품 출고이력": shippingRows,
+
+    // 주주 보고용
+    lotRecords,
+    monthlySummary,
+  };
 
   try {
-    await fetch(APPS_SCRIPT_URL, { method: "POST", mode: "no-cors", headers: { "Content-Type": "text/plain" }, body: JSON.stringify({ lotRecords, monthlySummary }) });
-    if (ctx) ctx.showToast("주주 보고용 구글 시트 동기화 완료", "success");
+    await fetch(APPS_SCRIPT_URL, {
+      method: "POST",
+      mode: "no-cors",
+      headers: {
+        "Content-Type": "text/plain",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (ctx) {
+      ctx.showToast(
+        "구글 시트 전체 동기화 완료",
+        "success"
+      );
+    }
   } catch (e) {
-    if (ctx) ctx.showToast("시트 동기화 실패", "error");
+    console.error(
+      "Google Sheets 동기화 실패:",
+      e
+    );
+
+    if (ctx) {
+      ctx.showToast(
+        "시트 동기화 실패",
+        "error"
+      );
+    }
   }
 };
 
-const logProcessToGoogleSheet = async (stepId, wipItem, operator, extraData = {}) => {
-  const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxFqyQaps_suzkAmQnOgDDOU_A1p--lmvAIOLZEo8LSPIAQ5mVLofzfFZo0Rmvq7LI7DA/exec";
+
+// ==========================================
+// PROCESS_LOG 전용 공정 로그 전송
+// FULL_SYNC와 완전히 분리되어 누적 저장됩니다.
+// ==========================================
+const logProcessToGoogleSheet = async (
+  stepId,
+  wipItem,
+  operator,
+  extraData = {}
+) => {
+  const APPS_SCRIPT_URL =
+    "https://script.google.com/macros/s/AKfycbxFqyQaps_suzkAmQnOgDDOU_A1p--lmvAIOLZEo8LSPIAQ5mVLofzfFZo0Rmvq7LI7DA/exec";
+
   try {
     const payload = {
       type: "PROCESS_LOG",
+
       data: {
-        stepId: stepId, timestamp: getKST(), lot: wipItem.mixLot || wipItem.lot || wipItem.orderNo || "N/A", product: wipItem.type ? `${wipItem.type} ${wipItem.height}T` : (wipItem.productCode || "N/A"),
-        qty: Number(wipItem.qty) || 0, defects: extraData.defects || 0, defectReason: extraData.defectReason || "-", worker: operator || "현장작업자", equipment: extraData.equipment || "-",
-        conditions: extraData.conditions || "-", measurements: extraData.measurements || "-", details: extraData.details || "-"
-      }
+        stepId: stepId,
+
+        timestamp: getKST(),
+
+        lot:
+          wipItem.mixLot ||
+          wipItem.lot ||
+          wipItem.orderNo ||
+          "N/A",
+
+        product: wipItem.type
+          ? `${getProductLabel(wipItem.type)} ${wipItem.height}T`
+          : wipItem.productCode || "N/A",
+
+        qty:
+          Number(wipItem.qty) || 0,
+
+        defects:
+          Number(extraData.defects) || 0,
+
+        defectReason:
+          extraData.defectReason || "-",
+
+        worker:
+          operator || "현장작업자",
+
+        equipment:
+          extraData.equipment || "-",
+
+        conditions:
+          extraData.conditions || "-",
+
+        measurements:
+          extraData.measurements || "-",
+
+        details:
+          extraData.details || "-",
+      },
     };
-    await fetch(APPS_SCRIPT_URL, { method: "POST", mode: "no-cors", headers: { "Content-Type": "text/plain" }, body: JSON.stringify(payload) });
-  } catch (error) { console.error(`[${stepId}] 기록 전송 실패:`, error); }
+
+    await fetch(APPS_SCRIPT_URL, {
+      method: "POST",
+      mode: "no-cors",
+      headers: {
+        "Content-Type": "text/plain",
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    console.error(
+      `[${stepId}] PROCESS_LOG 전송 실패:`,
+      error
+    );
+  }
 };
 
 // --- [Firebase Initialization] ---
