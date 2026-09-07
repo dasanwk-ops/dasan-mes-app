@@ -3821,27 +3821,55 @@ ${recordDetails}`,
                                 <div className="flex-1">소결 후 면적</div>
                                 <div className="w-12">수축률</div>
                             </div>
-                            {sData.measurements.map((m, idx) => (
-                              <div key={idx} className="relative flex items-center gap-1 w-full animate-fade-in">
-                                {isStep1 && sData.measurements.length > 1 && (
-                                  <button onClick={() => removeMeasurement(id, slot.id, idx)} className="absolute -left-2 -top-2 bg-white text-slate-400 hover:text-red-500 rounded-full w-5 h-5 flex items-center justify-center border shadow-sm text-xs font-black z-10">✕</button>
-                                )}
-                                
-                                {isStep1 ? (
-                                    <>
-                                        <SyncInput type="number" value={m.preArea} onChange={(val) => handleAreaInput(id, slot.id, idx, 'preArea', val)} placeholder="입력" className="flex-1 text-[11px] text-center border border-indigo-300 rounded p-1.5 font-black focus:outline-none focus:border-indigo-500 text-indigo-900" />
-                                        <div className="flex-1 bg-slate-100 border border-slate-200 rounded p-1.5 text-center text-[10px] font-bold text-slate-400">대기</div>
-                                        <div className="w-12 bg-slate-50 border border-slate-200 rounded p-1.5 text-center text-[10px] font-black text-slate-400">-</div>
-                                    </>
-                                ) : (
-                                    <>
-                                        <div className="flex-1 bg-slate-100 border border-slate-200 rounded p-1.5 text-center text-[11px] font-bold text-slate-500 overflow-hidden text-ellipsis">{m.preArea}</div>
-                                        <SyncInput type="number" value={m.postArea} onChange={(val) => handleAreaInput(id, slot.id, idx, 'postArea', val)} placeholder="입력" className="flex-1 text-[11px] text-center border border-orange-400 rounded p-1.5 font-black focus:outline-none focus:border-orange-600 text-orange-900 bg-white" />
-                                        <div className="w-12 bg-teal-50 border border-teal-200 rounded p-1.5 text-center text-[10px] font-black text-teal-700">{m.calcShrink ? `${m.calcShrink}` : '-'}</div>
-                                    </>
-                                )}
-                              </div>
-                            ))}
+                       {sData.measurements.map((m, idx) => (
+  <div
+    key={idx}
+    className="relative grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_48px] items-center gap-1 w-full animate-fade-in"
+  >
+    {isStep1 && sData.measurements.length > 1 && (
+      <button
+        onClick={() => removeMeasurement(id, slot.id, idx)}
+        className="absolute -left-2 -top-2 bg-white text-slate-400 hover:text-red-500 rounded-full w-5 h-5 flex items-center justify-center border shadow-sm text-xs font-black z-10"
+      >
+        ✕
+      </button>
+    )}
+    
+    {isStep1 ? (
+      <>
+        <SyncInput
+          type="number"
+          value={m.preArea}
+          onChange={(val) => handleAreaInput(id, slot.id, idx, 'preArea', val)}
+          placeholder="입력"
+          className="w-full min-w-0 text-[11px] text-center border border-indigo-300 rounded p-1.5 font-black focus:outline-none focus:border-indigo-500 text-indigo-900"
+        />
+        <div className="w-full min-w-0 bg-slate-100 border border-slate-200 rounded p-1.5 text-center text-[10px] font-bold text-slate-400">
+          대기
+        </div>
+        <div className="w-12 bg-slate-50 border border-slate-200 rounded p-1.5 text-center text-[10px] font-black text-slate-400">
+          -
+        </div>
+      </>
+    ) : (
+      <>
+        <div className="w-full min-w-0 bg-slate-100 border border-slate-200 rounded p-1.5 text-center text-[11px] font-bold text-slate-500">
+          {m.preArea}
+        </div>
+        <SyncInput
+          type="number"
+          value={m.postArea}
+          onChange={(val) => handleAreaInput(id, slot.id, idx, 'postArea', val)}
+          placeholder="입력"
+          className="w-full min-w-0 text-[11px] text-center border border-orange-400 rounded p-1.5 font-black focus:outline-none focus:border-orange-600 text-orange-900 bg-white"
+        />
+        <div className="w-12 bg-teal-50 border border-teal-200 rounded p-1.5 text-center text-[10px] font-black text-teal-700">
+          {m.calcShrink ? `${m.calcShrink}` : '-'}
+        </div>
+      </>
+    )}
+  </div>
+))}
                             {isStep1 && sData.measurements.length < 5 && <button onClick={() => addMeasurement(id, slot.id)} className="w-full border border-dashed border-slate-300 rounded py-1.5 text-[10px] font-bold text-slate-500 hover:bg-slate-100 transition-colors mt-1">+ 측정 추가</button>}
                           </div>
                         </div>
