@@ -3159,6 +3159,39 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
            transaction.set(furnaceRef, currentFurnaces);
         });
 
+        // Firestore 트랜잭션이 성공한 뒤에만 Google Sheets에 열처리 완료 로그를 남깁니다.
+        // 트랜잭션 내부에서 외부 HTTP 요청을 보내면 재시도 시 중복 기록될 수 있으므로 반드시 밖에서 실행합니다.
+        const heatProcessLogs = Object.entries(grouped).map(([wId, info]) => {
+          const originalWip = (wipList || []).find((w) => String(w.id) === String(wId));
+          const fallbackSlot = Object.values(slotData).find((s) => String(s.wipId) === String(wId)) || {};
+
+          return {
+            wip: {
+              ...(originalWip || {}),
+              mixLot: originalWip?.mixLot || fallbackSlot.mixLot || "N/A",
+              type: originalWip?.type || fallbackSlot.type || "",
+              height: originalWip?.height || fallbackSlot.height || "",
+              qty: Number(info.qty) || 0,
+            },
+            operator: f.operator || "현장작업자",
+          };
+        });
+
+        await Promise.all(
+          heatProcessLogs.map((item) =>
+            logProcessToGoogleSheet(
+              "step5",
+              item.wip,
+              item.operator,
+              {
+                equipment: `${fid}호기`,
+                conditions: `온도:${f.temp || "1050"}°C`,
+                details: f.memo || "열처리 완료",
+              }
+            )
+          )
+        );
+
         setAlertModal({ isOpen: true, message: `✅ 가동 종료!\n\n전기로가 비워졌으며, 배정되었던 위치 그대로 [수축률 측정 대기]로 이관되었습니다.`, type: "success" });
       } catch (error) {
         console.error("이관 에러:", error);
@@ -3499,83 +3532,189 @@ const d = shrinkDesksRef.current[fid] || {};
   };
 
   const finalizeProcess = async (fid, mergedLots, splitLots) => {
-    const d = shrinkDesks[fid];
+    const d = shrinkDesks[fid] || { operator: "", memo: "", slotData: {} };
     const curTime = getKST();
     const db = getFirestore();
-    
+    let processLogs = [];
+
     try {
-        await runTransaction(db, async (transaction) => {
-            // 1. [READ] 
-            const allWipIds = new Set([...mergedLots.map(m=>m.wipId), ...splitLots.flatMap(s=>s.wipId)]);
-            const wipSnaps = {};
-            for (const wId of allWipIds) {
-                const snap = await transaction.get(getDocRef("wipList", wId));
-                if(snap.exists()) wipSnaps[wId] = snap;
-            }
-            const shrinkDoc = await transaction.get(getDocRef("equipment", "shrinkDesks"));
+      await runTransaction(db, async (transaction) => {
+        // 트랜잭션이 재시도되더라도 외부 로그가 중복되지 않도록
+        // 이번 시도에서 생성될 로그 목록만 로컬 변수로 구성합니다.
+        const nextProcessLogs = [];
 
-            // 2. [WRITE]
-            for (const wId of allWipIds) {
-                if(wipSnaps[wId]) transaction.delete(wipSnaps[wId].ref); 
-            }
+        // ==========================================
+        // 1. [READ] 관련 WIP / 수축률 측정대 문서를 먼저 읽습니다.
+        // ==========================================
+        const allWipIds = new Set([
+          ...mergedLots.map((m) => m.wipId),
+          ...splitLots.map((s) => s.wipId),
+        ]);
 
-            // 통합 로트 처리
-            mergedLots.forEach(m => {
-                const snap = wipSnaps[m.wipId];
-                if (!snap) return;
-                const orig = snap.data();
-                const newId = Date.now().toString() + Math.random().toString(36).substr(2, 5);
-                const slotKeysStr = m.slots.map(s => `${fid}호기 ${s.sId}`).join(", ");
-                const totalQty = m.slots.reduce((sum, s) => sum + s.qty, 0); 
-                
-                const recordDetails = `[${curTime}] [수축률확정] 위치(${slotKeysStr}) | 수축률:${m.finalShrink}% | 담당:${d.operator}`;
-                const newWip = {
-                    ...orig, id: newId, qty: totalQty, currentStep: "step6", shrinkageRate: m.finalShrink,
-                    details: `${orig.details || ""}\n${recordDetails}`
-                };
-                transaction.set(getDocRef("wipList", newId), newWip);
-                logProcessToGoogleSheet("step5_shrink", newWip, d.operator, { measurements: `수축률:${m.finalShrink}%`, details: d.memo || "-" });
-            });
+        const wipSnaps = {};
+        for (const wId of allWipIds) {
+          const snap = await transaction.get(getDocRef("wipList", wId));
+          if (snap.exists()) wipSnaps[wId] = snap;
+        }
 
-            // 분할 로트 처리
-            splitLots.forEach(lot => {
-                const groupMap = {};
-                lot.slots.forEach(s => {
-                    if (!groupMap[s.group]) groupMap[s.group] = [];
-                    groupMap[s.group].push(s);
-                });
-                
-                Object.entries(groupMap).forEach(([gName, sArr]) => {
-                    const snap = wipSnaps[lot.wipId];
-                    if (!snap) return;
-                    const orig = snap.data();
-                    
-                    const gAvg = (sArr.reduce((sum, s) => sum + s.shrinkVal, 0) / sArr.length).toFixed(2);
-                    const newId = Date.now().toString() + Math.random().toString(36).substr(2, 5);
-                    const suffix = Object.keys(groupMap).length > 1 ? `-${gName}` : "";
-                    const newMixLot = orig.mixLot + suffix;
-                    const slotKeysStr = sArr.map(s => `${fid}호기 ${s.sId}`).join(", ");
-                    const totalQty = sArr.reduce((sum, s) => sum + s.qty, 0); 
+        const shrinkRef = getDocRef("equipment", "shrinkDesks");
+        const shrinkDoc = await transaction.get(shrinkRef);
 
-                    const recordDetails = `[${curTime}] [수축률확정] 위치(${slotKeysStr}) | 수축률:${gAvg}% | 분리됨 | 담당:${d.operator}`;
-                    const newWip = {
-                        ...orig, id: newId, mixLot: newMixLot, qty: totalQty, currentStep: "step6", shrinkageRate: gAvg,
-                        details: `${orig.details || ""}\n${recordDetails}`
-                    };
-                    transaction.set(getDocRef("wipList", newId), newWip);
-                });
-            });
+        // ==========================================
+        // 2. [WRITE] 기존 WIP를 제거하고 확정된 WIP를 새로 만듭니다.
+        // ==========================================
+        for (const wId of allWipIds) {
+          if (wipSnaps[wId]) transaction.delete(wipSnaps[wId].ref);
+        }
 
-            // 데스크 비우기 (작업 완료)
-            const currentDesks = shrinkDoc.exists() ? shrinkDoc.data() : {};
-            currentDesks[fid] = { step: 0, operator: "", memo: "", slotData: {} };
-            transaction.set(getDocRef("equipment", "shrinkDesks"), currentDesks);
+        // ------------------------------------------
+        // A. 수축률이 하나로 확정되는 통합 LOT
+        // ------------------------------------------
+        mergedLots.forEach((m) => {
+          const snap = wipSnaps[m.wipId];
+          if (!snap) return;
+
+          const orig = snap.data();
+          const newId =
+            Date.now().toString() + Math.random().toString(36).substr(2, 5);
+          const slotKeysStr = m.slots
+            .map((s) => `${fid}호기 ${s.sId}`)
+            .join(", ");
+          const totalQty = m.slots.reduce(
+            (sum, s) => sum + (Number(s.qty) || 0),
+            0
+          );
+
+          const recordDetails =
+            `[${curTime}] [수축률확정] 위치(${slotKeysStr}) | ` +
+            `수축률:${m.finalShrink}% | 담당:${d.operator}`;
+
+          const newWip = {
+            ...orig,
+            id: newId,
+            qty: totalQty,
+            currentStep: "step6",
+            shrinkageRate: m.finalShrink,
+            details: `${orig.details || ""}
+${recordDetails}`,
+          };
+
+          transaction.set(getDocRef("wipList", newId), newWip);
+
+          nextProcessLogs.push({
+            wip: newWip,
+            operator: d.operator,
+            measurements: `수축률:${m.finalShrink}%`,
+            details: d.memo || "-",
+          });
         });
-        
-        ctx.showToast("수축률 분석 및 검수 이관 완료", "success");
-        setLotSplitModal({ isOpen: false, fid: null, lotsToSplit: [], lotsToMerge: [] });
+
+        // ------------------------------------------
+        // B. 수축률 편차로 A/B 등으로 분할되는 LOT
+        // ------------------------------------------
+        splitLots.forEach((lot) => {
+          const groupMap = {};
+
+          lot.slots.forEach((s) => {
+            if (!groupMap[s.group]) groupMap[s.group] = [];
+            groupMap[s.group].push(s);
+          });
+
+          Object.entries(groupMap).forEach(([gName, sArr]) => {
+            const snap = wipSnaps[lot.wipId];
+            if (!snap || sArr.length === 0) return;
+
+            const orig = snap.data();
+            const gAvg = (
+              sArr.reduce((sum, s) => sum + (Number(s.shrinkVal) || 0), 0) /
+              sArr.length
+            ).toFixed(2);
+
+            const newId =
+              Date.now().toString() + Math.random().toString(36).substr(2, 5);
+            const suffix = Object.keys(groupMap).length > 1 ? `-${gName}` : "";
+            const newMixLot = `${orig.mixLot || ""}${suffix}`;
+            const slotKeysStr = sArr
+              .map((s) => `${fid}호기 ${s.sId}`)
+              .join(", ");
+            const totalQty = sArr.reduce(
+              (sum, s) => sum + (Number(s.qty) || 0),
+              0
+            );
+
+            const recordDetails =
+              `[${curTime}] [수축률확정] 위치(${slotKeysStr}) | ` +
+              `수축률:${gAvg}% | 분리됨(${gName}) | 담당:${d.operator}`;
+
+            const newWip = {
+              ...orig,
+              id: newId,
+              mixLot: newMixLot,
+              qty: totalQty,
+              currentStep: "step6",
+              shrinkageRate: gAvg,
+              details: `${orig.details || ""}
+${recordDetails}`,
+            };
+
+            transaction.set(getDocRef("wipList", newId), newWip);
+
+            nextProcessLogs.push({
+              wip: newWip,
+              operator: d.operator,
+              measurements: `수축률:${gAvg}%`,
+              details: `${d.memo || "-"} / 수축률 편차로 ${gName} 그룹 분할`,
+            });
+          });
+        });
+
+        // ------------------------------------------
+        // C. 수축률 측정대 초기화
+        // ------------------------------------------
+        const currentDesks = shrinkDoc.exists() ? shrinkDoc.data() : {};
+        currentDesks[fid] = {
+          step: 0,
+          operator: "",
+          memo: "",
+          slotData: {},
+        };
+        transaction.set(shrinkRef, currentDesks);
+
+        // 성공한 트랜잭션 시도의 로그 목록만 바깥으로 전달합니다.
+        processLogs = nextProcessLogs;
+      });
+
+      // Firestore commit 성공 이후 Google Sheets 기록.
+      // 따라서 transaction 재시도가 발생해도 Sheets 중복 기록이 생기지 않습니다.
+      await Promise.all(
+        processLogs.map((log) =>
+          logProcessToGoogleSheet(
+            "step5_shrink",
+            log.wip,
+            log.operator,
+            {
+              measurements: log.measurements,
+              details: log.details,
+            }
+          )
+        )
+      );
+
+      ctx.showToast("수축률 분석 및 검수 이관 완료", "success");
+      setLotSplitModal({
+        isOpen: false,
+        fid: null,
+        lotsToSplit: [],
+        lotsToMerge: [],
+      });
     } catch (e) {
-        setAlertModal({ isOpen: true, message: `이관 중 오류가 발생했습니다.\n사유: ${e.message}`, type: "error" });
+      console.error("수축률 확정/이관 오류:", e);
+      setAlertModal({
+        isOpen: true,
+        message: `이관 중 오류가 발생했습니다.
+사유: ${e.message}`,
+        type: "error",
+      });
     }
   };
 
