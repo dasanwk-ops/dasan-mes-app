@@ -398,11 +398,14 @@ const logProcessToGoogleSheet = async (
         conditions:
           extraData.conditions || "-",
 
-        measurements:
-          extraData.measurements || "-",
+       measurements:
+  extraData.measurements || "-",
 
-        details:
-          extraData.details || "-",
+materials:
+  extraData.materials || {},
+
+details:
+  extraData.details || "-",
       },
     };
 
@@ -2337,9 +2340,9 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
   // Firestore Transaction:
   // 재고 차감 + 출고이력 + WIP 이동을 한 번에 처리
   let recordDetails = "";
+let usedMaterials = {};
 
-  await runTransaction(db, async (transaction) => {
-
+await runTransaction(db, async (transaction) => {
     // ==========================================
     // 1. 필요한 문서 REF 준비
     // ==========================================
@@ -2422,16 +2425,24 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
     // 5. 사용 LOT 정보 생성
     // ==========================================
 
-    const usedLotInfoStr = activeMaterials
-      .map((mat) => {
-        const invItem = liveInventory[mat];
+  usedMaterials = {};
 
-        return (
-          `${mat}:${invItem.lot}` +
-          `(${consumedBOM[mat]}kg)`
-        );
-      })
-      .join(", ");
+activeMaterials.forEach((mat) => {
+  const invItem = liveInventory[mat];
+
+  usedMaterials[mat] = {
+    lot: invItem.lot || "",
+    kg: Number(consumedBOM[mat]) || 0
+  };
+});
+
+const usedLotInfoStr = activeMaterials
+  .map((mat) => {
+    const info = usedMaterials[mat];
+
+    return `${mat}:${info.lot}(${info.kg}kg)`;
+  })
+  .join(", ");
 
 
     // ==========================================
@@ -2540,17 +2551,18 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
   );
 
   logProcessToGoogleSheet(
-    "step2",
-    {
-      ...activeJob,
-      qty: finalProducedQty
-    },
-    operator,
-    {
-      details: recordDetails
-    }
-  );
-
+  "step2",
+  {
+    ...activeJob,
+    qty: finalProducedQty
+  },
+  operator,
+  {
+    details: recordDetails,
+    materials: usedMaterials
+  }
+);
+    
 } catch (err) {
 
   console.error(
