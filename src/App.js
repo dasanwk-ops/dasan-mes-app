@@ -35,6 +35,10 @@ const getProductShade = (value = "") => {
 };
 const getProductLabel = (value = "") => normalizeProductType(value);
 
+// ==========================================
+// Google Apps Script 공통 URL
+// ==========================================
+
 // 🚀 [글로벌 엔진] 구글 시트 전체 데이터 동기화
 const syncToGoogleSheets = async (
   orderList,
@@ -358,9 +362,7 @@ const logProcessToGoogleSheet = async (
   operator,
   extraData = {}
 ) => {
-  const APPS_SCRIPT_URL =
-    "https://script.google.com/macros/s/AKfycbwSFCG4atzwDP7QNKtI-DtAVpiNyWwVgINjPTS4NBmKnHPeehNJDAhQtMGaZR1jQL-Ulw/exec";
-
+ 
   try {
     const payload = {
       type: "PROCESS_LOG",
