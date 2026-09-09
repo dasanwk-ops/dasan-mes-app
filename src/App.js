@@ -41,8 +41,76 @@ const getProductLabel = (value = "") => normalizeProductType(value);
 // mixLot  = 생산 LOT
 // packLot = 포장/완제품/출고 LOT
 // ==========================================
-const buildPackagingLot = (wip) => {
-  return `F${getKSTDateOnly().slice(-5)}${String(wip?.id || "").slice(-2)}`;
+// ==========================================
+// 포장 LOT 발급
+// 예: F260909-001, F260909-002 ...
+// Firestore Transaction으로 동시 발급 중복 방지
+// ==========================================
+const formatPackagingLot = (dateKey, seq) => {
+  return `F${dateKey}-${String(seq).padStart(3, "0")}`;
+};
+
+const ensurePackagingLot = async (wipId) => {
+  const now = getKST();
+  const dateKey = getKSTDateOnly();
+
+  let assignedLot = "";
+
+  await runTransaction(db, async (transaction) => {
+    const wipRef = getDocRef("wipList", wipId);
+    const wipSnap = await transaction.get(wipRef);
+
+    if (!wipSnap.exists()) {
+      throw new Error("포장 LOT 발급 대상이 존재하지 않습니다.");
+    }
+
+    const live = wipSnap.data();
+
+    // 이미 발급된 LOT가 있으면 절대 새로 만들지 않음
+    const existingPackLot = String(
+      live.packLot || ""
+    ).trim();
+
+    if (existingPackLot) {
+      assignedLot = existingPackLot;
+      return;
+    }
+
+    // 날짜별 일련번호 카운터
+    const counterRef = getDocRef(
+      "systemCounters",
+      `packLot-${dateKey}`
+    );
+
+    const counterSnap =
+      await transaction.get(counterRef);
+
+    const lastSeq = counterSnap.exists()
+      ? Number(counterSnap.data().lastSeq) || 0
+      : 0;
+
+    const nextSeq = lastSeq + 1;
+
+    assignedLot =
+      formatPackagingLot(dateKey, nextSeq);
+
+    transaction.set(
+      counterRef,
+      {
+        dateKey,
+        lastSeq: nextSeq,
+        updatedAt: now,
+      },
+      { merge: true }
+    );
+
+    transaction.update(wipRef, {
+      packLot: assignedLot,
+      packLotCreatedAt: now,
+    });
+  });
+
+  return assignedLot;
 };
 
 const getPackagingLot = (item) => {
@@ -4296,13 +4364,12 @@ function Step7Drying({ wipList, dryingRoom: room, ctx }) {
 
   try {
   const packLot =
-    w.packLot ||
-    buildPackagingLot(w);
+  w.packLot ||
+  await ensurePackagingLot(targetId);
 
-  const packLotCreatedAt =
-    w.packLotCreatedAt ||
-    getKST();
-
+const packLotCreatedAt =
+  w.packLotCreatedAt ||
+  getKST();
   await setDoc(
     getDocRef("wipList", targetId),
     {
@@ -4408,23 +4475,14 @@ function Step8Packaging({ wipList, orderList, ctx }) {
       (w) => !w.packLot
     );
 
-    missingPackLots.forEach((w) => {
-      const packLot = buildPackagingLot(w);
-
-      setDoc(
-        getDocRef("wipList", w.id),
-        {
-          packLot,
-          packLotCreatedAt: getKST(),
-        },
-        { merge: true }
-      ).catch((err) =>
-        console.error(
-          "포장 LOT 자동 생성 실패:",
-          err
-        )
-      );
-    });
+   missingPackLots.forEach((w) => {
+  ensurePackagingLot(w.id).catch((err) =>
+    console.error(
+      "포장 LOT 자동 생성 실패:",
+      err
+    )
+  );
+});
   }, [wipList]);
 
   // ==========================================
@@ -4480,8 +4538,7 @@ function Step8Packaging({ wipList, orderList, ctx }) {
         : "";
 
     let completedPackLot =
-      getPackagingLot(wip) ||
-      buildPackagingLot(wip);
+  getPackagingLot(wip);
 
     let finalQty =
       Math.max(
@@ -4489,8 +4546,13 @@ function Step8Packaging({ wipList, orderList, ctx }) {
         Number(wip.qty) - defectQty
       );
 
-    try {
-      await runTransaction(
+   try {
+  if (!completedPackLot) {
+    completedPackLot =
+      await ensurePackagingLot(wipId);
+  }
+
+  await runTransaction(
         db,
         async (transaction) => {
           const wipRef =
@@ -4527,20 +4589,51 @@ function Step8Packaging({ wipList, orderList, ctx }) {
             );
           }
 
-          completedPackLot =
-            getPackagingLot(live) ||
-            buildPackagingLot({
-              ...live,
-              id: wipId,
-            });
+         completedPackLot =
+  getPackagingLot(live) ||
+  completedPackLot;
 
           finalQty =
-            Math.max(
-              0,
-              liveQty - defectQty
-            );
+  Math.max(
+    0,
+    liveQty - defectQty
+  );
 
-          const curTime = getKST();
+// ==========================================
+// 라벨 출력 당시 조건과 현재 포장 조건 비교
+// 하나라도 바뀌었으면 반드시 재출력
+// ==========================================
+if (!live.labelPrintedAt) {
+  throw new Error(
+    "라벨 출력 기록이 없습니다. 먼저 라벨을 출력해주세요."
+  );
+}
+
+const printedQty =
+  Number(live.labelPrintedQty);
+
+const printedDefectQty =
+  Number(
+    live.labelPrintedDefectQty ?? 0
+  );
+
+const printedPackLot =
+  String(
+    live.labelPrintedPackLot || ""
+  ).trim();
+
+if (
+  !Number.isFinite(printedQty) ||
+  printedQty !== finalQty ||
+  printedDefectQty !== defectQty ||
+  printedPackLot !== completedPackLot
+) {
+  throw new Error(
+    "라벨 출력 후 최종수량, 불량수량 또는 LOT가 변경되었습니다. 현재 조건으로 라벨을 재출력한 뒤 포장완료를 눌러주세요."
+  );
+}
+
+const curTime = getKST();
 
           transaction.update(
             wipRef,
@@ -4664,8 +4757,8 @@ function Step8Packaging({ wipList, orderList, ctx }) {
         );
 
       const finalLot =
-        getPackagingLot(wip) ||
-        buildPackagingLot(wip);
+  getPackagingLot(wip) ||
+  await ensurePackagingLot(wipId);
 
       const now = getKST();
 
@@ -4768,17 +4861,28 @@ function Step8Packaging({ wipList, orderList, ctx }) {
               "wipList",
               wip.id
             ),
-            {
-              labelPrintedAt:
-                now,
+           {
+  labelPrintedAt: now,
 
-              labelPrintCount:
-                (
-                  Number(
-                    wip.labelPrintCount
-                  ) || 0
-                ) + 1,
-            },
+  // 라벨 출력 당시 확정값 저장
+  labelPrintedQty: finalQty,
+
+  labelPrintedDefectQty:
+    defectQty,
+
+  labelPrintedPackLot:
+    finalLot,
+
+  labelPrintedShrinkage:
+    wip.shrinkageRate,
+
+  labelPrintCount:
+    (
+      Number(
+        wip.labelPrintCount
+      ) || 0
+    ) + 1,
+},
             { merge: true }
           );
         } catch (saveErr) {
@@ -4888,13 +4992,9 @@ function Step8Packaging({ wipList, orderList, ctx }) {
                       defectQty
                   );
 
-                const packLot =
-                  getPackagingLot(
-                    wip
-                  ) ||
-                  buildPackagingLot(
-                    wip
-                  );
+               const packLot =
+  getPackagingLot(wip) ||
+  "LOT 발급 중...";
 
                 const isPrinted =
                   Boolean(
