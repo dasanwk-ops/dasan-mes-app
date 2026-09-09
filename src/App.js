@@ -3149,6 +3149,12 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
     { id: "L1", label: "좌측 1층" }, { id: "R1", label: "우측 1층" }
   ];
 
+  const getFurnaceSlotLabel = (slotId) => {
+  return (
+    slots.find((slot) => slot.id === slotId)?.label ||
+    slotId
+  );
+};
   const getRemainingQty = (wipId) => {
     const w = wipList.find(i => i.id === wipId);
     if (!w) return 0;
@@ -3230,9 +3236,17 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
         setAlertModal({ isOpen: true, message: "담당 작업자 이름을 입력해주세요.", type: "warning" });
         return;
       }
-      const newFurnaces = cloneDeep(furnaces);
-      newFurnaces[fid].isHeating = true;
-      await setDoc(getDocRef("equipment", "furnaces"), newFurnaces);
+     const newFurnaces = cloneDeep(furnaces);
+
+newFurnaces[fid].isHeating = true;
+
+// 열처리 시작시간 기록
+newFurnaces[fid].startedAt = getKST();
+
+await setDoc(
+  getDocRef("equipment", "furnaces"),
+  newFurnaces
+);
       ctx.showToast("열처리 가동이 시작되었습니다.", "success");
     } else {
       // 🌟 가동 종료 (트랜잭션 규칙 엄격하게 적용: READ 먼저, WRITE 나중에)
@@ -3264,33 +3278,120 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
            // ==========================================
            // 2. [WRITE 단계] 읽어온 문서를 바탕으로 업데이트를 수행합니다.
            // ==========================================
-           // A. 기존 제품을 수축률 대기로 상태 변경
-           for (const wId of Object.keys(grouped)) {
-             const snap = wipSnaps[wId];
-             if (snap && snap.exists()) {
-               transaction.update(snap.ref, { 
-                 currentStep: "step5_shrink",
-                 furnaceSlots: grouped[wId].furnaceSlots 
-               });
-             }
-           }
+          // ==========================================
+// A. 열처리 완료 → 수축률 측정 대기
+// 전기로 / 위치 / 수량 / 온도 / 작업자 이력 저장
+// ==========================================
+const completedAt = getKST();
+
+for (const wId of Object.keys(grouped)) {
+  const snap = wipSnaps[wId];
+
+  if (snap && snap.exists()) {
+    const currentWip = snap.data();
+
+    const enrichedSlots =
+      grouped[wId].furnaceSlots.map((slot) => ({
+        furnaceId: slot.fid,
+        slotId: slot.slotId,
+        slotLabel:
+          getFurnaceSlotLabel(slot.slotId),
+        qty: Number(slot.qty) || 0,
+      }));
+
+    const slotSummary = enrichedSlots
+      .map(
+        (slot) =>
+          `${slot.furnaceId}호기 ${slot.slotLabel}(${slot.qty}EA)`
+      )
+      .join(", ");
+
+    const heatRecord =
+      `[${completedAt}] [열처리완료] ` +
+      `${slotSummary} | ` +
+      `온도:${f.temp || "1050"}°C | ` +
+      `담당:${f.operator || "미입력"}` +
+      `${
+        f.memo
+          ? ` | 메모:${f.memo}`
+          : ""
+      }`;
+
+    const previousHeatHistory =
+      Array.isArray(
+        currentWip.heatTreatmentHistory
+      )
+        ? currentWip.heatTreatmentHistory
+        : [];
+
+    transaction.update(snap.ref, {
+      currentStep: "step5_shrink",
+
+      // 마지막 열처리 슬롯
+      furnaceSlots: enrichedSlots,
+
+      // 구조화된 열처리 이력
+      heatTreatmentHistory: [
+        ...previousHeatHistory,
+        {
+          furnaceId: fid,
+          startedAt:
+            f.startedAt || "",
+          completedAt,
+          temperature:
+            f.temp || "1050",
+          operator:
+            f.operator || "",
+          memo:
+            f.memo || "",
+          slots: enrichedSlots,
+        },
+      ],
+
+      // 기존 타임라인에도 사람이 읽을 수 있게 기록
+      details:
+        `${currentWip.details || ""}\n` +
+        heatRecord,
+    });
+  }
+}
 
            // B. 수축률 측정대로 12칸 데이터 복사
            const currentDesks = shrinkSnap.exists() ? shrinkSnap.data() : { 1: {step: 0, slotData: {}}, 2: {step: 0, slotData: {}} };
            const newShrinkSlotData = {};
            Object.entries(slotData).forEach(([slotId, s]) => {
-              newShrinkSlotData[slotId] = {
-                  wipId: s.wipId, mixLot: s.mixLot, type: s.type, height: s.height, qty: s.qty,
-                  measurements: [
-  {
-    position: "",
-    preArea: "",
-    postArea: "",
-    calcShrink: "",
-    calcExpand: ""
-  }
-]
-              };
+             newShrinkSlotData[slotId] = {
+  wipId: s.wipId,
+  mixLot: s.mixLot,
+  type: s.type,
+  height: s.height,
+  qty: s.qty,
+
+  // 열처리 위치 추적정보
+  furnaceId: fid,
+  furnaceSlotId: slotId,
+  furnaceSlotLabel:
+    getFurnaceSlotLabel(slotId),
+
+  heatStartedAt:
+    f.startedAt || "",
+
+  heatCompletedAt:
+    completedAt,
+
+  heatTemperature:
+    f.temp || "1050",
+
+  measurements: [
+    {
+      position: "",
+      preArea: "",
+      postArea: "",
+      calcShrink: "",
+      calcExpand: ""
+    }
+  ]
+};
            });
            currentDesks[fid] = {
               step: 1, // 1: 소결 전 면적 입력 단계
@@ -3302,28 +3403,58 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
 
            // C. 가동 종료된 전기로 완벽 초기화
            const currentFurnaces = furnaceSnap.exists() ? furnaceSnap.data() : { 1: {}, 2: {} };
-           currentFurnaces[fid] = { isHeating: false, temp: f.temp || "1050", operator: "", memo: "", slotData: {} };
+           currentFurnaces[fid] = {
+  isHeating: false,
+  temp: f.temp || "1050",
+  operator: "",
+  memo: "",
+  slotData: {},
+  startedAt: ""
+};
            transaction.set(furnaceRef, currentFurnaces);
         });
 
         // Firestore 트랜잭션이 성공한 뒤에만 Google Sheets에 열처리 완료 로그를 남깁니다.
         // 트랜잭션 내부에서 외부 HTTP 요청을 보내면 재시도 시 중복 기록될 수 있으므로 반드시 밖에서 실행합니다.
-        const heatProcessLogs = Object.entries(grouped).map(([wId, info]) => {
-          const originalWip = (wipList || []).find((w) => String(w.id) === String(wId));
-          const fallbackSlot = Object.values(slotData).find((s) => String(s.wipId) === String(wId)) || {};
+       const slotSummary =
+  info.furnaceSlots
+    .map(
+      (slot) =>
+        `${slot.fid}호기 ` +
+        `${getFurnaceSlotLabel(slot.slotId)}` +
+        `(${Number(slot.qty) || 0}EA)`
+    )
+    .join(", ");
 
-          return {
-            wip: {
-              ...(originalWip || {}),
-              mixLot: originalWip?.mixLot || fallbackSlot.mixLot || "N/A",
-              type: originalWip?.type || fallbackSlot.type || "",
-              height: originalWip?.height || fallbackSlot.height || "",
-              qty: Number(info.qty) || 0,
-            },
-            operator: f.operator || "현장작업자",
-          };
-        });
+return {
+  wip: {
+    ...(originalWip || {}),
 
+    mixLot:
+      originalWip?.mixLot ||
+      fallbackSlot.mixLot ||
+      "N/A",
+
+    type:
+      originalWip?.type ||
+      fallbackSlot.type ||
+      "",
+
+    height:
+      originalWip?.height ||
+      fallbackSlot.height ||
+      "",
+
+    qty:
+      Number(info.qty) || 0,
+  },
+
+  operator:
+    f.operator ||
+    "현장작업자",
+
+  slotSummary,
+};
         await Promise.all(
           heatProcessLogs.map((item) =>
             logProcessToGoogleSheet(
@@ -3331,10 +3462,22 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
               item.wip,
               item.operator,
               {
-                equipment: `${fid}호기`,
-                conditions: `온도:${f.temp || "1050"}°C`,
-                details: f.memo || "열처리 완료",
-              }
+  equipment:
+    `${fid}호기`,
+
+  conditions:
+    `온도:${f.temp || "1050"}°C | ` +
+    `위치:${item.slotSummary}`,
+
+  details:
+    `열처리 완료 | ` +
+    `${item.slotSummary}` +
+    `${
+      f.memo
+        ? ` | 메모:${f.memo}`
+        : ""
+    }`,
+}
             )
           )
         );
