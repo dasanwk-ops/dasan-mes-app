@@ -33,11 +33,57 @@ const getProductShade = (value = "") => {
   const parts = normalized.split(" ");
   return parts.length > 1 ? parts.slice(1).join(" ") : normalized;
 };
+
 const getProductLabel = (value = "") => normalizeProductType(value);
+
+// ==========================================
+// LOT 관리 공통 함수
+// mixLot  = 생산 LOT
+// packLot = 포장/완제품/출고 LOT
+// ==========================================
+const buildPackagingLot = (wip) => {
+  return `F${getKSTDateOnly().slice(-5)}${String(wip?.id || "").slice(-2)}`;
+};
+
+const getPackagingLot = (item) => {
+  const explicitPackLot = String(item?.packLot || "").trim();
+
+  if (explicitPackLot) {
+    return explicitPackLot;
+  }
+
+  const legacyMixLot = String(item?.mixLot || "").trim();
+
+  if (
+    item?.currentStep === "done" &&
+    /^F/i.test(legacyMixLot)
+  ) {
+    return legacyMixLot;
+  }
+
+  const shippedLot = String(item?.lot || "").trim();
+
+  if (shippedLot) {
+    return shippedLot;
+  }
+
+  return "";
+};
+
+const getProductionLot = (item) => {
+  return String(
+    item?.originalLot ||
+    item?.productionLot ||
+    item?.mixLot ||
+    ""
+  ).trim();
+};
 
 // ==========================================
 // Google Apps Script 공통 URL
 // ==========================================
+const APPS_SCRIPT_URL =
+  "https://script.google.com/macros/s/AKfycbwSFCG4atzwDP7QNKtI-DtAVpiNyWwVgINjPTS4NBmKnHPeehNJDAhQtMGaZR1jQL-Ulw/exec";
 
 // 🚀 [글로벌 엔진] 구글 시트 전체 데이터 동기화
 const syncToGoogleSheets = async (
@@ -47,51 +93,68 @@ const syncToGoogleSheets = async (
   shippingHistory,
   ctx
 ) => {
-  const APPS_SCRIPT_URL =
-   "https://script.google.com/macros/s/AKfycbwSFCG4atzwDP7QNKtI-DtAVpiNyWwVgINjPTS4NBmKnHPeehNJDAhQtMGaZR1jQL-Ulw/exec";
 
   // ==========================================
   // 1. 완료 LOT + 출고 LOT 통합
   // ==========================================
-  const mergedLots = {};
+ const mergedLots = {};
 
-  const wipFinished = (wipList || []).filter(
-    (w) => w.currentStep === "done"
-  );
+const wipFinished = (wipList || []).filter(
+  (w) => w.currentStep === "done"
+);
 
-  wipFinished.forEach((w) => {
-    mergedLots[w.mixLot] = {
-      mixLot: w.mixLot,
-      type: w.type,
-      height: w.height,
-      qty: Number(w.qty) || 0,
-      details: w.details || "",
-      shrinkageRate: w.shrinkageRate || "-",
+wipFinished.forEach((w) => {
+  const productionLot =
+    getProductionLot(w) ||
+    getPackagingLot(w);
+
+  if (!productionLot) return;
+
+  mergedLots[productionLot] = {
+    productionLot,
+    packLot: getPackagingLot(w),
+    type: w.type,
+    height: w.height,
+    qty: Number(w.qty) || 0,
+    details: w.details || "",
+    shrinkageRate: w.shrinkageRate || "-",
+  };
+});
+
+(shippingHistory || []).forEach((h) => {
+  const productionLot =
+    getProductionLot(h) ||
+    h.lot ||
+    "";
+
+  if (!productionLot) return;
+
+  if (!mergedLots[productionLot]) {
+    mergedLots[productionLot] = {
+      productionLot,
+      packLot: h.packLot || h.lot || "",
+      type: h.type,
+      height: h.height,
+      qty: 0,
+      details: h.details || "",
+      shrinkageRate: "-",
     };
-  });
+  }
 
-  (shippingHistory || []).forEach((h) => {
-    if (!mergedLots[h.lot]) {
-      mergedLots[h.lot] = {
-        mixLot: h.lot,
-        type: h.type,
-        height: h.height,
-        qty: 0,
-        details: h.details || "",
-        shrinkageRate: "-",
-      };
-    }
+  mergedLots[productionLot].qty +=
+    Number(h.qty) || 0;
 
-    mergedLots[h.lot].qty += Number(h.qty) || 0;
-
-    if (mergedLots[h.lot].shrinkageRate === "-") {
+  if (
+    mergedLots[productionLot].shrinkageRate === "-"
+  ) {
+  
       const shrinkMatch = (h.details || "").match(
         /\[수축률:\s*([0-9.]+)/
       );
 
-      if (shrinkMatch) {
-        mergedLots[h.lot].shrinkageRate = shrinkMatch[1];
-      }
+     if (shrinkMatch) {
+  mergedLots[productionLot].shrinkageRate = shrinkMatch[1];
+}
     }
   });
 
@@ -130,7 +193,7 @@ const syncToGoogleSheets = async (
 
       return [
         finishDate,
-        w.mixLot,
+        w.productionLot,
         getProductLabel(w.type),
         `${w.height}T`,
         Number(w.qty) || 0,
@@ -373,10 +436,16 @@ const logProcessToGoogleSheet = async (
         timestamp: getKST(),
 
         lot:
-          wipItem.mixLot ||
-          wipItem.lot ||
-          wipItem.orderNo ||
-          "N/A",
+  wipItem.packLot ||
+  wipItem.lot ||
+  wipItem.mixLot ||
+  wipItem.orderNo ||
+  "N/A",
+
+productionLot:
+  wipItem.originalLot ||
+  wipItem.mixLot ||
+  "",
 
         product: wipItem.type
           ? `${getProductLabel(wipItem.type)} ${wipItem.height}T`
@@ -4225,8 +4294,36 @@ function Step7Drying({ wipList, dryingRoom: room, ctx }) {
     const memoStr = cData.specialNote ? ` [메모: ${cData.specialNote}]` : "";
     const recordDetails = `[${getKST()}] [건조] 온도:${room?.temp || 60}°C | 습도:${room?.humidity || 20}% | 담당:${room?.operator || "미상"}${defStr}${memoStr}`;
 
-    try {
-      await setDoc(getDocRef("wipList", targetId), { ...w, qty: remainQty, currentStep: "step8", details: `${w.details || ""}\n${recordDetails}` });
+  try {
+  const packLot =
+    w.packLot ||
+    buildPackagingLot(w);
+
+  const packLotCreatedAt =
+    w.packLotCreatedAt ||
+    getKST();
+
+  await setDoc(
+    getDocRef("wipList", targetId),
+    {
+      ...w,
+
+      // 생산 LOT는 그대로 보존
+      mixLot: w.mixLot,
+
+      // 포장 LOT 최초 확정
+      packLot,
+      packLotCreatedAt,
+
+      qty: remainQty,
+      currentStep: "step8",
+
+      details:
+        `${w.details || ""}\n` +
+        `${recordDetails}\n` +
+        `[${packLotCreatedAt}] [포장LOT확정] ${packLot}`,
+    }
+  );
       const newCompData = { ...(room?.completionData || {}) };
       delete newCompData[targetId];
       await setDoc(getDocRef("equipment", "dryingRoom"), { ...room, completionData: newCompData });
@@ -4286,85 +4383,707 @@ function Step7Drying({ wipList, dryingRoom: room, ctx }) {
 // Step 8: Packaging
 // ==========================================
 function Step8Packaging({ wipList, orderList, ctx }) {
-  const pendingWip = wipList.filter((w) => w.currentStep === "step8");
+  const pendingWip = wipList.filter(
+    (w) => w.currentStep === "step8"
+  );
+
   const [formData, setFormData] = useState({});
-  const [printedStatus, setPrintedStatus] = useState({}); 
+  const [printedStatus, setPrintedStatus] = useState({});
 
-  const handleDataChange = (id, field, val) => setFormData((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), [field]: val } }));
+  const handleDataChange = (id, field, val) =>
+    setFormData((prev) => ({
+      ...prev,
+      [id]: {
+        ...(prev[id] || {}),
+        [field]: val,
+      },
+    }));
 
+  // ==========================================
+  // 과거 버전에서 이미 Step8에 들어와 있으나
+  // packLot이 없는 WIP 자동 보정
+  // ==========================================
+  useEffect(() => {
+    const missingPackLots = pendingWip.filter(
+      (w) => !w.packLot
+    );
+
+    missingPackLots.forEach((w) => {
+      const packLot = buildPackagingLot(w);
+
+      setDoc(
+        getDocRef("wipList", w.id),
+        {
+          packLot,
+          packLotCreatedAt: getKST(),
+        },
+        { merge: true }
+      ).catch((err) =>
+        console.error(
+          "포장 LOT 자동 생성 실패:",
+          err
+        )
+      );
+    });
+  }, [wipList]);
+
+  // ==========================================
+  // 포장 완료
+  // mixLot은 절대 변경하지 않음
+  // ==========================================
   const moveNext = async (wipId) => {
     const data = formData[wipId] || {};
-    const wip = wipList.find((w) => w.id === wipId);
+    const wip = wipList.find(
+      (w) => w.id === wipId
+    );
 
-    if (!data.operator || !wip?.shrinkageRate) {
-      return ctx.showToast("작업자 성명 입력 혹은 열처리 단계 수축률 데이터가 필요합니다.", "error");
+    if (
+      !data.operator ||
+      !wip?.shrinkageRate
+    ) {
+      return ctx.showToast(
+        "작업자 성명 입력 혹은 열처리 단계 수축률 데이터가 필요합니다.",
+        "error"
+      );
     }
 
-    const defectQty = parseInt(data.defects) || 0;
-    const defectStr = defectQty > 0 ? ` [불량 ${defectQty}개: ${data.defectReason || "사유미상"}]` : "";
+    const defectQty =
+      parseInt(data.defects) || 0;
+
+    if (
+      defectQty < 0 ||
+      defectQty > Number(wip.qty)
+    ) {
+      return ctx.showToast(
+        "불량 수량을 확인해주세요.",
+        "error"
+      );
+    }
+
+    // 라벨 발행 전 포장완료 방지
+    const isPrinted =
+      Boolean(wip.labelPrintedAt) ||
+      Boolean(printedStatus[wipId]);
+
+    if (!isPrinted) {
+      return ctx.showToast(
+        "먼저 라벨을 출력한 후 포장완료를 눌러주세요.",
+        "error"
+      );
+    }
+
+    const defectStr =
+      defectQty > 0
+        ? ` [불량 ${defectQty}개: ${
+            data.defectReason || "사유미상"
+          }]`
+        : "";
+
+    let completedPackLot =
+      getPackagingLot(wip) ||
+      buildPackagingLot(wip);
+
+    let finalQty =
+      Math.max(
+        0,
+        Number(wip.qty) - defectQty
+      );
 
     try {
-      const newLot = `F${getKSTDateOnly().slice(-5)}${wip.id.slice(-2)}`;
-      await setDoc(getDocRef("wipList", wip.id), {
-        ...wip, mixLot: newLot, shrinkageRate: wip.shrinkageRate, qty: Math.max(0, wip.qty - defectQty), currentStep: "done",
-        details: `${wip.details || ""}\n[${getKST()}] [포장완료] 담당: ${data.operator} [수축률: ${wip.shrinkageRate}]${defectStr}`,
-      });
+      await runTransaction(
+        db,
+        async (transaction) => {
+          const wipRef =
+            getDocRef(
+              "wipList",
+              wipId
+            );
 
-      ctx.showToast("포장 및 수축률 기록 완료", "success");
-      logProcessToGoogleSheet("step8", { ...wip, qty: wip.qty - defectQty }, data.operator, { defects: defectQty, defectReason: data.defectReason || "-", measurements: `S.F:${wip.shrinkageRate}`, details: data.specialNote || "-" });
-    } catch (err) { console.error(err); ctx.showToast("오류 발생", "error"); }
+          const snap =
+            await transaction.get(wipRef);
+
+          if (!snap.exists()) {
+            throw new Error(
+              "포장 대상 LOT가 존재하지 않습니다."
+            );
+          }
+
+          const live = snap.data();
+
+          if (
+            live.currentStep !== "step8"
+          ) {
+            throw new Error(
+              "이미 다른 작업자가 처리한 제품입니다."
+            );
+          }
+
+          const liveQty =
+            Number(live.qty) || 0;
+
+          if (defectQty > liveQty) {
+            throw new Error(
+              `현재 최신 수량은 ${liveQty}EA입니다. 불량 수량을 다시 확인해주세요.`
+            );
+          }
+
+          completedPackLot =
+            getPackagingLot(live) ||
+            buildPackagingLot({
+              ...live,
+              id: wipId,
+            });
+
+          finalQty =
+            Math.max(
+              0,
+              liveQty - defectQty
+            );
+
+          const curTime = getKST();
+
+          transaction.update(
+            wipRef,
+            {
+              // ==================================
+              // 중요:
+              // mixLot은 생산 LOT이므로 손대지 않음
+              // ==================================
+
+              packLot:
+                completedPackLot,
+
+              packLotCreatedAt:
+                live.packLotCreatedAt ||
+                curTime,
+
+              qty: finalQty,
+
+              currentStep: "done",
+
+              packagedAt: curTime,
+
+              shrinkageRate:
+                live.shrinkageRate,
+
+              details:
+                `${live.details || ""}\n` +
+                `[${curTime}] [포장완료] ` +
+                `포장LOT:${completedPackLot} | ` +
+                `생산LOT:${live.mixLot} | ` +
+                `담당:${data.operator} ` +
+                `[수축률: ${live.shrinkageRate}]` +
+                `${defectStr}` +
+                `${
+                  data.specialNote
+                    ? ` [메모:${data.specialNote}]`
+                    : ""
+                }`,
+            }
+          );
+        }
+      );
+
+      ctx.showToast(
+        `포장 완료 — ${completedPackLot}`,
+        "success"
+      );
+
+      logProcessToGoogleSheet(
+        "step8",
+        {
+          ...wip,
+          packLot: completedPackLot,
+          qty: finalQty,
+        },
+        data.operator,
+        {
+          defects: defectQty,
+          defectReason:
+            data.defectReason || "-",
+          measurements:
+            `S.F:${wip.shrinkageRate}`,
+          details:
+            `생산LOT:${wip.mixLot} / ` +
+            `포장LOT:${completedPackLot}` +
+            `${
+              data.specialNote
+                ? ` / ${data.specialNote}`
+                : ""
+            }`,
+        }
+      );
+    } catch (err) {
+      console.error(err);
+
+      ctx.showToast(
+        err?.message ||
+          "포장 완료 처리 중 오류 발생",
+        "error"
+      );
+    }
   };
 
-  const handlePrintLabel = async (wipId) => {
-    const wip = wipList.find((w) => w.id === wipId);
-    if (!wip?.shrinkageRate) return ctx.showToast("열처리 단계 수축률 데이터가 없습니다.", "error");
+  // ==========================================
+  // 라벨 출력
+  // 저장되어 있는 packLot만 사용
+  // ==========================================
+  const handlePrintLabel =
+    async (wipId) => {
+      const wip = wipList.find(
+        (w) => w.id === wipId
+      );
 
-    const data = formData[wipId] || {};
-    const defectQty = parseInt(data.defects) || 0;
-    const finalQty = Math.max(0, wip.qty - defectQty);
-    const finalLot = `F${getKSTDateOnly().slice(-5)}${wip.id.slice(-2)}`;
-    const productName = `Z1100VT${getProductShade(wip.type)}${wip.height}`;
-    const sizeDisplay = `Φ98 x ${wip.height}mm`;
-    
-    const s = Number(wip.shrinkageRate);
-    const calculatedScaleFactor = (1 / (1 - s / 100)).toFixed(4);
+      if (!wip?.shrinkageRate) {
+        return ctx.showToast(
+          "열처리 단계 수축률 데이터가 없습니다.",
+          "error"
+        );
+      }
 
-    try {
-      const database = getFirestore();
-      await addDoc(collection(database, "print-queue"), {
-        productName, color: getProductShade(wip.type), height: wip.height, lotNumber: finalLot, shrinkage: wip.shrinkageRate, scaleFactor: calculatedScaleFactor,
-        mfgDate: getKST().split(" ")[0], size: sizeDisplay, quantity: finalQty, status: "pending", createdAt: serverTimestamp(),
-      });
-      ctx.showToast("라벨 출력 명령 전송 완료! 🖨️", "success");
-      setPrintedStatus(prev => ({ ...prev, [wipId]: true })); 
-    } catch (err) { console.error("전송 에러:", err); ctx.showToast(`전송 실패: ${err.message}`, "error"); }
-  };
+      const data =
+        formData[wipId] || {};
+
+      const defectQty =
+        parseInt(data.defects) || 0;
+
+      if (
+        defectQty < 0 ||
+        defectQty > Number(wip.qty)
+      ) {
+        return ctx.showToast(
+          "불량 수량을 확인해주세요.",
+          "error"
+        );
+      }
+
+      const finalQty =
+        Math.max(
+          0,
+          Number(wip.qty) - defectQty
+        );
+
+      const finalLot =
+        getPackagingLot(wip) ||
+        buildPackagingLot(wip);
+
+      const now = getKST();
+
+      const productName =
+        `Z1100VT${getProductShade(
+          wip.type
+        )}${wip.height}`;
+
+      const sizeDisplay =
+        `Φ98 x ${wip.height}mm`;
+
+      const s =
+        Number(wip.shrinkageRate);
+
+      const calculatedScaleFactor =
+        (
+          1 /
+          (1 - s / 100)
+        ).toFixed(4);
+
+      try {
+        // ======================================
+        // 라벨 출력 전 packLot을 Firestore에 먼저 고정
+        // ======================================
+        await setDoc(
+          getDocRef(
+            "wipList",
+            wip.id
+          ),
+          {
+            packLot: finalLot,
+
+            packLotCreatedAt:
+              wip.packLotCreatedAt ||
+              now,
+          },
+          { merge: true }
+        );
+
+        const database =
+          getFirestore();
+
+        // ======================================
+        // BarTender 출력 Queue
+        // ======================================
+        await addDoc(
+          collection(
+            database,
+            "print-queue"
+          ),
+          {
+            productName,
+
+            color:
+              getProductShade(
+                wip.type
+              ),
+
+            height:
+              wip.height,
+
+            // 실물 제품에 찍히는 LOT
+            lotNumber:
+              finalLot,
+
+            // 추적용 생산 LOT
+            sourceLot:
+              wip.mixLot,
+
+            shrinkage:
+              wip.shrinkageRate,
+
+            scaleFactor:
+              calculatedScaleFactor,
+
+            mfgDate:
+              (
+                wip.packLotCreatedAt ||
+                now
+              ).split(" ")[0],
+
+            size:
+              sizeDisplay,
+
+            quantity:
+              finalQty,
+
+            status:
+              "pending",
+
+            createdAt:
+              serverTimestamp(),
+          }
+        );
+
+        // 출력 이력 저장
+        try {
+          await setDoc(
+            getDocRef(
+              "wipList",
+              wip.id
+            ),
+            {
+              labelPrintedAt:
+                now,
+
+              labelPrintCount:
+                (
+                  Number(
+                    wip.labelPrintCount
+                  ) || 0
+                ) + 1,
+            },
+            { merge: true }
+          );
+        } catch (saveErr) {
+          console.warn(
+            "라벨 출력 이력 저장 실패:",
+            saveErr
+          );
+        }
+
+        ctx.showToast(
+          `라벨 출력 명령 전송 완료 — ${finalLot} 🖨️`,
+          "success"
+        );
+
+        setPrintedStatus(
+          (prev) => ({
+            ...prev,
+            [wipId]: true,
+          })
+        );
+      } catch (err) {
+        console.error(
+          "전송 에러:",
+          err
+        );
+
+        ctx.showToast(
+          `전송 실패: ${err.message}`,
+          "error"
+        );
+      }
+    };
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
-      <h3 className="text-lg font-bold mb-2">포장 및 라벨링</h3>
-      <p className="text-sm text-slate-500 mb-6">최종 수축률(Scaling Factor)을 입력하고 라벨을 발행합니다.</p>
+      <h3 className="text-lg font-bold mb-2">
+        포장 및 라벨링
+      </h3>
+
+      <p className="text-sm text-slate-500 mb-6">
+        포장 LOT는 포장 공정 진입 시 최초 1회
+        생성되며, 완제품 및 출고까지 변경되지
+        않습니다.
+      </p>
+
       <div className="overflow-x-auto">
         <table className="w-full text-sm text-left">
           <thead className="text-xs text-slate-500 uppercase bg-slate-50 border-y border-slate-200">
-            <tr><th className="px-4 py-3">현재 로트</th><th className="px-4 py-3">제품/색상</th><th className="px-4 py-3 text-center">최종수량</th><th className="px-4 py-3 text-blue-600">수축률 (S.F)</th><th className="px-4 py-3 text-red-600">불량(수량/사유)</th><th className="px-4 py-3">메모/작업자</th><th className="px-4 py-3 text-center">작업</th></tr>
+            <tr>
+              <th className="px-4 py-3">
+                LOT
+              </th>
+
+              <th className="px-4 py-3">
+                제품/색상
+              </th>
+
+              <th className="px-4 py-3 text-center">
+                최종수량
+              </th>
+
+              <th className="px-4 py-3 text-blue-600">
+                수축률 (S.F)
+              </th>
+
+              <th className="px-4 py-3 text-red-600">
+                불량(수량/사유)
+              </th>
+
+              <th className="px-4 py-3">
+                메모/작업자
+              </th>
+
+              <th className="px-4 py-3 text-center">
+                작업
+              </th>
+            </tr>
           </thead>
+
           <tbody>
-            {pendingWip.length === 0 && <tr><td colSpan="7" className="text-center py-10 text-slate-400 font-bold">포장 대기 중인 제품이 없습니다.</td></tr>}
-            {pendingWip.map((wip) => {
-              const data = formData[wip.id] || {};
-              return (
-                <tr key={wip.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
-                  <td className="px-4 py-4"><div className="flex flex-col"><span className="text-[10px] text-slate-400 font-bold mb-1 uppercase">원로트: {wip.mixLot}</span><div className="text-lg font-black text-indigo-700 bg-indigo-50 px-4 py-1.5 rounded-lg border border-indigo-200 shadow-sm w-max tracking-widest">F{getKSTDateOnly().slice(-5)}{wip.id.slice(-2)}</div></div></td>
-                  <td className="px-4 py-4 font-bold text-slate-800">{getProductLabel(wip.type)} <span className="text-indigo-600">{wip.height}T</span></td>
-                  <td className="px-4 py-4 font-black text-indigo-700 text-xl text-center">{wip.qty}</td>
-                  <td className="px-4 py-4"><div className="flex flex-col items-center bg-blue-50 px-4 py-1.5 rounded-lg border border-blue-100 shadow-sm min-w-[100px]"><div className="text-[10px] font-bold text-slate-500 mb-0.5">수축률: {wip.shrinkageRate}%</div><div className="text-lg font-black text-blue-700">{(1 / (1 - Number(wip.shrinkageRate) / 100)).toFixed(4)}</div></div></td>
-                  <td className="px-4 py-4 w-40"><div className="flex flex-col space-y-1"><input type="number" placeholder="불량" value={data.defects || ""} onChange={(e) => handleDataChange(wip.id, "defects", e.target.value)} className="border border-red-200 rounded p-1.5 text-xs text-center text-red-600 bg-red-50" /><input type="text" placeholder="사유" value={data.defectReason || ""} onChange={(e) => handleDataChange(wip.id, "defectReason", e.target.value)} className="border rounded p-1.5 text-[10px]" /></div></td>
-                  <td className="px-4 py-4 w-40"><div className="flex flex-col space-y-1"><input type="text" placeholder="메모" value={data.specialNote || ""} onChange={(e) => handleDataChange(wip.id, "specialNote", e.target.value)} className="border rounded p-1.5 text-[10px]" /><input type="text" placeholder="작업자" value={data.operator || ""} onChange={(e) => handleDataChange(wip.id, "operator", e.target.value)} className="border rounded p-1.5 text-xs text-center font-bold" /></div></td>
-                  <td className="px-4 py-4"><div className="flex flex-col space-y-2"><button onClick={() => handlePrintLabel(wip.id)} className={`text-[10px] px-2 py-1.5 rounded font-bold flex items-center justify-center shadow-sm border transition-colors ${printedStatus[wip.id] ? "bg-green-50 text-green-600 border-green-200 hover:bg-green-100" : "bg-slate-100 text-slate-600 border-slate-200 hover:bg-indigo-50 hover:text-indigo-600"}`}><Printer className="w-3 h-3 mr-1" /> {printedStatus[wip.id] ? "재출력" : "라벨출력"}</button><button onClick={() => moveNext(wip.id)} className="text-[10px] bg-indigo-600 text-white px-2 py-1.5 rounded font-bold hover:bg-indigo-700 flex items-center justify-center shadow-sm"><CheckCircle2 className="w-3 h-3 mr-1" /> 포장완료</button></div></td>
-                </tr>
-              );
-            })}
+            {pendingWip.length === 0 && (
+              <tr>
+                <td
+                  colSpan="7"
+                  className="text-center py-10 text-slate-400 font-bold"
+                >
+                  포장 대기 중인 제품이 없습니다.
+                </td>
+              </tr>
+            )}
+
+            {pendingWip.map(
+              (wip) => {
+                const data =
+                  formData[wip.id] ||
+                  {};
+
+                const defectQty =
+                  parseInt(
+                    data.defects
+                  ) || 0;
+
+                const finalQty =
+                  Math.max(
+                    0,
+                    Number(wip.qty) -
+                      defectQty
+                  );
+
+                const packLot =
+                  getPackagingLot(
+                    wip
+                  ) ||
+                  buildPackagingLot(
+                    wip
+                  );
+
+                const isPrinted =
+                  Boolean(
+                    printedStatus[
+                      wip.id
+                    ]
+                  ) ||
+                  Boolean(
+                    wip.labelPrintedAt
+                  );
+
+                return (
+                  <tr
+                    key={wip.id}
+                    className="border-b border-slate-100 hover:bg-slate-50 transition-colors"
+                  >
+                    <td className="px-4 py-4">
+                      <div className="flex flex-col">
+                        <span className="text-[10px] text-slate-400 font-bold mb-1">
+                          생산 LOT:{" "}
+                          {wip.mixLot}
+                        </span>
+
+                        <div className="text-lg font-black text-indigo-700 bg-indigo-50 px-4 py-1.5 rounded-lg border border-indigo-200 shadow-sm w-max tracking-widest">
+                          {packLot}
+                        </div>
+
+                        <span className="text-[9px] text-indigo-400 font-bold mt-1">
+                          포장/완제품 LOT
+                        </span>
+                      </div>
+                    </td>
+
+                    <td className="px-4 py-4 font-bold text-slate-800">
+                      {getProductLabel(
+                        wip.type
+                      )}{" "}
+                      <span className="text-indigo-600">
+                        {wip.height}T
+                      </span>
+                    </td>
+
+                    <td className="px-4 py-4 font-black text-indigo-700 text-xl text-center">
+                      {finalQty}
+                    </td>
+
+                    <td className="px-4 py-4">
+                      <div className="flex flex-col items-center bg-blue-50 px-4 py-1.5 rounded-lg border border-blue-100 shadow-sm min-w-[100px]">
+                        <div className="text-[10px] font-bold text-slate-500 mb-0.5">
+                          수축률:{" "}
+                          {
+                            wip.shrinkageRate
+                          }
+                          %
+                        </div>
+
+                        <div className="text-lg font-black text-blue-700">
+                          {(
+                            1 /
+                            (
+                              1 -
+                              Number(
+                                wip.shrinkageRate
+                              ) /
+                                100
+                            )
+                          ).toFixed(4)}
+                        </div>
+                      </div>
+                    </td>
+
+                    <td className="px-4 py-4 w-40">
+                      <div className="flex flex-col space-y-1">
+                        <input
+                          type="number"
+                          placeholder="불량"
+                          value={
+                            data.defects ||
+                            ""
+                          }
+                          onChange={(e) =>
+                            handleDataChange(
+                              wip.id,
+                              "defects",
+                              e.target
+                                .value
+                            )
+                          }
+                          className="border border-red-200 rounded p-1.5 text-xs text-center text-red-600 bg-red-50"
+                        />
+
+                        <input
+                          type="text"
+                          placeholder="사유"
+                          value={
+                            data.defectReason ||
+                            ""
+                          }
+                          onChange={(e) =>
+                            handleDataChange(
+                              wip.id,
+                              "defectReason",
+                              e.target
+                                .value
+                            )
+                          }
+                          className="border rounded p-1.5 text-[10px]"
+                        />
+                      </div>
+                    </td>
+
+                    <td className="px-4 py-4 w-40">
+                      <div className="flex flex-col space-y-1">
+                        <input
+                          type="text"
+                          placeholder="메모"
+                          value={
+                            data.specialNote ||
+                            ""
+                          }
+                          onChange={(e) =>
+                            handleDataChange(
+                              wip.id,
+                              "specialNote",
+                              e.target
+                                .value
+                            )
+                          }
+                          className="border rounded p-1.5 text-[10px]"
+                        />
+
+                        <input
+                          type="text"
+                          placeholder="작업자"
+                          value={
+                            data.operator ||
+                            ""
+                          }
+                          onChange={(e) =>
+                            handleDataChange(
+                              wip.id,
+                              "operator",
+                              e.target
+                                .value
+                            )
+                          }
+                          className="border rounded p-1.5 text-xs text-center font-bold"
+                        />
+                      </div>
+                    </td>
+
+                    <td className="px-4 py-4">
+                      <div className="flex flex-col space-y-2">
+                        <button
+                          onClick={() =>
+                            handlePrintLabel(
+                              wip.id
+                            )
+                          }
+                          className={`text-[10px] px-2 py-1.5 rounded font-bold flex items-center justify-center shadow-sm border transition-colors ${
+                            isPrinted
+                              ? "bg-green-50 text-green-600 border-green-200 hover:bg-green-100"
+                              : "bg-slate-100 text-slate-600 border-slate-200 hover:bg-indigo-50 hover:text-indigo-600"
+                          }`}
+                        >
+                          <Printer className="w-3 h-3 mr-1" />
+
+                          {isPrinted
+                            ? "재출력"
+                            : "라벨출력"}
+                        </button>
+
+                        <button
+                          onClick={() =>
+                            moveNext(
+                              wip.id
+                            )
+                          }
+                          className="text-[10px] bg-indigo-600 text-white px-2 py-1.5 rounded font-bold hover:bg-indigo-700 flex items-center justify-center shadow-sm"
+                        >
+                          <CheckCircle2 className="w-3 h-3 mr-1" />
+                          포장완료
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              }
+            )}
           </tbody>
         </table>
       </div>
@@ -4402,8 +5121,12 @@ function Step9FinishedGoods({ wipList, shippingHistory, orderList, ctx }) {
       );
     }
 
-    ctx.showConfirm(
-      `${wip.mixLot} ${safeQty}EA를 출고 처리하시겠습니까?`,
+   const displayPackLot =
+  getPackagingLot(wip) ||
+  wip.mixLot;
+
+ctx.showConfirm(
+  `${displayPackLot} ${safeQty}EA를 출고 처리하시겠습니까?`,
       async () => {
         try {
           const hid =
@@ -4430,20 +5153,58 @@ function Step9FinishedGoods({ wipList, shippingHistory, orderList, ctx }) {
               );
             }
 
-            transaction.set(getDocRef("shippingHistory", hid), {
-              id: hid,
-              orderId: live.orderId || "",
-              lot: live.mixLot,
-              type: live.type,
-              height: live.height,
-              weight: live.weight || "",
-              qty: safeQty,
-              destination: d.destination,
-              operator: d.operator,
-              date: curTime.slice(0, 16),
-              details: live.details || "",
-              createdAt: serverTimestamp(),
-            });
+           const shippingLot =
+  getPackagingLot(live) ||
+  live.mixLot;
+
+transaction.set(
+  getDocRef(
+    "shippingHistory",
+    hid
+  ),
+  {
+    id: hid,
+
+    orderId:
+      live.orderId || "",
+
+    // 고객/제품에 표시되는 실제 LOT
+    lot: shippingLot,
+    packLot: shippingLot,
+
+    // 생산 추적용 LOT
+    originalLot:
+      live.mixLot,
+
+    type:
+      live.type,
+
+    height:
+      live.height,
+
+    weight:
+      live.weight || "",
+
+    qty:
+      safeQty,
+
+    destination:
+      d.destination,
+
+    operator:
+      d.operator,
+
+    date:
+      curTime.slice(0, 16),
+
+    details:
+      live.details || "",
+
+    createdAt:
+      serverTimestamp(),
+  }
+);
+             
 
             const remainQty = liveQty - safeQty;
             if (remainQty <= 0) {
@@ -4507,7 +5268,18 @@ function Step9FinishedGoods({ wipList, shippingHistory, orderList, ctx }) {
                 const d = shipData[w.id] || {};
                 return (
                   <tr key={w.id} className="border-b hover:bg-slate-50">
-                    <td className="p-3 font-bold text-slate-700">{w.mixLot}</td>
+                    <td className="p-3">
+  <div className="font-black text-indigo-700">
+    {getPackagingLot(w) || w.mixLot}
+  </div>
+
+  {getPackagingLot(w) &&
+    getPackagingLot(w) !== w.mixLot && (
+      <div className="text-[9px] text-slate-400 mt-1">
+        생산 LOT: {w.mixLot}
+      </div>
+    )}
+</td>
                     <td className="p-3 font-bold">{getProductLabel(w.type)} {w.height}T</td>
                     <td className="p-3 font-black text-indigo-600 text-lg">{w.qty}</td>
                     <td className="p-3"><input type="number" max={w.qty} min="1" placeholder="수량" value={d.qty || ""} onChange={(e) => setShipData({ ...shipData, [w.id]: { ...d, qty: e.target.value } }) } className="w-full border p-2 rounded text-center font-bold focus:border-indigo-400 outline-none" /></td>
@@ -4566,8 +5338,37 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
     const isMatch = (item, isShipped) => {
       const productLabel = item.type ? getProductLabel(item.type) : "";
       const searchableText = isShipped
-        ? `${item.lot || ""} ${item.originalLot || ""} ${productLabel} ${item.height || ""}T ${item.destination || ""} ${item.operator || ""} ${item.details || ""}`.toUpperCase()
-        : `${item.mixLot || ""} ${item.originalLot || ""} ${productLabel} ${item.height || ""}T ${item.details || ""}`.toUpperCase();
+  ? `${
+      item.lot || ""
+    } ${
+      item.packLot || ""
+    } ${
+      item.originalLot || ""
+    } ${
+      productLabel
+    } ${
+      item.height || ""
+    }T ${
+      item.destination || ""
+    } ${
+      item.operator || ""
+    } ${
+      item.details || ""
+    }`.toUpperCase()
+
+  : `${
+      item.packLot || ""
+    } ${
+      item.mixLot || ""
+    } ${
+      item.originalLot || ""
+    } ${
+      productLabel
+    } ${
+      item.height || ""
+    }T ${
+      item.details || ""
+    }`.toUpperCase();
       return searchTerms.every((term) => searchableText.includes(term));
     };
 
@@ -4630,7 +5431,9 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
                 <div className={`flex flex-col md:flex-row justify-between items-start md:items-center border-b pb-4 mb-4 gap-4 ${isEditing ? "border-orange-200" : "border-indigo-100"}`}>
                   <div>
                     <span className={`px-3 py-1 rounded-full text-xs font-black mr-3 ${result.type === "shipped" ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700"}`}>{result.type === "shipped" ? "출고 완료 제품" : "생산 진행 중"}</span>
-                    <span className="font-black text-2xl text-slate-800">{result.data.lot || result.data.mixLot}</span>
+                    <span className="font-black text-2xl text-slate-800">{result.data.lot ||
+ result.data.packLot ||
+ result.data.mixLot}</span>
                     {result.data.originalLot && <div className="text-sm font-bold text-slate-400 mt-1">원로트: {result.data.originalLot}</div>}
                   </div>
                   <div className="text-left md:text-right flex flex-col items-start md:items-end">
