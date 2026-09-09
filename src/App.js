@@ -776,11 +776,42 @@ export default function DasanMES() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [pinInput, setPinInput] = useState("");
 
-  const urlParams = new URLSearchParams(window.location.search);
-  const initialStep = urlParams.get("step") || "dashboard";
+  const urlParams =
+  new URLSearchParams(window.location.search);
 
-  const [user, setUser] = useState(null);
-  const [activeStep, setActiveStep] = useState(initialStep);
+const requestedStep =
+  urlParams.get("step") || "dashboard";
+
+// 실제 존재하는 화면
+const VALID_STEP_IDS = [
+  ...PROCESS_STEPS.map((step) => step.id),
+  "settings",
+];
+
+// 작업자 PIN으로 접근 가능한 화면
+const WORKER_ALLOWED_STEP_IDS = [
+  "step0",
+  "step1",
+  "step2",
+  "step3",
+  "step4",
+  "step5",
+  "step5_shrink",
+  "step6",
+  "step7",
+  "step8",
+  "step9",
+];
+
+// 존재하지 않는 URL은 별도 invalid 상태로 둠
+const initialStep =
+  VALID_STEP_IDS.includes(requestedStep)
+    ? requestedStep
+    : "invalid";
+
+const [user, setUser] = useState(null);
+const [activeStep, setActiveStep] =
+  useState(initialStep);
   const [toast, setToast] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null);
   const [inventory, setInventory] = useState([]);
@@ -857,10 +888,28 @@ export default function DasanMES() {
           <form onSubmit={(e) => {
               e.preventDefault();
               if (pinInput === MASTER_PIN) { setIsUnlocked(true); setIsAdmin(true); } 
-              else if (pinInput === PROCESS_PIN) {
-                if (activeStep === "dashboard" || activeStep === "tracking") { showToast("해당 화면은 마스터 핀 번호가 필요합니다.", "error"); } 
-                else { setIsUnlocked(true); setIsAdmin(false); }
-              } else { showToast("접근 권한이 없습니다 (PIN 불일치)", "error"); }
+             else if (pinInput === PROCESS_PIN) {
+
+  if (activeStep === "invalid") {
+    showToast(
+      "잘못된 공정 주소입니다. 올바른 작업 공정 주소로 다시 접속해주세요.",
+      "error"
+    );
+    return;
+  }
+
+  if (!WORKER_ALLOWED_STEP_IDS.includes(activeStep)) {
+    showToast(
+      "해당 화면은 마스터 권한이 필요합니다.",
+      "error"
+    );
+    return;
+  }
+
+  setIsUnlocked(true);
+  setIsAdmin(false);
+}
+             else { showToast("접근 권한이 없습니다 (PIN 불일치)", "error"); }
             }} className="flex flex-col gap-4 w-full">
             <input type="password" value={pinInput} onChange={(e) => setPinInput(e.target.value)} className="text-slate-900 px-5 py-3.5 rounded-xl font-black outline-none text-center text-xl tracking-widest focus:ring-2 focus:ring-indigo-500" placeholder="PIN 번호" autoFocus />
             <button type="submit" className="bg-indigo-600 px-5 py-3.5 rounded-xl font-bold hover:bg-indigo-500 transition-colors shadow-lg shadow-indigo-900/50">MES 시스템 접속</button>
@@ -872,6 +921,28 @@ export default function DasanMES() {
 
   const renderContent = () => {
     const props = { inventory, wipList, orderList, inventoryHistory, shippingHistory, furnaces, dryingRoom, masterSettings, setActiveStep, ctx };
+    // ==========================================
+// 화면 렌더링 단계의 2차 권한 방어
+// URL 조작으로 관리자 화면 진입 방지
+// ==========================================
+if (
+  !isAdmin &&
+  !WORKER_ALLOWED_STEP_IDS.includes(activeStep)
+) {
+  return (
+    <div className="bg-white border border-red-200 rounded-2xl p-10 text-center">
+      <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+
+      <h2 className="text-xl font-black text-red-600 mb-2">
+        접근할 수 없는 화면입니다.
+      </h2>
+
+      <p className="text-slate-500 font-bold">
+        올바른 공정 주소로 다시 접속해주세요.
+      </p>
+    </div>
+  );
+}
     switch (activeStep) {
       case "dashboard": return <DashboardView {...props} />;
       case "step0": return <Step0OrderManagement {...props} />;
@@ -887,7 +958,20 @@ export default function DasanMES() {
       case "step9": return <Step9FinishedGoods {...props} />;
       case "tracking": return <StepTracking {...props} />;
       case "settings": return <Step10Settings {...props} />;
-      default: return <DashboardView {...props} />;
+      default:
+  return (
+    <div className="bg-white border border-red-200 rounded-2xl p-10 text-center">
+      <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+
+      <h2 className="text-xl font-black text-red-600 mb-2">
+        잘못된 공정 주소입니다.
+      </h2>
+
+      <p className="text-slate-500 font-bold">
+        URL의 step 값을 확인해주세요.
+      </p>
+    </div>
+  );
     }
   };
 
