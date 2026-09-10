@@ -5029,6 +5029,12 @@ const productSKU =
       
 const productDisplayName =
   `Z ${productSeries} ${productShade} ${wip.height}`;
+
+const productRef =
+  `${productSKU}D98`;
+
+const productRefDisplay =
+  `Z ${productSeries} ${productShade} ${wip.height} D98`;
       
 // 기존 productName 필드도 SKU와 동일하게 사용
 const productName = productSKU;
@@ -5113,6 +5119,8 @@ const manufacturedDate =
   sku: productSKU,
   displayName: productDisplayName,
   productName: productName,
+  ref: productRef,
+  refDisplay: productRefDisplay,
   series: productSeries,
   color: productShade,
   height: wip.height,
