@@ -5007,15 +5007,64 @@ const curTime = getKST();
   getPackagingLot(wip) ||
   await ensurePackagingLot(wipId);
 
-      const now = getKST();
+     const now = getKST();
 
-      const productName =
-        `Z1100VT${getProductShade(
-          wip.type
-        )}${wip.height}`;
+// ======================================
+// 제품 SKU
+// 예:
+// 345 BL3 / 25T → Z345BL325
+// 234 BL3 / 25T → Z234BL325
+// ======================================
+const productSeries =
+  getProductSeries(wip.type);
 
-      const sizeDisplay =
-        `Φ98 x ${wip.height}mm`;
+const productShade =
+  getProductShade(wip.type);
+
+const productSKU =
+  getProductSKU(
+    wip.type,
+    wip.height
+  );
+
+// 기존 productName 필드도 SKU와 동일하게 사용
+const productName = productSKU;
+
+const sizeDisplay =
+  `Φ98 x ${wip.height}mm`;
+
+// ======================================
+// 실제 제조일 = 최종 열처리 완료일
+// ======================================
+const heatHistory =
+  Array.isArray(wip.heatTreatmentHistory)
+    ? wip.heatTreatmentHistory
+    : [];
+
+const completedHeatRecords =
+  heatHistory.filter(
+    (h) => h && h.completedAt
+  );
+
+const lastHeatRecord =
+  completedHeatRecords.length > 0
+    ? completedHeatRecords[
+        completedHeatRecords.length - 1
+      ]
+    : null;
+
+const manufacturedAt =
+  lastHeatRecord?.completedAt || "";
+
+if (!manufacturedAt) {
+  return ctx.showToast(
+    "열처리 완료일을 찾을 수 없어 라벨을 출력할 수 없습니다.",
+    "error"
+  );
+}
+
+const manufacturedDate =
+  manufacturedAt.split(" ")[0];
 
       const s =
         Number(wip.shrinkageRate);
