@@ -5026,7 +5026,10 @@ const productSKU =
     wip.type,
     wip.height
   );
-
+      
+const productDisplayName =
+  `Z ${productSeries} ${productShade} ${wip.height}`;
+      
 // 기존 productName 필드도 SKU와 동일하게 사용
 const productName = productSKU;
 
@@ -5105,51 +5108,45 @@ const manufacturedDate =
             database,
             "print-queue"
           ),
-          {
-            productName,
+         {
+  // 제품 식별
+  sku: productSKU,
+  displayName: productDisplayName,
+  productName: productName,
+  series: productSeries,
+  color: productShade,
+  height: wip.height,
 
-            color:
-              getProductShade(
-                wip.type
-              ),
+  // 실물 제품에 찍히는 LOT
+  lotNumber: finalLot,
 
-            height:
-              wip.height,
+  // 추적용 생산 LOT
+  sourceLot: wip.mixLot,
 
-            // 실물 제품에 찍히는 LOT
-            lotNumber:
-              finalLot,
+  // 실제 제조일 = 열처리 완료일
+  mfgDate: manufacturedDate,
 
-            // 추적용 생산 LOT
-            sourceLot:
-              wip.mixLot,
+  // 제품 규격
+  size: sizeDisplay,
 
-            shrinkage:
-              wip.shrinkageRate,
+  // 수축률 / 확대율
+  shrinkage: wip.shrinkageRate,
+  scaleFactor: calculatedScaleFactor,
 
-            scaleFactor:
-              calculatedScaleFactor,
+  // 실제 출력할 라벨 수량
+  quantity: finalQty,
 
-            mfgDate:
-              (
-                wip.packLotCreatedAt ||
-                now
-              ).split(" ")[0],
+  // 개별 제품 포장수량
+  unitQty: 1,
 
-            size:
-              sizeDisplay,
+  // 고정 GTIN
+  gtin: "08600015381754",
 
-            quantity:
-              finalQty,
+  status: "pending",
 
-            status:
-              "pending",
-
-            createdAt:
-              serverTimestamp(),
-          }
-        );
-
+  createdAt:
+    serverTimestamp(),
+}
         // 출력 이력 저장
         try {
           await setDoc(
