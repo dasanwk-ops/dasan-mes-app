@@ -34,6 +34,26 @@ const getProductShade = (value = "") => {
   return parts.length > 1 ? parts.slice(1).join(" ") : normalized;
 };
 
+// ==========================================
+// 제품군 코드 추출
+// 예: "345 BL3" → "345"
+//     "234 B1"  → "234"
+// ==========================================
+const getProductSeries = (value = "") => {
+  return normalizeProductType(value).split(" ")[0] || "345";
+};
+
+// ==========================================
+// SKU 자동 생성
+// 예: "345 BL3", 25 → Z345BL325
+//     "234 B1",  25 → Z234B125
+// ==========================================
+const getProductSKU = (type, height) => {
+  const series = getProductSeries(type);
+  const shade = getProductShade(type).replace(/\s+/g, "");
+  return `Z${series}${shade}${height}`;
+};
+
 const getProductLabel = (value = "") => normalizeProductType(value);
 
 // ==========================================
