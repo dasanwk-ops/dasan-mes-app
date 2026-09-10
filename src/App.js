@@ -67,7 +67,7 @@ const getProductLabel = (value = "") => normalizeProductType(value);
 // Firestore Transaction으로 동시 발급 중복 방지
 // ==========================================
 const formatPackagingLot = (dateKey, seq) => {
-  return `F${dateKey}-${String(seq).padStart(3, "0")}`;
+  return `F${dateKey}${String(seq).padStart(3, "0")}`;
 };
 
 const ensurePackagingLot = async (wipId) => {
