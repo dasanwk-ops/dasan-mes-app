@@ -1206,11 +1206,11 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
 
             let slotQty = 0;
             Object.values(desks || {}).forEach((desk) => {
-              Object.values(desk?.slotData || {}).forEach((slot) => {
+              [desk, ...(desk?.queue || [])].forEach(batch => Object.values(batch?.slotData || {}).forEach((slot) => {
                 if (String(slot?.wipId || "") === String(wip.id)) {
                   slotQty += Number(slot?.qty) || 0;
                 }
-              });
+              }));
             });
 
             if (slotQty > 0) {
@@ -3386,6 +3386,20 @@ await setDoc(
 // A. 열처리 완료 → 수축률 측정 대기
 // 전기로 / 위치 / 수량 / 온도 / 작업자 이력 저장
 // ==========================================
+const liveFurnace = furnaceSnap.exists() ? furnaceSnap.data()[fid] : null;
+if (!liveFurnace?.isHeating || JSON.stringify(liveFurnace) !== JSON.stringify(f)) {
+  throw new Error("전기로 데이터가 변경되었거나 이미 이관되었습니다. 새로고침 후 확인하세요.");
+}
+for (const wId of Object.keys(grouped)) {
+  if (!wipSnaps[wId]?.exists() || wipSnaps[wId].data().currentStep !== "step5") {
+    throw new Error("열처리 WIP 상태가 다릅니다. 중복 이관 또는 분할 배정을 확인하세요.");
+  }
+}
+for (const wId of Object.keys(grouped)) {
+  if (Number(wipSnaps[wId].data().qty) !== grouped[wId].qty) {
+    throw new Error("로트가 여러 전기로에 나뉘거나 일부만 배정되어 있습니다. 수량 유실 방지를 위해 로트 전체를 한 회차에 배정하거나 WIP를 먼저 분할하세요.");
+  }
+}
 const completedAt = getKST();
 
 for (const wId of Object.keys(grouped)) {
@@ -3497,12 +3511,18 @@ for (const wId of Object.keys(grouped)) {
   ]
 };
            });
-           currentDesks[fid] = {
-              step: 1, // 1: 소결 전 면적 입력 단계
-              operator: f.operator || "",
-              memo: f.memo || "",
-              slotData: newShrinkSlotData
+           const incoming = {
+             batchId: `${fid}-${f.startedAt || completedAt}-${Date.now()}`,
+             revision: 0, createdAt: completedAt, step: 1,
+             operator: f.operator || "", memo: f.memo || "", slotData: newShrinkSlotData
            };
+           const active = currentDesks[fid] || {};
+           if (Object.keys(active.slotData || {}).length) {
+             currentDesks[fid] = { ...active, queue: [...(active.queue || []), incoming] };
+           } else {
+             const waiting = [...(active.queue || []), incoming];
+             currentDesks[fid] = { ...waiting.shift(), queue: waiting };
+           }
            transaction.set(shrinkRef, currentDesks);
 
            // C. 가동 종료된 전기로 완벽 초기화
@@ -3520,45 +3540,11 @@ for (const wId of Object.keys(grouped)) {
 
         // Firestore 트랜잭션이 성공한 뒤에만 Google Sheets에 열처리 완료 로그를 남깁니다.
         // 트랜잭션 내부에서 외부 HTTP 요청을 보내면 재시도 시 중복 기록될 수 있으므로 반드시 밖에서 실행합니다.
-       const slotSummary =
-  info.furnaceSlots
-    .map(
-      (slot) =>
-        `${slot.fid}호기 ` +
-        `${getFurnaceSlotLabel(slot.slotId)}` +
-        `(${Number(slot.qty) || 0}EA)`
-    )
-    .join(", ");
-
-return {
-  wip: {
-    ...(originalWip || {}),
-
-    mixLot:
-      originalWip?.mixLot ||
-      fallbackSlot.mixLot ||
-      "N/A",
-
-    type:
-      originalWip?.type ||
-      fallbackSlot.type ||
-      "",
-
-    height:
-      originalWip?.height ||
-      fallbackSlot.height ||
-      "",
-
-    qty:
-      Number(info.qty) || 0,
-  },
-
-  operator:
-    f.operator ||
-    "현장작업자",
-
-  slotSummary,
-};
+        const heatProcessLogs = Object.entries(grouped).map(([wId, info]) => {
+          const originalWip = wipList.find(w => w.id === wId) || {};
+          return { wip: { ...originalWip, qty: info.qty }, operator: f.operator || "현장작업자",
+            slotSummary: info.furnaceSlots.map(slot => `${slot.fid}호기 ${getFurnaceSlotLabel(slot.slotId)}(${slot.qty}EA)`).join(", ") };
+        });
         await Promise.all(
           heatProcessLogs.map((item) =>
             logProcessToGoogleSheet(
@@ -3733,6 +3719,21 @@ return {
 // ==========================================
 // [신규] Step 5.5: Shrinkage Measurement (수축률 측정)
 // ==========================================
+const ShrinkInput = ({ onChange, value, ...props }) => <input {...props} value={value ?? ""} onChange={e => onChange(e.target.value)} />;
+const recalcShrinkSlots = slots => {
+  Object.values(slots || {}).forEach(slot => {
+    (slot.measurements || []).forEach(m => {
+      const pre = Number(m.preArea), post = Number(m.postArea);
+      if (Number.isFinite(pre) && Number.isFinite(post) && pre > post && post > 0) {
+        m.calcShrink = ((1 - Math.sqrt(post / pre)) * 100).toFixed(2);
+        m.calcExpand = Math.sqrt(pre / post).toFixed(4);
+      } else { m.calcShrink = ""; m.calcExpand = ""; }
+    });
+    const values = (slot.measurements || []).map(m => Number.parseFloat(m.calcShrink)).filter(Number.isFinite);
+    slot.slotAvgShrink = values.length ? (values.reduce((a, b) => a + b, 0) / values.length).toFixed(2) : "";
+    slot.slotAvgExpand = values.length ? (1 / (1 - Number(slot.slotAvgShrink) / 100)).toFixed(4) : "";
+  });
+};
 function Step5_5Shrinkage({ wipList, ctx }) {
   const pendingWip = wipList.filter(w => w.currentStep === "step5_shrink");
   const [selectedWipId, setSelectedWipId] = useState(null);
@@ -3743,46 +3744,161 @@ function Step5_5Shrinkage({ wipList, ctx }) {
   });
   const shrinkDesksRef = useRef(shrinkDesks);
 
+  const analyzedBatch = useRef(null);
+  const dirty = useRef({});
+  const draftBase = useRef({});
+  const busyRef = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [saveMessage, setSaveMessage] = useState("");
+  const serverDesks = useRef({});
+  const emptyDesk = () => ({ step: 0, operator: "", memo: "", slotData: {}, queue: [] });
   useEffect(() => {
-    const db = getFirestore();
-    const unsub = onSnapshot(getDocRef("equipment", "shrinkDesks"), (docSnap) => {
-    if (docSnap.exists()) {
-  const loaded = docSnap.data();
-
-  const nextDesks = {
-    1: { step: 0, operator: "", memo: "", slotData: {}, ...loaded[1] },
-    2: { step: 0, operator: "", memo: "", slotData: {}, ...loaded[2] }
-  };
-
-  shrinkDesksRef.current = nextDesks;
-  setShrinkDesks(nextDesks);
-}
-    else {
-        setDoc(getDocRef("equipment", "shrinkDesks"), {
-          1: { step: 0, operator: "", memo: "", slotData: {} },
-          2: { step: 0, operator: "", memo: "", slotData: {} }
-        });
-      }
-    });
-    return () => unsub();
+    const unsub = onSnapshot(getDocRef("equipment", "shrinkDesks"), snap => {
+      const data = snap.exists() ? snap.data() : {};
+      serverDesks.current = data;
+      const next = {};
+      [1, 2].forEach(fid => {
+        next[fid] = dirty.current[fid] ? shrinkDesksRef.current[fid] : { ...emptyDesk(), ...data[fid] };
+      });
+      shrinkDesksRef.current = next;
+      setShrinkDesks(next);
+      setLoaded(true);
+    }, error => setSaveMessage(`읽기 실패: ${error.message}`));
+    const warn = e => {
+      if (Object.values(dirty.current).some(Boolean)) { e.preventDefault(); e.returnValue = ""; }
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => { unsub(); window.removeEventListener("beforeunload", warn); };
   }, []);
 
- const updateDesk = async (fid, newData) => {
-  const updatedDesks = cloneDeep(shrinkDesksRef.current);
+  // Editing stays local until an explicit save; no asynchronous input snapshots can overwrite typing.
+  const updateDesk = (fid, newData) => {
+    if (busyRef.current) return;
+    if (!dirty.current[fid]) draftBase.current[fid] = cloneDeep(serverDesks.current[fid] || emptyDesk());
+    dirty.current[fid] = true;
+    const next = { ...shrinkDesksRef.current, [fid]: newData };
+    shrinkDesksRef.current = next;
+    setShrinkDesks(next);
+    setSaveMessage("미저장 — 입력 저장 또는 임시저장 및 잠금을 눌러주세요.");
+  };
+  const deskVersion = d => JSON.stringify({ ...d, queue: undefined });
+  const saveDesk = async (fid, override = {}) => {
+    const draft = cloneDeep(shrinkDesksRef.current[fid]);
+    recalcShrinkSlots(draft.slotData);
+    const expected = dirty.current[fid] ? draftBase.current[fid] : (serverDesks.current[fid] || emptyDesk());
+    // A dirty draft must retain its originally loaded revision and batch identity.
+    let saved;
+    await runTransaction(getFirestore(), async tx => {
+      const ref = getDocRef("equipment", "shrinkDesks");
+      const snap = await tx.get(ref);
+      const all = snap.exists() ? snap.data() : {};
+      const live = all[fid] || emptyDesk();
+      if ((live.batchId || "") !== (draft.batchId || "") ||
+          (live.revision || 0) !== (draft.revision || 0) ||
+          (!live.batchId && deskVersion(live) !== deskVersion(expected))) {
+        throw new Error("다른 화면에서 작업이 변경되었습니다. 현재 입력을 별도 기록한 후 새로고침해 비교하세요.");
+      }
+      if (!Object.keys(draft.slotData || {}).length) throw new Error("측정 대상이 없습니다.");
+      for (const slot of Object.values(draft.slotData)) {
+        const w = await tx.get(getDocRef("wipList", slot.wipId));
+        if (!w.exists() || w.data().currentStep !== "step5_shrink") {
+          throw new Error("현재 수축률 공정이 아닌 슬롯이 있습니다. 혼재 데이터 분리를 먼저 실행하세요.");
+        }
+      }
+      saved = { ...draft, ...override, batchId: live.batchId || `legacy-${fid}-${Date.now()}`,
+        revision: (live.revision || 0) + 1, savedAt: getKST(), queue: live.queue || [] };
+      // Each confirmed save also keeps an independent revision of the measurements.
+      const { queue: checkpointQueue, ...checkpoint } = saved;
+      tx.set(getDocRef("shrinkArchives", `${saved.batchId}-r${saved.revision}`), {
+        ...checkpoint, furnaceId: fid, kind: "checkpoint"
+      });
+      // Replace the complete map, never recursively merge slotData.
+      tx.set(ref, { ...all, [fid]: saved });
+    });
+    dirty.current[fid] = false;
+    serverDesks.current = { ...serverDesks.current, [fid]: saved };
+    shrinkDesksRef.current = { ...shrinkDesksRef.current, [fid]: saved };
+    setShrinkDesks(shrinkDesksRef.current);
+    setSaveMessage(`저장 완료: ${saved.savedAt}`);
+    return saved;
+  };
+  const guarded = async action => {
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true);
+    try { await action(); }
+    catch (e) { setAlertModal({ isOpen: true, message: e.message, type: "error" }); }
+    finally { busyRef.current = false; setBusy(false); }
+  };
+  const selectBatch = (fid, batchId) => guarded(async () => {
+    if (dirty.current[fid]) await saveDesk(fid);
+    await runTransaction(getFirestore(), async tx => {
+      const ref = getDocRef("equipment", "shrinkDesks");
+      const snap = await tx.get(ref); const all = snap.data() || {};
+      const active = all[fid] || emptyDesk();
+      const queue = [...(active.queue || [])];
+      const index = queue.findIndex(b => b.batchId === batchId);
+      if (index < 0) throw new Error("대기 작업이 변경되었습니다.");
+      const chosen = queue.splice(index, 1)[0];
+      const { queue: ignored, ...old } = active;
+      if (Object.keys(old.slotData || {}).length) queue.unshift(old);
+      tx.set(ref, { ...all, [fid]: { ...chosen, queue } });
+    });
+  });
+  const isolateStale = fid => guarded(async () => {
+    if (dirty.current[fid]) throw new Error("미저장 입력을 별도로 기록하고 새로고침 후 분리하세요.");
+    const backupId = `repair-${fid}-${Date.now()}`;
+    await runTransaction(getFirestore(), async tx => {
+      const ref = getDocRef("equipment", "shrinkDesks");
+      const snap = await tx.get(ref); const all = snap.data() || {};
+      const active = all[fid] || emptyDesk();
+      const batches = [active, ...(active.queue || [])];
+      const states = {};
+      for (const batch of batches) for (const slot of Object.values(batch.slotData || {})) {
+        if (!(slot.wipId in states)) {
+          const w = await tx.get(getDocRef("wipList", slot.wipId));
+          states[slot.wipId] = w.exists() ? w.data().currentStep : null;
+        }
+      }
+      const cleaned = batches.map((batch, i) => {
+        const { queue, ...rest } = batch;
+        return { ...rest, batchId: batch.batchId || `${backupId}-${i}`, revision: (batch.revision || 0) + 1,
+          slotData: Object.fromEntries(Object.entries(batch.slotData || {}).filter(([, v]) => states[v.wipId] === "step5_shrink")) };
+      }).filter(batch => Object.keys(batch.slotData).length);
+      tx.set(getDocRef("shrinkArchives", backupId), { kind: "repair-backup", createdAt: getKST(), furnaceId: fid, original: active, states });
+      tx.set(ref, { ...all, [fid]: cleaned.length ? { ...cleaned[0], queue: cleaned.slice(1) } : emptyDesk() });
+    });
+    setSaveMessage("원본 백업 후 현재 수축률 공정이 아닌 슬롯을 분리했습니다. 남은 값도 실측 기록과 대조하세요.");
+  });
 
-  updatedDesks[fid] = newData;
-
-  // 화면 및 검사용 데이터를 즉시 갱신
-  shrinkDesksRef.current = updatedDesks;
-  setShrinkDesks(updatedDesks);
-
-  // 해당 측정대 데이터만 Firebase에 병합 저장
-  await setDoc(
-    getDocRef("equipment", "shrinkDesks"),
-    { [fid]: newData },
-    { merge: true }
-  );
-};
+  const recoverOrphan = wipId => guarded(async () => {
+    if (Object.values(dirty.current).some(Boolean)) throw new Error("먼저 현재 입력을 저장하세요.");
+    const recoveryId = `recovery-${Date.now()}-${wipId}`;
+    await runTransaction(getFirestore(), async tx => {
+      const ref = getDocRef("equipment", "shrinkDesks");
+      const snap = await tx.get(ref); const all = snap.exists() ? snap.data() : {};
+      const wipSnap = await tx.get(getDocRef("wipList", wipId));
+      if (!wipSnap.exists() || wipSnap.data().currentStep !== "step5_shrink") throw new Error("현재 측정 대기 로트가 아닙니다.");
+      const w = wipSnap.data();
+      if (Object.values(all).some(d => [d, ...(d.queue || [])].some(b => Object.values(b.slotData || {}).some(s => s.wipId === wipId)))) throw new Error("이미 측정 작업에 등록되어 있습니다.");
+      const positions = w.furnaceSlots || [];
+      const fid = positions[0]?.furnaceId ?? positions[0]?.fid;
+      const validSlots = new Set(["L1","R1","L2","R2","L3","R3","L4","R4","L5","R5","L6","R6"]);
+      if (!positions.length || !["1", "2"].includes(String(fid)) ||
+          positions.some(p => String(p.furnaceId ?? p.fid) !== String(fid) || !validSlots.has(p.slotId) || !(Number(p.qty) > 0)) ||
+          new Set(positions.map(p => p.slotId)).size !== positions.length ||
+          positions.reduce((n,p) => n + Number(p.qty),0) !== Number(w.qty)) {
+        throw new Error("열처리 위치 또는 수량이 불완전합니다. 이 로트의 열처리 기록과 실물 배치를 먼저 확인해야 합니다.");
+      }
+      const batch = { batchId: recoveryId, revision: 0, step: 1, createdAt: getKST(), operator: "", memo: "누락 로트 복구: 면적은 실측 기록으로 재입력 필요",
+        slotData: Object.fromEntries(positions.map(p => [p.slotId, { wipId, mixLot: w.mixLot || "", type: w.type || "", height: w.height || "", qty: Number(p.qty), furnaceId: fid, furnaceSlotId: p.slotId,
+          measurements: [{ position: "", preArea: "", postArea: "", calcShrink: "", calcExpand: "" }] }])) };
+      const active = all[fid] || emptyDesk();
+      tx.set(getDocRef("shrinkArchives", recoveryId), { kind: "recovery-source", createdAt: getKST(), originalWip: w, originalDesk: active });
+      tx.set(ref, { ...all, [fid]: Object.keys(active.slotData || {}).length ? { ...active, queue: [...(active.queue || []), batch] } : { ...batch, queue: active.queue || [] } });
+    });
+    setSaveMessage("누락 로트를 별도 작업으로 등록했습니다. 소결 전·후 면적은 해당 로트의 실측 기록에서 입력하세요.");
+  });
 
   const [alertModal, setAlertModal] = useState({ isOpen: false, message: "", type: "info" });
   const [lotSplitModal, setLotSplitModal] = useState({ isOpen: false, fid: null, lotsToSplit: [], lotsToMerge: [], newSlotDataCache: null });
@@ -3844,6 +3960,7 @@ function Step5_5Shrinkage({ wipList, ctx }) {
    const d = shrinkDesksRef.current[fid] || {};
     const newData = cloneDeep(d.slotData);
     newData[slotId].measurements = newData[slotId].measurements.filter((_, i) => i !== idx);
+    recalcShrinkSlots(newData);
     await updateDesk(fid, { ...d, slotData: newData });
   };
 
@@ -3878,10 +3995,10 @@ function Step5_5Shrinkage({ wipList, ctx }) {
 
     const hasIncompleteMeasurement = Object.values(d.slotData).some(
   s =>
-    s.measurements.some(
+    !(s.measurements || []).length || s.measurements.some(
       m =>
         !String(m.position || "").trim() ||
-        !String(m.preArea || "").trim()
+        !(Number(m.preArea) > 0) || !Number.isFinite(Number(m.preArea))
     )
 );
 
@@ -3893,25 +4010,26 @@ if (hasIncompleteMeasurement) {
   });
 }
     
-    await updateDesk(fid, { ...d, step: 2 });
+    await saveDesk(fid, { step: 2, preLockedAt: getKST() });
     setAlertModal({ isOpen: true, message: "✅ 소결 전 면적이 안전하게 잠금 처리되었습니다.\n하루 뒤 소결 공정이 끝나면, 이어서 '소결 후 면적'을 입력해주세요.", type: "success" });
   };
 
   const unlockPreSintering = async (fid) => {
 const d = shrinkDesksRef.current[fid] || {};
-    await updateDesk(fid, { ...d, step: 1 });
+    await saveDesk(fid, { step: 1 });
   };
 
   const analyzeAndSaveLots = async (fid) => {
     try {
+      await saveDesk(fid);
       const d = shrinkDesksRef.current[fid] || {};
       if (!d.operator || d.operator.trim() === "") {
         return setAlertModal({ isOpen: true, message: "담당자 성명을 입력해주세요.", type: "warning" });
       }
 
-      const hasEmptyPostArea = Object.values(d.slotData || {}).some(s => s.measurements.some(m => !m.postArea));
+      const hasEmptyPostArea = Object.values(d.slotData || {}).some(s => !(s.measurements || []).length || s.measurements.some(m => !m.position || !(Number(m.preArea) > Number(m.postArea)) || !(Number(m.postArea) > 0) || !Number.isFinite(Number(m.preArea)) || !Number.isFinite(Number(m.postArea))));
       if (hasEmptyPostArea) {
-        return setAlertModal({ isOpen: true, message: "모든 칸의 '소결 후 면적'을 입력해주세요.", type: "warning" });
+        return setAlertModal({ isOpen: true, message: "모든 시편의 위치와 양수 면적을 입력하세요. 소결 후 면적은 소결 전보다 작아야 합니다.", type: "warning" });
       }
 
       let newSlotData = cloneDeep(d.slotData);
@@ -3925,6 +4043,7 @@ const d = shrinkDesksRef.current[fid] || {};
         }
       });
 
+      analyzedBatch.current = cloneDeep(d);
       let requiresSplitPrompt = false;
       const lotsToSplit = [];
       const lotsToMerge = [];
@@ -3969,7 +4088,8 @@ const d = shrinkDesksRef.current[fid] || {};
   };
 
   const finalizeProcess = async (fid, mergedLots, splitLots) => {
-    const d = shrinkDesks[fid] || { operator: "", memo: "", slotData: {} };
+    const d = analyzedBatch.current;
+    if (!d) throw new Error("먼저 측정 결과를 분석하세요.");
     const curTime = getKST();
     const db = getFirestore();
     let processLogs = [];
@@ -3997,6 +4117,25 @@ const d = shrinkDesksRef.current[fid] || {};
         const shrinkRef = getDocRef("equipment", "shrinkDesks");
         const shrinkDoc = await transaction.get(shrinkRef);
 
+        const liveDesk = shrinkDoc.exists() ? shrinkDoc.data()[fid] : null;
+        if (!liveDesk || liveDesk.step !== 2 || deskVersion(liveDesk) !== deskVersion(d)) {
+          throw new Error("분석 이후 측정 데이터가 변경되었습니다. 다시 분석하세요.");
+        }
+        const analyzedSlots = [...mergedLots, ...splitLots].flatMap(lot => lot.slots);
+        if (!analyzedSlots.length || analyzedSlots.length !== Object.keys(d.slotData).length ||
+            new Set(analyzedSlots.map(x => x.sId)).size !== analyzedSlots.length) {
+          throw new Error("분석 대상 슬롯이 일치하지 않습니다.");
+        }
+        for (const wId of allWipIds) {
+          const w = wipSnaps[wId];
+          if (!w || w.data().currentStep !== "step5_shrink") throw new Error("이미 이관되었거나 존재하지 않는 로트입니다.");
+          const qty = Object.values(d.slotData).filter(x => x.wipId === wId).reduce((n, x) => n + Number(x.qty), 0);
+          if (!(qty > 0) || qty !== Number(w.data().qty)) throw new Error("로트 수량과 측정 수량이 다릅니다. 분할 배정 또는 누락 슬롯을 확인하세요.");
+          for (const [otherFid, desk] of Object.entries(shrinkDoc.data())) {
+            const otherBatches = [...(desk.queue || []), ...(String(otherFid) !== String(fid) ? [desk] : [])];
+            if (otherBatches.some(b => Object.values(b.slotData || {}).some(x => x.wipId === wId))) throw new Error("같은 WIP가 다른 대기 작업에도 있습니다. 배정을 먼저 확인하세요.");
+          }
+        }
         // ==========================================
         // 2. [WRITE] 기존 WIP를 제거하고 확정된 WIP를 새로 만듭니다.
         // ==========================================
@@ -4126,12 +4265,13 @@ nextProcessLogs.push({
         // C. 수축률 측정대 초기화
         // ------------------------------------------
         const currentDesks = shrinkDoc.exists() ? shrinkDoc.data() : {};
-        currentDesks[fid] = {
-          step: 0,
-          operator: "",
-          memo: "",
-          slotData: {},
-        };
+        const waiting = [...(currentDesks[fid]?.queue || [])];
+        const { queue: archivedQueue, ...archivedBatch } = d;
+        transaction.set(getDocRef("shrinkArchives", d.batchId), {
+          ...archivedBatch, furnaceId: fid, completedAt: curTime, kind: "completed",
+          results: nextProcessLogs.map(log => ({ wipId: log.wip.id, mixLot: log.wip.mixLot, qty: log.wip.qty, shrinkageRate: log.wip.shrinkageRate }))
+        });
+        currentDesks[fid] = waiting.length ? { ...waiting.shift(), queue: waiting } : emptyDesk();
         transaction.set(shrinkRef, currentDesks);
 
         // 성공한 트랜잭션 시도의 로그 목록만 바깥으로 전달합니다.
@@ -4140,7 +4280,7 @@ nextProcessLogs.push({
 
       // Firestore commit 성공 이후 Google Sheets 기록.
       // 따라서 transaction 재시도가 발생해도 Sheets 중복 기록이 생기지 않습니다.
-      await Promise.all(
+      const logResults = await Promise.allSettled(
         processLogs.map((log) =>
           logProcessToGoogleSheet(
             "step5_shrink",
@@ -4155,6 +4295,9 @@ nextProcessLogs.push({
       );
 
       ctx.showToast("수축률 분석 및 검수 이관 완료", "success");
+      if (logResults.some(r => r.status === "rejected")) {
+        setAlertModal({ isOpen: true, message: "MES 이관 및 측정 이력 저장은 완료됐지만 일부 Google Sheets 로그 전송이 실패했습니다. MES 이관을 다시 실행하지 마세요.", type: "warning" });
+      }
       setLotSplitModal({
         isOpen: false,
         fid: null,
@@ -4201,7 +4344,10 @@ nextProcessLogs.push({
           <h1 className="font-black text-2xl text-slate-800 tracking-wide">수축률 측정 및 로트 분석</h1>
         </div>
 
-        <div className="grid grid-cols-1 gap-8">
+        <div className="mb-4 p-3 bg-amber-50 border rounded text-sm">{saveMessage || "입력 후 저장하세요. 저장 완료 표시를 확인한 뒤 화면을 이동하세요."}</div>
+        <div className="mb-4 text-sm">측정대에 없는 대기 로트: {pendingWip.filter(w => !Object.values(shrinkDesks).some(d => [d, ...(d.queue || [])].some(b => Object.values(b.slotData || {}).some(s => s.wipId === w.id)))).map(w => `${w.mixLot} (${w.qty}개)`).join(", ") || "없음"}. 누락 로트는 실측 기록과 열처리 위치 확인 후 복구가 필요합니다.</div>
+        <div className="mb-4 flex flex-wrap gap-2">{pendingWip.filter(w => !Object.values(shrinkDesks).some(d => [d, ...(d.queue || [])].some(b => Object.values(b.slotData || {}).some(s => s.wipId === w.id)))).map(w => <button disabled={busy || !loaded || lotSplitModal.isOpen} key={w.id} onClick={() => recoverOrphan(w.id)} className="border rounded p-2 bg-white text-sm">{w.mixLot} 누락 작업 등록 (면적 재입력)</button>)}</div>
+        <fieldset disabled={busy || !loaded || lotSplitModal.isOpen} className="grid grid-cols-1 gap-8">
           {[1, 2].map(id => {
             const d = shrinkDesks[id] || { step: 0, slotData: {} };
             const hasData = Object.keys(d.slotData).length > 0;
@@ -4228,11 +4374,18 @@ nextProcessLogs.push({
             }
 
             return (
-              <div key={id} className={`flex flex-col border-4 rounded-2xl overflow-hidden transition-all duration-300 ${cardStyle}`}>
+              <div key={`${id}-${d.batchId || "legacy"}`} className={`flex flex-col border-4 rounded-2xl overflow-hidden transition-all duration-300 ${cardStyle}`}>
                 <div className={`p-4 text-center font-black text-xl flex justify-center items-center ${headerStyle}`}>
                   {headerText}
                 </div>
 
+                <div className="p-3 bg-white text-sm space-y-2">
+                  <div>현재 작업: {d.createdAt || d.batchId || "기존 데이터"} / 대기 {d.queue?.length || 0}건</div>
+                  {(d.queue || []).map(b => <button key={b.batchId} onClick={() => selectBatch(id, b.batchId)} className="block border rounded p-2 w-full text-left">작업 선택: {b.createdAt || b.batchId} · {b.step === 2 ? "소결 후 측정 대기" : "소결 전 입력"} · {[...new Set(Object.values(b.slotData || {}).map(s => s.mixLot))].join(", ")}</button>)}
+                  <button onClick={() => isolateStale(id)} className="border rounded p-2 text-red-700">혼재 데이터 분리 (원본 백업)</button>
+                  {hasData && <button onClick={() => guarded(() => saveDesk(id))} className="border rounded p-2 ml-2 text-blue-700">입력 저장</button>}
+                  <div>저장시각: {d.savedAt || "미확인"} · {dirty.current[id] ? "미저장 변경 있음" : "저장된 데이터"}</div>
+                </div>
                 <div className="flex flex-col flex-grow p-4 sm:p-5">
                   {hasData && <div className={`text-center font-bold mb-4 text-sm py-2.5 rounded-lg border shadow-sm ${isStep1 ? 'text-indigo-800 bg-indigo-50 border-indigo-200' : 'text-orange-800 bg-orange-50 border-orange-200'}`}>{phaseMessage}</div>}
                   
@@ -4275,7 +4428,7 @@ nextProcessLogs.push({
 </div>
 
 <div className="text-center mb-3">
-                            <div className="text-[10px] text-slate-400 font-bold bg-slate-100 inline-block px-2 py-0.5 rounded-full mb-1">{sData.mixLot.slice(-6)}</div>
+                            <div className="text-[10px] text-slate-400 font-bold bg-slate-100 inline-block px-2 py-0.5 rounded-full mb-1">{sData.mixLot}</div>
                             <div className="font-black text-slate-800 text-lg">{getProductLabel(sData.type)} {sData.height}T</div>
                           </div>
 
@@ -4324,7 +4477,7 @@ nextProcessLogs.push({
           <option value="가운데">가운데</option>
         </select>
 
-        <SyncInput
+        <ShrinkInput
           type="number"
           value={m.preArea}
           onChange={(val) =>
@@ -4367,7 +4520,7 @@ nextProcessLogs.push({
           {m.preArea}
         </div>
 
-        <SyncInput
+        <ShrinkInput
           type="number"
           value={m.postArea}
           onChange={(val) =>
@@ -4402,22 +4555,22 @@ nextProcessLogs.push({
                       <div className="flex gap-3 mb-4">
                         <div className="w-full">
                           <label className="block text-xs font-bold text-slate-500 mb-1">담당 작업자</label>
-                          <SyncInput type="text" placeholder="성명 입력" value={d.operator} onChange={(val) => handleDeskInfo(id, 'operator', val)} className="w-full border-2 border-slate-200 p-2.5 rounded-xl text-center font-bold text-slate-800 focus:border-teal-400 outline-none" />
+                          <ShrinkInput type="text" placeholder="성명 입력" value={d.operator} onChange={(val) => handleDeskInfo(id, 'operator', val)} className="w-full border-2 border-slate-200 p-2.5 rounded-xl text-center font-bold text-slate-800 focus:border-teal-400 outline-none" />
                         </div>
                       </div>
 
                       {isStep1 && (
-                        <button onClick={() => confirmPreSintering(id)} className="w-full py-4 rounded-xl font-black text-lg shadow-md bg-indigo-600 hover:bg-indigo-700 text-white transition-transform active:scale-95">
+                        <button onClick={() => guarded(() => confirmPreSintering(id))} className="w-full py-4 rounded-xl font-black text-lg shadow-md bg-indigo-600 hover:bg-indigo-700 text-white transition-transform active:scale-95">
                           [1단계] 소결 전 면적 임시저장 및 잠금
                         </button>
                       )}
                       
                       {isStep2 && (
                         <div className="flex flex-col gap-2">
-                          <button onClick={() => analyzeAndSaveLots(id)} className="w-full py-4 rounded-xl font-black text-lg shadow-md bg-orange-500 hover:bg-orange-600 text-white transition-transform active:scale-95">
+                          <button onClick={() => guarded(() => analyzeAndSaveLots(id))} className="w-full py-4 rounded-xl font-black text-lg shadow-md bg-orange-500 hover:bg-orange-600 text-white transition-transform active:scale-95">
                             [2단계] 수축률 분석 및 결과 확정
                           </button>
-                          <button onClick={() => unlockPreSintering(id)} className="w-full py-2.5 rounded-xl font-bold text-sm bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-700 border border-slate-300 transition-colors">
+                          <button onClick={() => guarded(() => unlockPreSintering(id))} className="w-full py-2.5 rounded-xl font-bold text-sm bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-700 border border-slate-300 transition-colors">
                             🔓 소결 전 면적 수정하기 (잠금 해제)
                           </button>
                         </div>
@@ -4428,7 +4581,7 @@ nextProcessLogs.push({
               </div>
             );
           })}
-        </div>
+        </fieldset>
       </div>
 
       {alertModal.isOpen && (
@@ -4475,8 +4628,8 @@ nextProcessLogs.push({
             </div>
 
             <div className="flex flex-col gap-3 mt-auto">
-              <button onClick={applyCustomSplit} className="w-full bg-rose-500 hover:bg-rose-600 text-white py-4 rounded-xl font-black text-lg shadow-lg shadow-rose-200 outline-none">지정한 그룹으로 로트 분리 확정</button>
-              <button onClick={applyMergeAll} className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-4 rounded-xl font-black text-lg outline-none border border-slate-300">무시하고 하나의 로트로 통합 (전체 평균)</button>
+              <button onClick={() => guarded(applyCustomSplit)} className="w-full bg-rose-500 hover:bg-rose-600 text-white py-4 rounded-xl font-black text-lg shadow-lg shadow-rose-200 outline-none">지정한 그룹으로 로트 분리 확정</button>
+              <button onClick={() => guarded(applyMergeAll)} className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-4 rounded-xl font-black text-lg outline-none border border-slate-300">무시하고 하나의 로트로 통합 (전체 평균)</button>
             </div>
           </div>
         </div>
@@ -5154,7 +5307,7 @@ const manufacturedDate =
 
   createdAt:
     serverTimestamp(),
-}
+});
         // 출력 이력 저장
         try {
           await setDoc(
