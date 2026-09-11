@@ -20,7 +20,7 @@
     "build": "react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
-    "safety:test": "node --test tests/safety.test.mjs",
+    "safety:test": "node --test tests/*.test.mjs",
     "safety:emulator": "cd tests/emulator && firebase --project demo-dasan-mes emulators:exec --only auth,firestore \"node run-native.mjs\"",
     "safety:render-smoke": "node tools/render-smoke.mjs",
     "safety:source-check": "node tools/check-source.cjs"
