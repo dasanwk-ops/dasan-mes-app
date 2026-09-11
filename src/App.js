@@ -3786,39 +3786,82 @@ function Step5_5Shrinkage({ wipList, ctx }) {
   const saveDesk = async (fid, override = {}) => {
     const hasLocalChanges = Boolean(dirty.current[fid]);
     const localDraft = cloneDeep(shrinkDesksRef.current[fid] || emptyDesk());
-    const expected = cloneDeep(hasLocalChanges
-      ? (draftBase.current[fid] || emptyDesk())
-      : (serverDesks.current[fid] || emptyDesk()));
+    const editBase = cloneDeep(draftBase.current[fid] || serverDesks.current[fid] || emptyDesk());
     let saved;
     await runTransaction(getFirestore(), async tx => {
       const ref = getDocRef("equipment", "shrinkDesks");
       const snap = await tx.get(ref);
       const all = snap.exists() ? snap.data() : {};
       const live = all[fid] || emptyDesk();
-      // Compare the server with the revision on which local editing began.
-      // A clean screen uses the current server record, so a delayed snapshot cannot cause a false conflict.
-      if ((live.batchId || "") !== (expected.batchId || "") ||
-          (live.revision || 0) !== (expected.revision || 0) ||
-          (!live.batchId && deskVersion(live) !== deskVersion(expected))) {
-        throw new Error("다른 화면에서 작업이 변경되었습니다. 현재 입력을 별도 기록한 후 새로고침해 비교하세요.");
+
+      const localBatchId = localDraft.batchId || editBase.batchId || "";
+      const liveBatchId = live.batchId || "";
+      const localSlotIds = Object.keys(localDraft.slotData || {}).sort();
+      const liveSlotIds = Object.keys(live.slotData || {}).sort();
+      const sameSlots = JSON.stringify(localSlotIds) === JSON.stringify(liveSlotIds) &&
+        localSlotIds.every(slotId =>
+          String(localDraft.slotData?.[slotId]?.wipId || "") ===
+          String(live.slotData?.[slotId]?.wipId || "")
+        );
+
+      if ((localBatchId && liveBatchId && localBatchId !== liveBatchId) || !sameSlots) {
+        throw new Error("현재 측정 작업 회차 또는 슬롯 구성이 변경되었습니다. 화면을 새로고침한 후 현재 작업을 다시 확인하세요.");
       }
-      const draft = hasLocalChanges ? localDraft : cloneDeep(live);
+      if (!liveSlotIds.length) throw new Error("측정 대상이 없습니다.");
+
+      // revision이나 잠금 상태만 달라졌다면 Firebase 최신 데이터를 바탕으로 계속 저장합니다.
+      // 같은 입력값이 양쪽 화면에서 서로 다르게 수정된 경우에만 실제 충돌로 차단합니다.
+      const draft = cloneDeep(live);
+      if (hasLocalChanges) {
+        for (const field of ["operator", "memo"]) {
+          const baseValue = editBase[field] ?? "";
+          const localValue = localDraft[field] ?? "";
+          const liveValue = live[field] ?? "";
+          const localChanged = localValue !== baseValue;
+          const liveChanged = liveValue !== baseValue;
+          if (localChanged && liveChanged && localValue !== liveValue) {
+            throw new Error(`다른 화면에서도 ${field === "operator" ? "담당 작업자" : "메모"}가 수정되었습니다. 화면을 새로고침해 값을 확인하세요.`);
+          }
+          if (localChanged) draft[field] = localValue;
+        }
+
+        for (const slotId of localSlotIds) {
+          const baseMeasurements = editBase.slotData?.[slotId]?.measurements || [];
+          const localMeasurements = localDraft.slotData?.[slotId]?.measurements || [];
+          const liveMeasurements = live.slotData?.[slotId]?.measurements || [];
+          const baseText = JSON.stringify(baseMeasurements);
+          const localText = JSON.stringify(localMeasurements);
+          const liveText = JSON.stringify(liveMeasurements);
+          const localChanged = localText !== baseText;
+          const liveChanged = liveText !== baseText;
+          if (localChanged && liveChanged && localText !== liveText) {
+            throw new Error(`${slotId} 위치의 측정값이 다른 화면에서도 수정되었습니다. 화면을 새로고침해 해당 값만 확인하세요.`);
+          }
+          if (localChanged) {
+            draft.slotData[slotId].measurements = cloneDeep(localMeasurements);
+          }
+        }
+      }
+
       recalcShrinkSlots(draft.slotData);
-      if (!Object.keys(draft.slotData || {}).length) throw new Error("측정 대상이 없습니다.");
       for (const slot of Object.values(draft.slotData)) {
         const w = await tx.get(getDocRef("wipList", slot.wipId));
         if (!w.exists() || w.data().currentStep !== "step5_shrink") {
           throw new Error("현재 수축률 공정이 아닌 슬롯이 있습니다. 혼재 데이터 분리를 먼저 실행하세요.");
         }
       }
-      saved = { ...draft, ...override, batchId: live.batchId || `legacy-${fid}-${Date.now()}`,
-        revision: (live.revision || 0) + 1, savedAt: getKST(), queue: live.queue || [] };
-      // Each confirmed save also keeps an independent revision of the measurements.
+      saved = {
+        ...draft,
+        ...override,
+        batchId: live.batchId || localBatchId || `legacy-${fid}-${Date.now()}`,
+        revision: (live.revision || 0) + 1,
+        savedAt: getKST(),
+        queue: live.queue || []
+      };
       const { queue: checkpointQueue, ...checkpoint } = saved;
       tx.set(getDocRef("shrinkArchives", `${saved.batchId}-r${saved.revision}`), {
         ...checkpoint, furnaceId: fid, kind: "checkpoint"
       });
-      // Replace the complete map, never recursively merge slotData.
       tx.set(ref, { ...all, [fid]: saved });
     });
     dirty.current[fid] = false;
@@ -3829,6 +3872,7 @@ function Step5_5Shrinkage({ wipList, ctx }) {
     setSaveMessage(`저장 완료: ${saved.savedAt}`);
     return saved;
   };
+
   const guarded = async action => {
     if (busyRef.current) return;
     busyRef.current = true; setBusy(true);
