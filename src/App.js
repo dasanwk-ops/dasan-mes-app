@@ -158,6 +158,19 @@ const getPackagingLot = (item) => {
   return "";
 };
 
+const getTraceMixLot = item => {
+  const candidates = [item?.mixLot, item?.productionLot, item?.sourceLot, item?.originalLot];
+  return candidates.map(value => String(value || "").trim()).find(value => /^MIX-/i.test(value)) || "";
+};
+const LotLink = ({ item }) => {
+  const mixLot = getTraceMixLot(item);
+  const finalLot = getPackagingLot(item);
+  return <div className="mt-2 text-sm space-y-1">
+    <div><span className="text-slate-500">생산 MIX LOT: </span><strong className={mixLot ? "text-slate-800" : "text-amber-700"}>{mixLot || "MIX LOT 확인 필요 (저장된 연결 정보 없음)"}</strong></div>
+    <div><span className="text-slate-500">최종 포장 LOT: </span><strong className="text-indigo-700">{finalLot || "아직 발급되지 않음"}</strong></div>
+  </div>;
+};
+
 const getProductionLot = (item) => {
   return String(
     item?.originalLot ||
@@ -5173,6 +5186,7 @@ const curTime = getKST();
               qty: finalQty,
 
               currentStep: "done",
+              productionLot: getTraceMixLot(live),
 
               packagedAt: curTime,
 
@@ -5870,6 +5884,7 @@ transaction.set(
     // 생산 추적용 LOT
     originalLot:
       live.mixLot,
+    productionLot: getTraceMixLot(live),
 
     type:
       live.type,
@@ -5972,12 +5987,7 @@ transaction.set(
     {getPackagingLot(w) || w.mixLot}
   </div>
 
-  {getPackagingLot(w) &&
-    getPackagingLot(w) !== w.mixLot && (
-      <div className="text-[9px] text-slate-400 mt-1">
-        생산 LOT: {w.mixLot}
-      </div>
-    )}
+  <LotLink item={w} />
 </td>
                     <td className="p-3 font-bold">{getProductLabel(w.type)} {w.height}T</td>
                     <td className="p-3 font-black text-indigo-600 text-lg">{w.qty}</td>
@@ -6008,7 +6018,7 @@ transaction.set(
             <tbody className="divide-y divide-slate-100">
               {shippingHistory.map((h) => (
                 <tr key={h.id} className="hover:bg-slate-50 transition-colors">
-                  <td className="p-3 text-xs text-slate-500">{h.date}</td><td className="p-3 font-mono font-bold text-slate-700">{h.lot}</td><td className="p-3 font-bold text-slate-800">{getProductLabel(h.type)} <span className="text-indigo-600">{h.height}T</span></td><td className="p-3 font-black text-indigo-600 text-right pr-6">{h.qty} EA</td><td className="p-3 font-bold text-slate-700">{h.destination}</td><td className="p-3 font-bold text-slate-600">{h.operator}</td>
+                  <td className="p-3 text-xs text-slate-500">{h.date}</td><td className="p-3 font-mono font-bold text-slate-700">{h.packLot || h.lot}<LotLink item={h} /></td><td className="p-3 font-bold text-slate-800">{getProductLabel(h.type)} <span className="text-indigo-600">{h.height}T</span></td><td className="p-3 font-black text-indigo-600 text-right pr-6">{h.qty} EA</td><td className="p-3 font-bold text-slate-700">{h.destination}</td><td className="p-3 font-bold text-slate-600">{h.operator}</td>
                 </tr>
               ))}
               {shippingHistory.length === 0 && <tr><td colSpan="6" className="text-center py-6 text-slate-400">출고 이력이 없습니다.</td></tr>}
@@ -6034,42 +6044,8 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
     if (!searchLot) return;
     setHasSearched(true);
     const searchTerms = searchLot.trim().toUpperCase().split(/\s+/);
-    const isMatch = (item, isShipped) => {
-      const productLabel = item.type ? getProductLabel(item.type) : "";
-      const searchableText = isShipped
-  ? `${
-      item.lot || ""
-    } ${
-      item.packLot || ""
-    } ${
-      item.originalLot || ""
-    } ${
-      productLabel
-    } ${
-      item.height || ""
-    }T ${
-      item.destination || ""
-    } ${
-      item.operator || ""
-    } ${
-      item.details || ""
-    }`.toUpperCase()
-
-  : `${
-      item.packLot || ""
-    } ${
-      item.mixLot || ""
-    } ${
-      item.originalLot || ""
-    } ${
-      productLabel
-    } ${
-      item.height || ""
-    }T ${
-      item.details || ""
-    }`.toUpperCase();
-      return searchTerms.every((term) => searchableText.includes(term));
-    };
+    const isMatch = item => searchTerms.every(term =>
+      `${item.lot || ""} ${item.packLot || ""} ${item.mixLot || ""} ${item.originalLot || ""} ${item.productionLot || ""} ${item.sourceLot || ""} ${getProductLabel(item.type)} ${item.height || ""}T ${item.destination || ""} ${item.operator || ""} ${item.details || ""}`.toUpperCase().includes(term));
 
     const shippedMatches = shippingHistory.filter((h) => isMatch(h, true));
     const wipMatches = wipList.filter((w) => isMatch(w, false));
@@ -6086,7 +6062,7 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
     const terms = searchLot.trim().toUpperCase().split(/\s+/).filter(Boolean);
     if (!terms.length) { setResults([]); return; }
     const matches = item => terms.every(term =>
-      `${item.lot || ""} ${item.packLot || ""} ${item.mixLot || ""} ${item.originalLot || ""} ${getProductLabel(item.type)} ${item.height || ""}T ${item.destination || ""} ${item.operator || ""} ${item.details || ""}`.toUpperCase().includes(term));
+      `${item.lot || ""} ${item.packLot || ""} ${item.mixLot || ""} ${item.originalLot || ""} ${item.productionLot || ""} ${item.sourceLot || ""} ${getProductLabel(item.type)} ${item.height || ""}T ${item.destination || ""} ${item.operator || ""} ${item.details || ""}`.toUpperCase().includes(term));
     setResults([
       ...shippingHistory.filter(matches).map(data => ({ type: "shipped", data, collection: "shippingHistory" })),
       ...wipList.filter(matches).map(data => ({ type: "wip", data, collection: "wipList" }))
@@ -6160,7 +6136,7 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
  result.data.packLot ||
  result.data.mixLot}</span>
                     <div className="mt-3 text-base font-black text-indigo-700">현재 공정: {result.type === "shipped" ? "출고 완료" : getCurrentProcessLabel(result.data.currentStep)}</div>
-                    {result.data.originalLot && <div className="text-sm font-bold text-slate-400 mt-1">원로트: {result.data.originalLot}</div>}
+                    <LotLink item={result.data} />
                   </div>
                   <div className="text-left md:text-right flex flex-col items-start md:items-end">
                     <div className="font-black text-xl text-indigo-700">{getProductLabel(result.data.type)} {result.data.height}T</div>
