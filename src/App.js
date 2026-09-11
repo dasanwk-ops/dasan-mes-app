@@ -5,7 +5,7 @@ import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, runTransa
 import { LayoutDashboard, Package, Beaker, BoxSelect, Cylinder, Flame, Microscope, Wind, Printer, Plus, ArrowRight, CheckCircle2, AlertCircle, ShoppingCart, Calculator, History, X, Layers, Split, Edit2, Trash2, Save, Play, Thermometer, Droplets, Archive, Truck, Search, Database, RefreshCcw, Boxes, Lock, Settings } from "lucide-react";
 
 import MESStocktakeExport from "./MESStocktakeExport";
-import MESStocktakeCorrection from "./MESStocktakeCorrection";
+
 
 // ==========================================
 // [1] 대한민국 시간(KST) 및 유틸리티 함수
@@ -1656,13 +1656,7 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
   getCollectionRef={getColRef}
   onError={(message) => ctx.showToast(message, "error")}
 />
-    <MESStocktakeCorrection
-  db={db}
-  getDocRef={getDocRef}
-  getCollectionRef={getColRef}
-  onSuccess={(message) => ctx.showToast(message, "success")}
-  onError={(message) => ctx.showToast(message, "error")}
-/>
+
     
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-6 rounded-xl shadow-sm border border-slate-100">
         <div>
