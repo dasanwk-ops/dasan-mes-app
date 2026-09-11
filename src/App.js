@@ -3784,21 +3784,26 @@ function Step5_5Shrinkage({ wipList, ctx }) {
   };
   const deskVersion = d => JSON.stringify({ ...d, queue: undefined });
   const saveDesk = async (fid, override = {}) => {
-    const draft = cloneDeep(shrinkDesksRef.current[fid]);
-    recalcShrinkSlots(draft.slotData);
-    const expected = dirty.current[fid] ? draftBase.current[fid] : (serverDesks.current[fid] || emptyDesk());
-    // A dirty draft must retain its originally loaded revision and batch identity.
+    const hasLocalChanges = Boolean(dirty.current[fid]);
+    const localDraft = cloneDeep(shrinkDesksRef.current[fid] || emptyDesk());
+    const expected = cloneDeep(hasLocalChanges
+      ? (draftBase.current[fid] || emptyDesk())
+      : (serverDesks.current[fid] || emptyDesk()));
     let saved;
     await runTransaction(getFirestore(), async tx => {
       const ref = getDocRef("equipment", "shrinkDesks");
       const snap = await tx.get(ref);
       const all = snap.exists() ? snap.data() : {};
       const live = all[fid] || emptyDesk();
-      if ((live.batchId || "") !== (draft.batchId || "") ||
-          (live.revision || 0) !== (draft.revision || 0) ||
+      // Compare the server with the revision on which local editing began.
+      // A clean screen uses the current server record, so a delayed snapshot cannot cause a false conflict.
+      if ((live.batchId || "") !== (expected.batchId || "") ||
+          (live.revision || 0) !== (expected.revision || 0) ||
           (!live.batchId && deskVersion(live) !== deskVersion(expected))) {
         throw new Error("다른 화면에서 작업이 변경되었습니다. 현재 입력을 별도 기록한 후 새로고침해 비교하세요.");
       }
+      const draft = hasLocalChanges ? localDraft : cloneDeep(live);
+      recalcShrinkSlots(draft.slotData);
       if (!Object.keys(draft.slotData || {}).length) throw new Error("측정 대상이 없습니다.");
       for (const slot of Object.values(draft.slotData)) {
         const w = await tx.get(getDocRef("wipList", slot.wipId));
@@ -3817,6 +3822,7 @@ function Step5_5Shrinkage({ wipList, ctx }) {
       tx.set(ref, { ...all, [fid]: saved });
     });
     dirty.current[fid] = false;
+    draftBase.current[fid] = cloneDeep(saved);
     serverDesks.current = { ...serverDesks.current, [fid]: saved };
     shrinkDesksRef.current = { ...shrinkDesksRef.current, [fid]: saved };
     setShrinkDesks(shrinkDesksRef.current);
@@ -4015,8 +4021,42 @@ if (hasIncompleteMeasurement) {
   };
 
   const unlockPreSintering = async (fid) => {
-const d = shrinkDesksRef.current[fid] || {};
-    await saveDesk(fid, { step: 1 });
+    // When there is no unsaved input, unlock the latest server record directly.
+    // This preserves every measurement and avoids a false conflict from a delayed local snapshot.
+    if (dirty.current[fid]) {
+      await saveDesk(fid, { step: 1, preUnlockedAt: getKST() });
+      return;
+    }
+    let unlocked;
+    await runTransaction(getFirestore(), async tx => {
+      const ref = getDocRef("equipment", "shrinkDesks");
+      const snap = await tx.get(ref);
+      const all = snap.exists() ? snap.data() : {};
+      const live = all[fid] || emptyDesk();
+      if (!Object.keys(live.slotData || {}).length) throw new Error("측정 대상이 없습니다.");
+      if (live.step !== 2) {
+        unlocked = live;
+        return;
+      }
+      unlocked = {
+        ...live,
+        step: 1,
+        revision: (live.revision || 0) + 1,
+        preUnlockedAt: getKST(),
+        savedAt: getKST()
+      };
+      const { queue: checkpointQueue, ...checkpoint } = unlocked;
+      tx.set(getDocRef("shrinkArchives", `${unlocked.batchId || `legacy-${fid}`}-r${unlocked.revision}`), {
+        ...checkpoint, furnaceId: fid, kind: "unlock-checkpoint"
+      });
+      tx.set(ref, { ...all, [fid]: unlocked });
+    });
+    dirty.current[fid] = false;
+    draftBase.current[fid] = cloneDeep(unlocked);
+    serverDesks.current = { ...serverDesks.current, [fid]: unlocked };
+    shrinkDesksRef.current = { ...shrinkDesksRef.current, [fid]: unlocked };
+    setShrinkDesks(shrinkDesksRef.current);
+    setSaveMessage(`잠금 해제 완료: ${unlocked.savedAt || getKST()}`);
   };
 
   const analyzeAndSaveLots = async (fid) => {
@@ -5804,380 +5844,3 @@ transaction.set(
       <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
         {Object.values(inventorySummary).map((i) => (
           <div key={`${i.type}_${i.height}`} className="bg-white p-4 rounded-xl shadow border text-center">
-            <div className="text-sm font-bold text-slate-500 mb-1">{i.type} <span className="text-indigo-600">{i.height}T</span></div>
-            <div className="text-2xl font-black">{i.qty} EA</div>
-          </div>
-        ))}
-        {Object.keys(inventorySummary).length === 0 && <div className="col-span-full text-center text-slate-400 py-6 bg-white rounded border border-dashed">재고 없음</div>}
-      </div>
-
-      <div className="bg-white rounded-xl shadow-sm border p-6">
-        <h3 className="text-lg font-bold mb-4">로트별 출고 처리</h3>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm text-left border-collapse">
-            <thead className="bg-slate-50 border-b text-xs text-slate-500"><tr><th className="p-3">포장 LOT</th><th className="p-3">제품/색상</th><th className="p-3">현재고</th><th className="p-3 w-28">출고 수량</th><th className="p-3 w-48">출고처</th><th className="p-3 w-32">담당자</th><th className="p-3 text-center">작업</th></tr></thead>
-            <tbody>
-              {finishedWip.length === 0 && <tr><td colSpan="7" className="text-center py-6 text-slate-400">대기 물량 없음</td></tr>}
-              {finishedWip.map((w) => {
-                const d = shipData[w.id] || {};
-                return (
-                  <tr key={w.id} className="border-b hover:bg-slate-50">
-                    <td className="p-3">
-  <div className="font-black text-indigo-700">
-    {getPackagingLot(w) || w.mixLot}
-  </div>
-
-  {getPackagingLot(w) &&
-    getPackagingLot(w) !== w.mixLot && (
-      <div className="text-[9px] text-slate-400 mt-1">
-        생산 LOT: {w.mixLot}
-      </div>
-    )}
-</td>
-                    <td className="p-3 font-bold">{getProductLabel(w.type)} {w.height}T</td>
-                    <td className="p-3 font-black text-indigo-600 text-lg">{w.qty}</td>
-                    <td className="p-3"><input type="number" max={w.qty} min="1" placeholder="수량" value={d.qty || ""} onChange={(e) => setShipData({ ...shipData, [w.id]: { ...d, qty: e.target.value } }) } className="w-full border p-2 rounded text-center font-bold focus:border-indigo-400 outline-none" /></td>
-                    <td className="p-3">
-                      <div className="flex flex-col gap-2">
-                        <select value={d.destSelect || ""} onChange={(e) => { const val = e.target.value; setShipData({ ...shipData, [w.id]: { ...d, destSelect: val, destination: val === "직접입력" ? "" : val } }); }} className="w-full border p-2 rounded text-sm font-bold text-slate-700 focus:border-indigo-400 outline-none">
-                          <option value="">출고처 선택</option><option value="이엔씨">이엔씨</option><option value="직접입력">직접입력...</option>
-                        </select>
-                        {d.destSelect === "직접입력" && <input type="text" placeholder="거래처 직접 입력" value={d.destination || ""} onChange={(e) => setShipData({ ...shipData, [w.id]: { ...d, destination: e.target.value } }) } className="w-full border border-indigo-300 bg-indigo-50 p-2 rounded text-sm focus:border-indigo-500 outline-none" />}
-                      </div>
-                    </td>
-                    <td className="p-3"><input type="text" placeholder="담당자" value={d.operator || ""} onChange={(e) => setShipData({ ...shipData, [w.id]: { ...d, operator: e.target.value } }) } className="w-full border p-2 rounded text-center font-bold focus:border-indigo-400 outline-none" /></td>
-                    <td className="p-3 text-center"><button onClick={() => handleShip(w)} className="bg-indigo-600 text-white px-4 py-2.5 rounded-lg font-bold shadow-md hover:bg-indigo-700 flex items-center justify-center transition-transform hover:scale-105 w-full"><Truck className="w-4 h-4 mr-1.5" /> 출고</button></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div className="bg-white rounded-xl shadow-sm border p-6">
-        <h3 className="text-lg font-bold mb-4 flex items-center"><History className="w-5 h-5 mr-2 text-slate-500" /> 완제품 출고 이력</h3>
-        <div className="overflow-x-auto max-h-60 border rounded-lg">
-          <table className="w-full text-sm text-left">
-            <thead className="bg-slate-50 sticky top-0 text-xs text-slate-500"><tr><th className="p-3">출고일시</th><th className="p-3">포장 LOT</th><th className="p-3">제품</th><th className="p-3 text-right pr-6">출고수량</th><th className="p-3">출고처</th><th className="p-3">담당자</th></tr></thead>
-            <tbody className="divide-y divide-slate-100">
-              {shippingHistory.map((h) => (
-                <tr key={h.id} className="hover:bg-slate-50 transition-colors">
-                  <td className="p-3 text-xs text-slate-500">{h.date}</td><td className="p-3 font-mono font-bold text-slate-700">{h.lot}</td><td className="p-3 font-bold text-slate-800">{getProductLabel(h.type)} <span className="text-indigo-600">{h.height}T</span></td><td className="p-3 font-black text-indigo-600 text-right pr-6">{h.qty} EA</td><td className="p-3 font-bold text-slate-700">{h.destination}</td><td className="p-3 font-bold text-slate-600">{h.operator}</td>
-                </tr>
-              ))}
-              {shippingHistory.length === 0 && <tr><td colSpan="6" className="text-center py-6 text-slate-400">출고 이력이 없습니다.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ==========================================
-// 추적 화면: Lot Genealogy Tracking 
-// ==========================================
-function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, ctx }) {
-  const [searchLot, setSearchLot] = useState("");
-  const [results, setResults] = useState([]);
-  const [hasSearched, setHasSearched] = useState(false);
-  const [editingId, setEditingId] = useState(null);
-  const [editData, setEditData] = useState({});
-
-  const handleSearch = () => {
-    if (!searchLot) return;
-    setHasSearched(true);
-    const searchTerms = searchLot.trim().toUpperCase().split(/\s+/);
-    const isMatch = (item, isShipped) => {
-      const productLabel = item.type ? getProductLabel(item.type) : "";
-      const searchableText = isShipped
-  ? `${
-      item.lot || ""
-    } ${
-      item.packLot || ""
-    } ${
-      item.originalLot || ""
-    } ${
-      productLabel
-    } ${
-      item.height || ""
-    }T ${
-      item.destination || ""
-    } ${
-      item.operator || ""
-    } ${
-      item.details || ""
-    }`.toUpperCase()
-
-  : `${
-      item.packLot || ""
-    } ${
-      item.mixLot || ""
-    } ${
-      item.originalLot || ""
-    } ${
-      productLabel
-    } ${
-      item.height || ""
-    }T ${
-      item.details || ""
-    }`.toUpperCase();
-      return searchTerms.every((term) => searchableText.includes(term));
-    };
-
-    const shippedMatches = shippingHistory.filter((h) => isMatch(h, true));
-    const wipMatches = wipList.filter((w) => isMatch(w, false));
-    const combined = [...shippedMatches.map((data) => ({ type: "shipped", data, collection: "shippingHistory" })), ...wipMatches.map((data) => ({ type: "wip", data, collection: "wipList" }))];
-
-    setResults(combined);
-    setEditingId(null);
-    if (combined.length === 0 && ctx) ctx.showToast("검색 결과가 없습니다.", "error");
-    else if (ctx) ctx.showToast(`${combined.length}건의 이력을 찾았습니다.`, "success");
-  };
-
-  const startEdit = (res) => { setEditData({ ...res.data }); setEditingId(res.data.id); };
-
-  const handleSaveEdit = async (res) => {
-    try {
-      await setDoc(getDocRef(res.collection, res.data.id), editData);
-      if (ctx) ctx.showToast("마스터 권한으로 수정되었습니다.", "success");
-      setResults(results.map((r) => r.data.id === res.data.id ? { ...r, data: editData } : r ));
-      setEditingId(null);
-    } catch (error) { if (ctx) ctx.showToast("수정 실패", "error"); }
-  };
-
-  const handleDelete = (res) => {
-    const targetLot = res.data.mixLot || res.data.lot;
-    if (ctx && ctx.showConfirm) {
-      ctx.showConfirm(`[마스터 권한] 정말로 로트(${targetLot}) 데이터를 영구 삭제하시겠습니까?`, async () => {
-        try {
-          await deleteDoc(getDocRef(res.collection, res.data.id));
-          ctx.showToast(`로트(${targetLot}) 영구 삭제 완료`, "success");
-          setResults(results.filter((r) => r.data.id !== res.data.id));
-        } catch (error) { ctx.showToast("삭제 실패", "error"); }
-      });
-    }
-  };
-
-  return (
-    <div className="space-y-6 max-w-5xl mx-auto">
-      <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100">
-        <div className="flex justify-between items-center mb-6">
-          <h3 className="text-2xl font-black flex items-center text-slate-800"><Search className="w-6 h-6 mr-2 text-indigo-600" /> 로트 공정 이력 통합 검색</h3>
-          <span className="bg-red-100 text-red-700 px-3 py-1 rounded-full text-xs font-black border border-red-200 animate-pulse">Master Mode</span>
-        </div>
-        <div className="flex gap-3 mb-8">
-          <input type="text" placeholder="검색어 입력 (예: 345 BL3 30T, 234 BL2, 이엔씨, 담당자명, 또는 로트번호 일부)" className="flex-1 border-2 border-slate-300 rounded-xl p-4 font-bold text-lg focus:border-indigo-500 outline-none placeholder:text-sm" value={searchLot} onChange={(e) => { setSearchLot(e.target.value); setHasSearched(false); }} onKeyDown={(e) => e.key === "Enter" && handleSearch()} />
-          <button onClick={handleSearch} className="bg-indigo-600 text-white px-8 py-4 rounded-xl font-black text-lg shadow-md hover:bg-indigo-700 flex items-center transition-transform hover:scale-105"><Search className="w-5 h-5 mr-2" /> 통합 검색</button>
-        </div>
-
-        {hasSearched && results.length === 0 && <div className="text-center py-16 bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200 text-slate-500 font-bold text-lg">일치하는 기록이 없습니다. 검색어를 바꿔보세요.</div>}
-
-        <div className="space-y-6 max-h-[800px] overflow-y-auto pr-2">
-          {results.map((result, idx) => {
-            const isEditing = editingId === result.data.id;
-            let historyLogs = (result.data.details || "").split("\n").filter((line) => line.trim() !== "");
-            if (result.type === "shipped") historyLogs.push(`[출고 완료] 출고일시:${result.data.date} | 출고처:${result.data.destination} | 담당:${result.data.operator}`);
-
-            return (
-              <div key={idx} className={`border-2 rounded-2xl p-6 transition-all ${isEditing ? "border-orange-400 bg-orange-50/30" : "border-indigo-100 bg-indigo-50/30"}`}>
-                <div className={`flex flex-col md:flex-row justify-between items-start md:items-center border-b pb-4 mb-4 gap-4 ${isEditing ? "border-orange-200" : "border-indigo-100"}`}>
-                  <div>
-                    <span className={`px-3 py-1 rounded-full text-xs font-black mr-3 ${result.type === "shipped" ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700"}`}>{result.type === "shipped" ? "출고 완료 제품" : "생산 진행 중"}</span>
-                    <span className="font-black text-2xl text-slate-800">{result.data.lot ||
- result.data.packLot ||
- result.data.mixLot}</span>
-                    {result.data.originalLot && <div className="text-sm font-bold text-slate-400 mt-1">원로트: {result.data.originalLot}</div>}
-                  </div>
-                  <div className="text-left md:text-right flex flex-col items-start md:items-end">
-                    <div className="font-black text-xl text-indigo-700">{getProductLabel(result.data.type)} {result.data.height}T</div>
-                    <div className="text-sm font-bold text-slate-500 mt-1">현재 수량: {result.data.qty} EA</div>
-                    {result.data.weight && <div className="mt-1.5 text-xs font-black text-blue-700 bg-blue-50 border border-blue-200 px-2.5 py-1 rounded shadow-sm">원료 투입량: {result.data.weight} kg</div>}
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <h4 className="font-black text-slate-700 mb-2 flex items-center">공정 진행 타임라인 {isEditing && <span className="text-orange-600 ml-2 text-sm">(수정 모드)</span>}</h4>
-                  <div className="bg-white p-5 rounded-xl border shadow-sm text-sm text-slate-600 leading-relaxed grid grid-cols-1 gap-4">
-                    {isEditing ? (
-                      <>
-                        <div className="flex items-center"><strong className="w-24 text-slate-800">현재 수량:</strong> <input type="number" value={editData.qty || ""} onChange={(e) => setEditData({ ...editData, qty: Number(e.target.value) }) } className="border border-orange-300 rounded p-1.5 w-32 font-bold focus:outline-none" /></div>
-                        <div className="flex items-center"><strong className="w-24 text-slate-800">진행 상태:</strong> <input type="text" value={editData.currentStep || ""} onChange={(e) => setEditData({ ...editData, currentStep: e.target.value }) } className="border border-orange-300 rounded p-1.5 flex-1 font-bold text-orange-700 focus:outline-none" /></div>
-                        <div className="flex items-start"><strong className="w-24 text-slate-800 mt-1">누적 기록:</strong> <textarea value={editData.details || ""} onChange={(e) => setEditData({ ...editData, details: e.target.value }) } className="border border-orange-300 rounded p-2 flex-1 h-32 text-xs focus:outline-none whitespace-pre-wrap" /></div>
-                      </>
-                    ) : (
-                      <div className="relative pl-4 border-l-2 border-indigo-200 space-y-4 py-2">
-                        {historyLogs.map((log, logIdx) => {
-                          const isDefect = log.includes("불량");
-                          return (
-                            <div key={logIdx} className="relative">
-                              <div className={`absolute -left-[23px] top-1 w-3 h-3 rounded-full ring-4 ring-white ${isDefect ? "bg-red-500" : "bg-indigo-500"}`}></div>
-                              <div className={`font-bold leading-tight ${isDefect ? "text-red-600 bg-red-50 inline-block px-2 py-0.5 rounded shadow-sm" : "text-slate-800"}`}>{log}</div>
-                            </div>
-                          );
-                        })}
-                        {historyLogs.length === 0 && <div className="text-slate-400">기록이 없습니다.</div>}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="mt-6 pt-4 flex justify-between items-center border-t border-slate-200">
-                    <button onClick={() => handleDelete(result)} className="flex items-center text-red-500 bg-red-50 hover:bg-red-100 px-4 py-2.5 rounded-xl font-black text-sm transition-colors border border-red-200"><Trash2 className="w-4 h-4 mr-1.5" /> 데이터 영구 삭제</button>
-                    <div className="flex space-x-3">
-                      {isEditing ? (
-                        <><button onClick={() => setEditingId(null)} className="px-6 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-bold transition-colors">취소</button><button onClick={() => handleSaveEdit(result)} className="flex items-center px-6 py-2.5 bg-orange-500 hover:bg-orange-600 text-white rounded-xl font-black shadow-md transition-colors"><Save className="w-4 h-4 mr-1.5" /> 강제 수정 저장</button></>
-                      ) : (
-                        <button onClick={() => startEdit(result)} className="flex items-center px-6 py-2.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-black shadow-md transition-colors"><Edit2 className="w-4 h-4 mr-1.5" /> 데이터 강제 수정</button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ==========================================
-// Step 10: Master Settings (환경설정 제어판)
-// ==========================================
-function Step10Settings({ masterSettings, ctx }) {
-  const [settings, setSettings] = useState(masterSettings);
-
-  useEffect(() => { setSettings(masterSettings); }, [masterSettings]);
-
-  const handleRatioChange = (color, material, value) => {
-      const newSettings = cloneDeep(settings);
-      if (!newSettings.RATIO_BY_COLOR[color]) newSettings.RATIO_BY_COLOR[color] = {};
-      newSettings.RATIO_BY_COLOR[color][material] = parseFloat(value) || 0;
-      setSettings(newSettings);
-  };
-  const handleWeightChange = (height, value) => {
-      const newSettings = cloneDeep(settings);
-      newSettings.WEIGHT_BY_HEIGHT[height] = parseInt(value) || 0;
-      setSettings(newSettings);
-  };
-  const handlePressureChange = (stepKey, value) => {
-      const newSettings = cloneDeep(settings);
-      if (!newSettings.TARGET_PRESSURE) newSettings.TARGET_PRESSURE = { step3: "70", step4A: "250", step4B: "250" };
-      newSettings.TARGET_PRESSURE[stepKey] = value;
-      setSettings(newSettings);
-  };
-  const handleTemperatureChange = (furnaceKey, value) => {
-      const newSettings = cloneDeep(settings);
-      if (!newSettings.TARGET_TEMPERATURE) newSettings.TARGET_TEMPERATURE = { furnace1: "1050", furnace2: "1050" };
-      newSettings.TARGET_TEMPERATURE[furnaceKey] = value;
-      setSettings(newSettings);
-  };
-  const handleSafetyThresholdChange = (type, value) => {
-      const newSettings = cloneDeep(settings);
-      if (!newSettings.SAFETY_THRESHOLD || typeof newSettings.SAFETY_THRESHOLD !== "object") {
-          newSettings.SAFETY_THRESHOLD = { "4Y-W": "50", "4Y-W-S": "50", "4Y-Y": "50", "5E-P": "50", "4Y-G": "50" };
-      }
-      newSettings.SAFETY_THRESHOLD[type] = value;
-      setSettings(newSettings);
-  };
-
-  const handleSave = async () => {
-      try {
-          await setDoc(getDocRef("equipment", "settings"), settings);
-          ctx.showToast("마스터 설정이 클라우드에 성공적으로 저장되었습니다.", "success");
-      } catch(e) { ctx.showToast("설정 저장 실패", "error"); }
-  };
-
-  return (
-      <div className="max-w-5xl mx-auto space-y-6">
-          <div className="bg-red-50 p-6 rounded-2xl shadow-sm border border-red-200 flex items-start gap-4">
-              <div className="bg-red-500 p-3 rounded-full text-white mt-1"><Settings className="w-6 h-6" /></div>
-              <div>
-                  <h2 className="text-xl font-black text-red-800 tracking-tight">공정 마스터 제어판</h2>
-                  <p className="text-red-600/80 text-sm mt-1 font-bold">이곳에서 변경된 기준 수치(단중, 압력, 온도, 배합비율, 종류별 안전재고)는 저장 즉시 전체 태블릿과 생산 현장에 동기화됩니다. 변경에 주의하시기 바랍니다.</p>
-              </div>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-              <div className="space-y-6">
-                  <div className="bg-white rounded-xl shadow-sm border p-6">
-                      <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">규격별 기본 단중 (g)</h3>
-                      <div className="space-y-3">
-                          {settings.PRODUCT_HEIGHTS.map(height => (
-                              <div key={height} className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
-                                  <span className="font-black text-indigo-700 w-20">{height}T 규격</span>
-                                  <div className="relative">
-                                      <input type="number" value={settings.WEIGHT_BY_HEIGHT[height] || ""} onChange={(e) => handleWeightChange(height, e.target.value)} className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-indigo-500 outline-none pr-8" />
-                                      <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">g</span>
-                                  </div>
-                              </div>
-                          ))}
-                      </div>
-                  </div>
-
-                  <div className="bg-white rounded-xl shadow-sm border p-6">
-                      <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">성형 목표 압력 가이드</h3>
-                      <div className="space-y-3">
-                          <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border"><span className="font-black text-indigo-700 w-28">1차 성형 (건식)</span><div className="relative"><input type="text" value={settings.TARGET_PRESSURE?.step3 || ""} onChange={(e) => handlePressureChange("step3", e.target.value)} className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-indigo-500 outline-none pr-10" /><span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">ton</span></div></div>
-                          <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border"><span className="font-black text-blue-700 w-28">2차 A호기 (CIP)</span><div className="relative"><input type="text" value={settings.TARGET_PRESSURE?.step4A || ""} onChange={(e) => handlePressureChange("step4A", e.target.value)} className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-indigo-500 outline-none pr-10" /><span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">MPa</span></div></div>
-                          <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border"><span className="font-black text-blue-700 w-28">2차 B호기 (CIP)</span><div className="relative"><input type="text" value={settings.TARGET_PRESSURE?.step4B || ""} onChange={(e) => handlePressureChange("step4B", e.target.value)} className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-indigo-500 outline-none pr-10" /><span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">MPa</span></div></div>
-                      </div>
-                  </div>
-
-                  <div className="bg-white rounded-xl shadow-sm border p-6">
-                      <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">전기로 목표 온도 가이드</h3>
-                      <div className="space-y-3">
-                          <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border"><span className="font-black text-orange-700 w-28 flex items-center"><Flame className="w-4 h-4 mr-1"/> 1호기 온도</span><div className="relative"><input type="text" value={settings.TARGET_TEMPERATURE?.furnace1 || ""} onChange={(e) => handleTemperatureChange("furnace1", e.target.value)} className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-orange-500 outline-none pr-10" /><span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">°C</span></div></div>
-                          <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border"><span className="font-black text-orange-700 w-28 flex items-center"><Flame className="w-4 h-4 mr-1"/> 2호기 온도</span><div className="relative"><input type="text" value={settings.TARGET_TEMPERATURE?.furnace2 || ""} onChange={(e) => handleTemperatureChange("furnace2", e.target.value)} className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-orange-500 outline-none pr-10" /><span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">°C</span></div></div>
-                      </div>
-                  </div>
-
-                  <div className="bg-white rounded-xl shadow-sm border p-6">
-                      <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">분말 종류별 안전 재고 기준</h3>
-                      <div className="space-y-3">
-                          {settings.MATERIAL_TYPES.map(mat => (
-                              <div key={mat} className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border">
-                                  <span className="font-black text-red-700 w-32 flex items-center">⚠️ {mat} 경고 기준</span>
-                                  <div className="relative">
-                                      <input type="number" value={settings.SAFETY_THRESHOLD?.[mat] || ""} onChange={(e) => handleSafetyThresholdChange(mat, e.target.value)} className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-red-500 outline-none pr-10" />
-                                      <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">kg</span>
-                                  </div>
-                              </div>
-                          ))}
-                      </div>
-                  </div>
-              </div>
-
-              <div className="space-y-6">
-                  <div className="bg-white rounded-xl shadow-sm border p-6">
-                      <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">분류별 소재 배합 비율 (BOM)</h3>
-                      <div className="space-y-5 max-h-[700px] overflow-y-auto pr-2">
-                          {["345", "234"].map(series => (
-                              <div key={series} className="space-y-3">
-                                  <div className={`sticky top-0 z-10 px-3 py-2 rounded-lg text-sm font-black border ${series === "234" ? "bg-amber-50 text-amber-800 border-amber-200" : "bg-indigo-50 text-indigo-800 border-indigo-200"}`}>{series} 제품군 BOM</div>
-                                  {settings.PRODUCT_COLORS.filter(color => color.startsWith(`${series} `)).map(color => (
-                                      <div key={color} className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                                          <div className="font-black text-lg text-slate-800 mb-3">{color} 배합비율</div>
-                                          <div className="grid grid-cols-2 gap-3">
-                                              {settings.MATERIAL_TYPES.map(mat => (
-                                                  <div key={mat} className="flex flex-col"><label className="text-[10px] font-bold text-slate-500 mb-1 pl-1">{mat}</label><input type="number" step="0.0001" value={settings.RATIO_BY_COLOR?.[color]?.[mat] ?? 0} onChange={(e) => handleRatioChange(color, mat, e.target.value)} className="border rounded p-2 text-sm text-right font-mono" /></div>
-                                              ))}
-                                          </div>
-                                      </div>
-                                  ))}
-                              </div>
-                          ))}
-                      </div>
-                  </div>
-              </div>
-          </div>
-
-          <div className="bg-white p-4 rounded-xl shadow-sm border flex justify-end">
-              <button onClick={handleSave} className="bg-red-600 hover:bg-red-700 text-white px-8 py-3 rounded-xl font-black text-lg shadow-md transition-all flex items-center">
-                  <Save className="w-5 h-5 mr-2" /> 마스터 설정 전체 저장 (시스템 동기화)
-              </button>
-          </div>
-      </div>
-  );
-}
