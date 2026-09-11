@@ -1,0 +1,2 @@
+All source files: syntax parse PASS
+Unresolved/duplicate identifiers: 0. Other untyped JS diagnostics: 36 (not a type-check pass).

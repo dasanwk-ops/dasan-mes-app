@@ -1,0 +1,15 @@
+new: README.md
+modified: package.json
+modified: src/App.js
+new: src/mesDatabase.mjs
+new: src/mesDemoData.mjs
+new: src/mesModePolicy.mjs
+new: src/mesOperations.mjs
+new: src/mesRuntime.mjs
+new: src/mesSafetyCore.mjs
+new: tests/emulator/firebase.json
+new: tests/emulator/firestore.rules
+new: tests/emulator/run-native.mjs
+new: tests/safety.test.mjs
+new: tools/check-source.cjs
+new: tools/render-smoke.mjs

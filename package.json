@@ -19,10 +19,22 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
-    "eject": "react-scripts eject"
+    "eject": "react-scripts eject",
+    "safety:test": "node --test tests/safety.test.mjs",
+    "safety:emulator": "cd tests/emulator && firebase --project demo-dasan-mes emulators:exec --only auth,firestore \"node run-native.mjs\"",
+    "safety:render-smoke": "node tools/render-smoke.mjs",
+    "safety:source-check": "node tools/check-source.cjs"
   },
   "browserslist": {
-    "production": [">0.2%", "not dead", "not op_mini all"],
-    "development": ["last 1 chrome version", "last 1 firefox version", "last 1 safari version"]
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
   }
 }

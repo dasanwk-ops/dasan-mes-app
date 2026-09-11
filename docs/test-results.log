@@ -1,0 +1,382 @@
+TAP version 13
+# Subtest: numeric validation rejects blank, boolean, fractional, negative, NaN and unsafe integers
+ok 1 - numeric validation rejects blank, boolean, fractional, negative, NaN and unsafe integers
+  ---
+  duration_ms: 3.862149
+  type: 'test'
+  ...
+# Subtest: KST formatting does not depend on host timezone
+ok 2 - KST formatting does not depend on host timezone
+  ---
+  duration_ms: 48.314718
+  type: 'test'
+  ...
+# Subtest: missing or unknown deployment settings never select production
+ok 3 - missing or unknown deployment settings never select production
+  ---
+  duration_ms: 0.467474
+  type: 'test'
+  ...
+# Subtest: production writes need explicit flag, required config and exact host
+ok 4 - production writes need explicit flag, required config and exact host
+  ---
+  duration_ms: 0.290852
+  type: 'test'
+  ...
+# Subtest: emulator is accepted only on localhost and demo remains demo on any host
+ok 5 - emulator is accepted only on localhost and demo remains demo on any host
+  ---
+  duration_ms: 0.490485
+  type: 'test'
+  ...
+# Subtest: synthetic fixtures contain no real lots and reset independently
+ok 6 - synthetic fixtures contain no real lots and reset independently
+  ---
+  duration_ms: 5.807368
+  type: 'test'
+  ...
+# Subtest: advance updates only current WIP and creates atomic before/after audit
+ok 7 - advance updates only current WIP and creates atomic before/after audit
+  ---
+  duration_ms: 12.405439
+  type: 'test'
+  ...
+# Subtest: stale advance is rejected even when the process name has not changed
+ok 8 - stale advance is rejected even when the process name has not changed
+  ---
+  duration_ms: 0.908506
+  type: 'test'
+  ...
+# Subtest: deleted WIP is never resurrected by a stale completion
+ok 9 - deleted WIP is never resurrected by a stale completion
+  ---
+  duration_ms: 4.945087
+  type: 'test'
+  ...
+# Subtest: simultaneous duplicate completions have exactly one winner
+ok 10 - simultaneous duplicate completions have exactly one winner
+  ---
+  duration_ms: 4.585448
+  type: 'test'
+  ...
+# Subtest: injected commit failure leaves WIP, audit and control all unchanged
+ok 11 - injected commit failure leaves WIP, audit and control all unchanged
+  ---
+  duration_ms: 3.889168
+  type: 'test'
+  ...
+# Subtest: defect overflow and absent reasons do not reduce inventory
+ok 12 - defect overflow and absent reasons do not reduce inventory
+  ---
+  duration_ms: 2.641453
+  type: 'test'
+  ...
+# Subtest: all-defective completion archives original instead of invisible zero active WIP
+ok 13 - all-defective completion archives original instead of invisible zero active WIP
+  ---
+  duration_ms: 2.712931
+  type: 'test'
+  ...
+# Subtest: admin cancellation needs admin access, reason and actor
+ok 14 - admin cancellation needs admin access, reason and actor
+  ---
+  duration_ms: 4.160627
+  type: 'test'
+  ...
+# Subtest: admin cancel archives full source and forbids reuse of archived ID
+ok 15 - admin cancel archives full source and forbids reuse of archived ID
+  ---
+  duration_ms: 2.148046
+  type: 'test'
+  ...
+# Subtest: linked shipping history blocks cancellation and history itself is immutable
+ok 16 - linked shipping history blocks cancellation and history itself is immutable
+  ---
+  duration_ms: 1.72691
+  type: 'test'
+  ...
+# Subtest: forward skip and double raw-material debit rollback are blocked
+ok 17 - forward skip and double raw-material debit rollback are blocked
+  ---
+  duration_ms: 6.012607
+  type: 'test'
+  ...
+# Subtest: rollback detaches only target from idle furnace and preserves unrelated slot
+ok 18 - rollback detaches only target from idle furnace and preserves unrelated slot
+  ---
+  duration_ms: 7.189798
+  type: 'test'
+  ...
+# Subtest: rollback removes target from shrink queues without touching other batches
+ok 19 - rollback removes target from shrink queues without touching other batches
+  ---
+  duration_ms: 5.837899
+  type: 'test'
+  ...
+# Subtest: running furnace and drying WIP cannot be structurally changed
+ok 20 - running furnace and drying WIP cannot be structurally changed
+  ---
+  duration_ms: 1.69824
+  type: 'test'
+  ...
+# Subtest: allocated quantity cannot be changed without cleanup
+ok 21 - allocated quantity cannot be changed without cleanup
+  ---
+  duration_ms: 0.543679
+  type: 'test'
+  ...
+# Subtest: historical furnace slots are preserved on quantity correction with review flag
+ok 22 - historical furnace slots are preserved on quantity correction with review flag
+  ---
+  duration_ms: 1.596475
+  type: 'test'
+  ...
+# Subtest: first molding validates actual count and preserves correction in audit
+ok 23 - first molding validates actual count and preserves correction in audit
+  ---
+  duration_ms: 1.539022
+  type: 'test'
+  ...
+# Subtest: second molding conserves normal plus defects, archives parent, tracks children
+ok 24 - second molding conserves normal plus defects, archives parent, tracks children
+  ---
+  duration_ms: 2.539068
+  type: 'test'
+  ...
+# Subtest: second molding mismatch does not delete parent
+ok 25 - second molding mismatch does not delete parent
+  ---
+  duration_ms: 0.770768
+  type: 'test'
+  ...
+# Subtest: cross-furnace allocation cannot exceed source quantity
+ok 26 - cross-furnace allocation cannot exceed source quantity
+  ---
+  duration_ms: 4.924962
+  type: 'test'
+  ...
+# Subtest: occupied slot and running furnace reject allocation
+ok 27 - occupied slot and running furnace reject allocation
+  ---
+  duration_ms: 1.683529
+  type: 'test'
+  ...
+# Subtest: different furnace fields save without overwriting fresh slots
+ok 28 - different furnace fields save without overwriting fresh slots
+  ---
+  duration_ms: 2.149116
+  type: 'test'
+  ...
+# Subtest: start heat refuses partial or multi-furnace source allocation
+ok 29 - start heat refuses partial or multi-furnace source allocation
+  ---
+  duration_ms: 3.390095
+  type: 'test'
+  ...
+# Subtest: heat completion moves WIP with quantity, history and queued desk in one commit
+ok 30 - heat completion moves WIP with quantity, history and queued desk in one commit
+  ---
+  duration_ms: 6.703262
+  type: 'test'
+  ...
+# Subtest: heat finish failed commit does not empty furnace or move product
+ok 31 - heat finish failed commit does not empty furnace or move product
+  ---
+  duration_ms: 4.782251
+  type: 'test'
+  ...
+# Subtest: drying start, keyed edits and completion allocate pack once
+ok 32 - drying start, keyed edits and completion allocate pack once
+  ---
+  duration_ms: 5.944573
+  type: 'test'
+  ...
+# Subtest: drying rejects stale completion data and atomic failure preserves room
+ok 33 - drying rejects stale completion data and atomic failure preserves room
+  ---
+  duration_ms: 5.878778
+  type: 'test'
+  ...
+# Subtest: partial shipment atomically appends shipment and adjusts balance
+ok 34 - partial shipment atomically appends shipment and adjusts balance
+  ---
+  duration_ms: 20.914012
+  type: 'test'
+  ...
+# Subtest: complete shipment archives source and duplicate shipment is rejected
+ok 35 - complete shipment archives source and duplicate shipment is rejected
+  ---
+  duration_ms: 8.74735
+  type: 'test'
+  ...
+# Subtest: sample is separately recorded without fake finished processing
+ok 36 - sample is separately recorded without fake finished processing
+  ---
+  duration_ms: 4.521296
+  type: 'test'
+  ...
+# Subtest: ordinary shipping cannot bypass unfinished process
+ok 37 - ordinary shipping cannot bypass unfinished process
+  ---
+  duration_ms: 0.542816
+  type: 'test'
+  ...
+# Subtest: sample shipping from allocated equipment is blocked
+ok 38 - sample shipping from allocated equipment is blocked
+  ---
+  duration_ms: 2.632592
+  type: 'test'
+  ...
+# Subtest: production release uses live coverage and unique sequential MIX numbers
+ok 39 - production release uses live coverage and unique sequential MIX numbers
+  ---
+  duration_ms: 4.742804
+  type: 'test'
+  ...
+# Subtest: inbound stock and inventory history never partially commit
+ok 40 - inbound stock and inventory history never partially commit
+  ---
+  duration_ms: 2.210198
+  type: 'test'
+  ...
+# Subtest: label requires finite shrinkage, real date and no stocktake hold
+ok 41 - label requires finite shrinkage, real date and no stocktake hold
+  ---
+  duration_ms: 1.933453
+  type: 'test'
+  ...
+# Subtest: label request and WIP fingerprint commit together, never duplicate
+ok 42 - label request and WIP fingerprint commit together, never duplicate
+  ---
+  duration_ms: 3.585645
+  type: 'test'
+  ...
+# Subtest: label atomic failure leaves no queue item
+ok 43 - label atomic failure leaves no queue item
+  ---
+  duration_ms: 1.459751
+  type: 'test'
+  ...
+# Subtest: pack complete requires physical confirmation and matching condition
+ok 44 - pack complete requires physical confirmation and matching condition
+  ---
+  duration_ms: 4.016759
+  type: 'test'
+  ...
+# Subtest: admin cannot orphan pending label job by changing quantity
+ok 45 - admin cannot orphan pending label job by changing quantity
+  ---
+  duration_ms: 2.012675
+  type: 'test'
+  ...
+# Subtest: shrink finalization conserves source and saves completed batch and lineage
+ok 46 - shrink finalization conserves source and saves completed batch and lineage
+  ---
+  duration_ms: 6.055587
+  type: 'test'
+  ...
+# Subtest: shrink split children retain only their own positions
+ok 47 - shrink split children retain only their own positions
+  ---
+  duration_ms: 6.77002
+  type: 'test'
+  ...
+# Subtest: shrink missing or duplicate position cannot delete source
+ok 48 - shrink missing or duplicate position cannot delete source
+  ---
+  duration_ms: 1.340559
+  type: 'test'
+  ...
+# Subtest: shrink rejects stale batch, wrong math and incomplete source total
+ok 49 - shrink rejects stale batch, wrong math and incomplete source total
+  ---
+  duration_ms: 2.911799
+  type: 'test'
+  ...
+# Subtest: shrink cannot process source that also occurs in another queued batch
+ok 50 - shrink cannot process source that also occurs in another queued batch
+  ---
+  duration_ms: 1.364709
+  type: 'test'
+  ...
+# Subtest: shrinking atomic failure keeps source, batch and audit untouched
+ok 51 - shrinking atomic failure keeps source, batch and audit untouched
+  ---
+  duration_ms: 3.393185
+  type: 'test'
+  ...
+# Subtest: storage refuses invalid schema, invalid numbers, cross DB and forbidden audit writes
+ok 52 - storage refuses invalid schema, invalid numbers, cross DB and forbidden audit writes
+  ---
+  duration_ms: 1.575287
+  type: 'test'
+  ...
+# Subtest: transaction reads-after-write fail and do not save partial changes
+ok 53 - transaction reads-after-write fail and do not save partial changes
+  ---
+  duration_ms: 0.54534
+  type: 'test'
+  ...
+# Subtest: read-only configuration blocks every wrapped write
+ok 54 - read-only configuration blocks every wrapped write
+  ---
+  duration_ms: 0.494266
+  type: 'test'
+  ...
+# Subtest: memory listener cleanup prevents events after unmount
+ok 55 - memory listener cleanup prevents events after unmount
+  ---
+  duration_ms: 36.367961
+  type: 'test'
+  ...
+# Subtest: audit list is bounded and sorted newest first
+ok 56 - audit list is bounded and sorted newest first
+  ---
+  duration_ms: 1.869177
+  type: 'test'
+  ...
+# Subtest: cancellation reason and operator remain in archive context
+ok 57 - cancellation reason and operator remain in archive context
+  ---
+  duration_ms: 1.612313
+  type: 'test'
+  ...
+# Subtest: all-defective event keeps defect reason in the same audit commit
+ok 58 - all-defective event keeps defect reason in the same audit commit
+  ---
+  duration_ms: 1.492006
+  type: 'test'
+  ...
+# Subtest: multiple shrink parents link only their own descendants
+ok 59 - multiple shrink parents link only their own descendants
+  ---
+  duration_ms: 5.09817
+  type: 'test'
+  ...
+# Subtest: two simultaneous release attempts cannot exceed order total
+ok 60 - two simultaneous release attempts cannot exceed order total
+  ---
+  duration_ms: 2.305305
+  type: 'test'
+  ...
+# Subtest: synthetic full production sequence preserves quantity into shipment
+ok 61 - synthetic full production sequence preserves quantity into shipment
+  ---
+  duration_ms: 30.842361
+  type: 'test'
+  ...
+# Subtest: audit encodes server timestamp transform rather than placing it inside arrays
+ok 62 - audit encodes server timestamp transform rather than placing it inside arrays
+  ---
+  duration_ms: 1.152317
+  type: 'test'
+  ...
+1..62
+# tests 62
+# suites 0
+# pass 62
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 619.672732

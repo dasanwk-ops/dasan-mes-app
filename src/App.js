@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
-import { initializeApp } from "firebase/app";
-import { getAuth, onAuthStateChanged, signInAnonymously } from "firebase/auth";
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, runTransaction, serverTimestamp, addDoc } from "firebase/firestore";
+import { getAuth, onAuthStateChanged, signInAnonymously, getFirestore, MES_MODE, ROOT, runtimeError, EXTERNAL_SYNC_ENABLED, LIVE_WRITES_ENABLED } from "./mesRuntime.mjs";
+import { collection, doc, setDoc, deleteDoc, onSnapshot, runTransaction, serverTimestamp, addDoc, getDocFromServer, subscribePending, pendingWrites, limitedQuery } from "./mesDatabase.mjs";
+import { createOperations } from "./mesOperations.mjs";
+import { assertSame, quantity, optionalQuantity, positiveNumber, canonical, uid, shrinkage, printFingerprint, invalidateLabel } from "./mesSafetyCore.mjs";
 import { LayoutDashboard, Package, Beaker, BoxSelect, Cylinder, Flame, Microscope, Wind, Printer, Plus, ArrowRight, CheckCircle2, AlertCircle, ShoppingCart, Calculator, History, X, Layers, Split, Edit2, Trash2, Save, Play, Thermometer, Droplets, Archive, Truck, Search, Database, RefreshCcw, Boxes, Lock, Settings } from "lucide-react";
 
 // ==========================================
@@ -70,68 +71,7 @@ const formatPackagingLot = (dateKey, seq) => {
   return `F${dateKey}${String(seq).padStart(3, "0")}`;
 };
 
-const ensurePackagingLot = async (wipId) => {
-  const now = getKST();
-  const dateKey = getKSTDateOnly();
-
-  let assignedLot = "";
-
-  await runTransaction(db, async (transaction) => {
-    const wipRef = getDocRef("wipList", wipId);
-    const wipSnap = await transaction.get(wipRef);
-
-    if (!wipSnap.exists()) {
-      throw new Error("포장 LOT 발급 대상이 존재하지 않습니다.");
-    }
-
-    const live = wipSnap.data();
-
-    // 이미 발급된 LOT가 있으면 절대 새로 만들지 않음
-    const existingPackLot = String(
-      live.packLot || ""
-    ).trim();
-
-    if (existingPackLot) {
-      assignedLot = existingPackLot;
-      return;
-    }
-
-    // 날짜별 일련번호 카운터
-    const counterRef = getDocRef(
-      "systemCounters",
-      `packLot-${dateKey}`
-    );
-
-    const counterSnap =
-      await transaction.get(counterRef);
-
-    const lastSeq = counterSnap.exists()
-      ? Number(counterSnap.data().lastSeq) || 0
-      : 0;
-
-    const nextSeq = lastSeq + 1;
-
-    assignedLot =
-      formatPackagingLot(dateKey, nextSeq);
-
-    transaction.set(
-      counterRef,
-      {
-        dateKey,
-        lastSeq: nextSeq,
-        updatedAt: now,
-      },
-      { merge: true }
-    );
-
-    transaction.update(wipRef, {
-      packLot: assignedLot,
-      packLotCreatedAt: now,
-    });
-  });
-
-  return assignedLot;
-};
+const ensurePackagingLot = wipId => safeOps.ensurePack(wipId);
 
 const getPackagingLot = (item) => {
   const explicitPackLot = String(item?.packLot || "").trim();
@@ -194,6 +134,7 @@ const syncToGoogleSheets = async (
   shippingHistory,
   ctx
 ) => {
+  if (!EXTERNAL_SYNC_ENABLED) { ctx?.showToast("이 모드에서는 구글 시트로 전송하지 않습니다.", "error"); return; }
 
   // ==========================================
   // 1. 완료 LOT + 출고 LOT 통합
@@ -526,6 +467,7 @@ const logProcessToGoogleSheet = async (
   operator,
   extraData = {}
 ) => {
+  if (!EXTERNAL_SYNC_ENABLED) return;
  
   try {
     const payload = {
@@ -598,20 +540,21 @@ details:
 };
 
 // --- [Firebase Initialization] ---
-const firebaseConfig = {
-  apiKey: process.env.REACT_APP_FIREBASE_API_KEY || "AIzaSyDxHU5KH8Wdq6Ct73S-gUOvK2YqD7J23kI",
-  authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN || "dasanind-mes.firebaseapp.com",
-  projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID || "dasanind-mes",
-  storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET || "dasanind-mes.firebasestorage.app",
-  messagingSenderId: "782401133060",
-  appId: "1:782401133060:web:e6997bdb37fad09dd1f351",
+const auth = getAuth();
+const db = getFirestore();
+const getColRef = name => collection(db, `${ROOT}/${name}`);
+const getDocRef = (name, id) => doc(db, `${ROOT}/${name}/${String(id)}`);
+let adminSession = false;
+const safeOps = createOperations(db, ROOT, () => adminSession);
+const sortByTime = (a, b) => (Number(b.createdAt?.seconds) || 0) - (Number(a.createdAt?.seconds) || 0) || String(b.date || b.orderDate || b.id).localeCompare(String(a.date || a.orderDate || a.id));
+const mapRows = snap => snap.docs.map(d => ({ ...d.data(), id: d.id, ...(d.data().id && d.data().id !== d.id ? { __uiIdConflict: true } : {}) }));
+const askAdmin = defaultReason => {
+  const operator = window.prompt("보정하는 관리자 성명");
+  if (!operator?.trim()) return null;
+  const reason = window.prompt("변경 사유 (원본과 함께 보관됩니다)", defaultReason || "");
+  if (!reason?.trim()) return null;
+  return { operator: operator.trim(), reason: reason.trim() };
 };
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== "undefined" ? __app_id : "dasan-mes-app";
-const getColRef = (colName) => collection(db, "artifacts", appId, "public", "data", colName);
-const getDocRef = (colName, docId) => doc(db, "artifacts", appId, "public", "data", colName, docId.toString());
 
 // ==========================================
 // 발주 수량 통합 계산 엔진
@@ -797,9 +740,16 @@ const DEFAULT_FURNACES = {
 const DEFAULT_DRYING_ROOM = { cartItems: [], temp: "60", humidity: "20", isDrying: false, operator: "", completionData: {}, dryingWipIds: [] };
 
 const SyncInput = ({ value, onChange, ...props }) => {
-  const [localVal, setLocalVal] = useState(value || "");
-  useEffect(() => { setLocalVal(value || ""); }, [value]);
-  return <input {...props} value={localVal} onChange={(e) => setLocalVal(e.target.value)} onBlur={() => onChange(localVal)} />;
+  const [localVal, setLocalVal] = useState(value ?? "");
+  const dirty = useRef(false), base = useRef(value ?? ""), saving = useRef(false);
+  useEffect(() => { if (!dirty.current) { base.current = value ?? ""; setLocalVal(value ?? ""); } }, [value]);
+  const save = async () => {
+    if (!dirty.current || saving.current) return;
+    saving.current = true;
+    try { const ok = await onChange(localVal, base.current); if (ok !== false) { dirty.current = false; base.current = localVal; } }
+    finally { saving.current = false; }
+  };
+  return <input {...props} value={localVal} onChange={e => { dirty.current = true; setLocalVal(e.target.value); }} onBlur={save} />;
 };
 
 export default function DasanMES() {
@@ -856,21 +806,34 @@ const [activeStep, setActiveStep] =
   const [dryingRoom, setDryingRoom] = useState(cloneDeep(DEFAULT_DRYING_ROOM));
   const [masterSettings, setMasterSettings] = useState(DEFAULT_MASTER_SETTINGS);
 
-  const prevSyncCount = useRef({ finished: 0, shipped: 0 });
-
+  const [syncState, setSyncState] = useState({});
+  const [loadError, setLoadError] = useState("");
+  const [pending, setPending] = useState(0);
+  const [wipArchive, setWipArchive] = useState([]);
+  const [mesAudit, setMesAudit] = useState([]);
+  const dirtyForm = useRef(false);
+  const confirming = useRef(false);
+  const receivedOnce = useRef(new Set());
+  const requiredSources = ["inventory", "inventoryHistory", "wipList", "orderList", "shippingHistory", "equipment", "wipArchive", "mesAudit"];
+  const serverReady = requiredSources.every(k => syncState[k] === "server");
+  const loaded = requiredSources.every(k => receivedOnce.current.has(k));
+  const canOperate = serverReady && !loadError && MES_MODE !== "blocked";
+  useEffect(() => subscribePending(setPending), []);
+  useEffect(() => { adminSession = isAdmin; return () => { adminSession = false; }; }, [isAdmin]);
   useEffect(() => {
-    if (!isUnlocked) return;
-    const currentFinished = wipList.filter((w) => w.currentStep === "done").length;
-    const currentShipped = shippingHistory.length;
-    if (currentFinished > prevSyncCount.current.finished || currentShipped > prevSyncCount.current.shipped) {
-      syncToGoogleSheets(orderList, wipList, inventoryHistory, shippingHistory, null);
-    }
-    prevSyncCount.current = { finished: currentFinished, shipped: currentShipped };
-  }, [wipList, shippingHistory, orderList, inventoryHistory, isUnlocked]);
+    const warn = e => { if (dirtyForm.current || pendingWrites()) { e.preventDefault(); e.returnValue = ""; } };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, []);
+  const navigateStep = step => {
+    if (pendingWrites()) { setToast({msg:"저장 중입니다. 완료 후 화면을 이동하세요.", type:"error"}); return; }
+    if (dirtyForm.current && !window.confirm("입력 중인 값이 있습니다. 이동하면 저장하지 않은 값이 사라질 수 있습니다. 이동할까요?")) return;
+    dirtyForm.current = false; setActiveStep(step);
+  };
 
-  const showToast = (msg, type = "error") => { setToast({ msg, type }); setTimeout(() => setToast(null), 3000); };
+  const showToast = (msg, type = "error") => { if (type === "success") dirtyForm.current = false; setToast({ msg, type }); setTimeout(() => setToast(null), 3000); };
   const showConfirm = (msg, onConfirm) => { setConfirmDialog({ msg, onConfirm }); };
-  const ctx = { showToast, showConfirm };
+  const ctx = { showToast, showConfirm, isAdmin };
 
   useEffect(() => {
     let meta = document.querySelector('meta[name="robots"]');
@@ -879,35 +842,42 @@ const [activeStep, setActiveStep] =
   }, []);
 
   useEffect(() => {
-    signInAnonymously(auth);
-    onAuthStateChanged(auth, setUser);
+    let closed = false;
+    const stop = onAuthStateChanged(auth, u => { if (!closed) setUser(u); });
+    signInAnonymously(auth).catch(e => { if (!closed) setLoadError(`로그인 연결 실패: ${e.message}`); });
+    return () => { closed = true; stop(); };
   }, []);
 
   useEffect(() => {
     if (!user || !isUnlocked) return;
-    const setupListener = (col, setter) => onSnapshot(getColRef(col), (snap) => setter(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
-    setupListener("inventory", setInventory);
-    setupListener("inventoryHistory", (d) => setInventoryHistory(d.sort((a, b) => b.id - a.id)));
-    setupListener("wipList", setWipList);
-    setupListener("orderList", (d) => setOrderList(d.sort((a, b) => new Date(b.orderDate) - new Date(a.orderDate))));
-    setupListener("shippingHistory", (d) => setShippingHistory(d.sort((a, b) => b.id - a.id)));
-    
-    onSnapshot(getColRef("equipment"), (snap) => {
-      snap.docs.forEach((d) => {
-        if (d.id === "furnaces") {
-          const loaded = d.data();
-          const mergedFurnaces = cloneDeep(DEFAULT_FURNACES);
-          Object.keys(mergedFurnaces).forEach(k => {
-             if (loaded[k]) mergedFurnaces[k] = { ...mergedFurnaces[k], ...loaded[k] };
-          });
-          setFurnaces(mergedFurnaces);
-        }
-        if (d.id === "dryingRoom") setDryingRoom(d.data());
-        if (d.id === "settings") {
-            if(d.data() && Object.keys(d.data()).length > 0) setMasterSettings(mergeMasterSettings(d.data()));
-        }
-      });
+    let closed = false;
+    receivedOnce.current.clear(); setSyncState({}); setLoadError("");
+    const stops = [];
+    const listen = (name, setter) => {
+      stops.push(onSnapshot(name === "mesAudit" ? limitedQuery(getColRef(name), "recordedAt", 50) : getColRef(name), { includeMetadataChanges: true }, snap => {
+        if (closed) return;
+        if (!snap.metadata.fromCache && !snap.metadata.hasPendingWrites) receivedOnce.current.add(name);
+        setter(mapRows(snap));
+        setSyncState(p => ({ ...p, [name]: snap.metadata.fromCache || snap.metadata.hasPendingWrites ? "cache" : "server" }));
+      }, e => { if (!closed) { setLoadError(`${name}: ${e.code || e.message}`); setSyncState(p => ({ ...p, [name]: "error" })); } }));
+    };
+    listen("inventory", setInventory);
+    listen("inventoryHistory", d => setInventoryHistory(d.sort(sortByTime)));
+    listen("wipList", setWipList);
+    listen("orderList", d => setOrderList(d.sort(sortByTime)));
+    listen("shippingHistory", d => setShippingHistory(d.sort(sortByTime)));
+    listen("wipArchive", setWipArchive);
+    listen("mesAudit", setMesAudit);
+    listen("equipment", rows => {
+      const byId = Object.fromEntries(rows.map(d => [d.id, d]));
+      const next = cloneDeep(DEFAULT_FURNACES);
+      Object.keys(next).forEach(k => { if (byId.furnaces?.[k]) next[k] = { ...next[k], ...byId.furnaces[k] }; });
+      setFurnaces(next);
+      const {id: ignored, ...room} = byId.dryingRoom || {};
+      setDryingRoom(Object.keys(room).length ? room : cloneDeep(DEFAULT_DRYING_ROOM));
+      if (byId.settings) { const {id: ignoredSetting, ...settings} = byId.settings; setMasterSettings(previous => { const next = mergeMasterSettings(settings); return canonical(previous) === canonical(next) ? previous : next; }); }
     });
+    return () => { closed = true; stops.forEach(stop => stop()); };
   }, [user, isUnlocked]);
 
   if (!isUnlocked) {
@@ -918,6 +888,8 @@ const [activeStep, setActiveStep] =
           <div className="bg-indigo-500/20 p-4 rounded-full mb-6"><Lock className="w-10 h-10 text-indigo-400" /></div>
           <h1 className="text-2xl font-black mb-2 tracking-tight text-center">다산산업 MES<br />보안 시스템</h1>
           <p className="text-slate-400 text-sm mb-8 text-center">허가된 관계자 외의 접근을 엄격히 금지합니다.</p>
+          {MES_MODE === "demo" && <button type="button" onClick={() => { setIsUnlocked(true); setIsAdmin(true); }} className="mb-4 p-3 bg-amber-600 rounded font-bold">가상 재고로 시험 시작</button>}
+          {runtimeError && <p role="alert">{runtimeError}</p>}
           <form onSubmit={(e) => {
               e.preventDefault();
               if (pinInput === MASTER_PIN) { setIsUnlocked(true); setIsAdmin(true); } 
@@ -953,7 +925,7 @@ const [activeStep, setActiveStep] =
   }
 
   const renderContent = () => {
-    const props = { inventory, wipList, orderList, inventoryHistory, shippingHistory, furnaces, dryingRoom, masterSettings, setActiveStep, ctx };
+    const props = { inventory, inventoryHistory, wipList, orderList, shippingHistory, furnaces, dryingRoom, masterSettings, ctx, setActiveStep: navigateStep, wipArchive, mesAudit };
     // ==========================================
 // 화면 렌더링 단계의 2차 권한 방어
 // URL 조작으로 관리자 화면 진입 방지
@@ -1018,7 +990,7 @@ if (
             <p className="text-slate-600 mb-8 font-medium">{confirmDialog.msg}</p>
             <div className="flex justify-end space-x-3">
               <button onClick={() => setConfirmDialog(null)} className="px-5 py-2 bg-slate-100 rounded-xl font-bold">취소</button>
-              <button onClick={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }} className="px-5 py-2 bg-indigo-600 text-white rounded-xl font-bold">확인</button>
+              <button disabled={pending > 0} onClick={async () => { if (confirming.current || pendingWrites()) return; confirming.current = true; const action = confirmDialog.onConfirm; setConfirmDialog(null); try { await action(); } catch(e) { showToast(e.message || String(e)); } finally { confirming.current = false; } }} className="px-5 py-2 bg-indigo-600 text-white rounded-xl font-bold">확인</button>
             </div>
           </div>
         </div>
@@ -1034,13 +1006,13 @@ if (
             <ul className="space-y-1">
               {PROCESS_STEPS.map((step) => (
                 <li key={step.id}>
-                  <button onClick={() => setActiveStep(step.id)} className={`w-full flex items-center px-6 py-3 text-sm font-medium transition-colors ${activeStep === step.id ? "bg-blue-600 text-white shadow-md" : "hover:bg-slate-800"}`}>
+                  <button onClick={() => navigateStep(step.id)} className={`w-full flex items-center px-6 py-3 text-sm font-medium transition-colors ${activeStep === step.id ? "bg-blue-600 text-white shadow-md" : "hover:bg-slate-800"}`}>
                     <step.icon className={`w-5 h-5 mr-3 ${activeStep === step.id ? "text-blue-200" : "text-slate-500"}`} /> {step.name}
                   </button>
                 </li>
               ))}
               <li className="mt-4 border-t border-slate-800 pt-4">
-                  <button onClick={() => setActiveStep("settings")} className={`w-full flex items-center px-6 py-3 text-sm font-medium transition-colors ${activeStep === "settings" ? "bg-red-600 text-white shadow-md" : "hover:bg-slate-800 text-red-400"}`}>
+                  <button onClick={() => navigateStep("settings")} className={`w-full flex items-center px-6 py-3 text-sm font-medium transition-colors ${activeStep === "settings" ? "bg-red-600 text-white shadow-md" : "hover:bg-slate-800 text-red-400"}`}>
                     <Settings className={`w-5 h-5 mr-3 ${activeStep === "settings" ? "text-white" : "text-red-400"}`} /> 마스터 환경설정
                   </button>
               </li>
@@ -1056,11 +1028,20 @@ if (
             {!isAdmin && <span className="ml-4 bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-xs font-black border border-orange-200">현장 전용 모드</span>}
           </div>
           <div className="text-sm text-slate-600 bg-slate-100 px-3 py-1.5 rounded-full flex items-center font-bold">
-            <span className="w-2 h-2 rounded-full bg-green-500 mr-2 animate-pulse"></span> 클라우드 실시간 동기화
+            <span className={`w-2 h-2 rounded-full mr-2 ${serverReady && !loadError ? "bg-green-500" : "bg-amber-500"}`}></span>{loadError ? "연결 실패" : pending ? "저장 중" : serverReady ? (MES_MODE === "demo" ? "가상 데이터" : "서버 수신 확인") : "불러오는 중 / 재연결 필요"}
           </div>
         </header>
         <main className="flex-1 overflow-y-auto bg-slate-50 p-8">
-          <div className="max-w-7xl mx-auto">{renderContent()}</div>
+          <div className="max-w-7xl mx-auto">
+            <div className="mb-4 p-4 bg-amber-50 border border-amber-300 rounded font-bold">
+              {MES_MODE === "demo" ? "시험용 가상 재고입니다. Firebase / 구글 시트 / 실제 프린터로 전송하지 않습니다. 새로고침하면 시험 재고로 초기화됩니다." : MES_MODE === "emulator" ? "로컬 Firebase Emulator 시험" : LIVE_WRITES_ENABLED ? "운영 모드: 실제 재고가 변경됩니다." : "읽기 전용 / 연결 제한"}
+            </div>
+            {loadError && <div role="alert" className="p-4 mb-4 bg-red-100 border border-red-400">{loadError} <button onClick={() => window.location.reload()}>다시 연결</button></div>}
+            {!loaded ? <div className="p-8">재고를 불러오는 중입니다. 아직 0개로 판단하지 마세요.</div> :
+              <fieldset disabled={!canOperate || pending > 0} onClickCapture={e => { if (!canOperate || pendingWrites()) { e.preventDefault(); e.stopPropagation(); } }} onChangeCapture={() => { dirtyForm.current = true; }}>
+                {renderContent()}
+              </fieldset>}
+          </div>
         </main>
       </div>
     </div>
@@ -1070,7 +1051,7 @@ if (
 // ==========================================
 // Dashboard View 
 // ==========================================
-function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, shippingHistory, furnaces, setActiveStep, ctx, masterSettings }) {
+function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, shippingHistory, furnaces, setActiveStep, ctx, masterSettings, mesAudit = [] }) {
   const stockForecast = React.useMemo(() => {
     const getBOM = (color, singleWeight, qty) => {
       const baseKg = (Number(singleWeight) * Number(qty)) / 1000;
@@ -1143,222 +1124,18 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
 
   const handleSyncGoogleSheet = async () => { await syncToGoogleSheets(orderList, wipList, inventoryHistory, shippingHistory, ctx); };
 
-  const handleSaveWip = async (wip) => {
-    const safeQty = Number(editData.qty);
-    if (!Number.isInteger(safeQty) || safeQty < 0) {
-      return ctx.showToast("수량은 0 이상의 정수로 입력해주세요.", "error");
-    }
-
-    const targetStep = editData.currentStep || wip.currentStep;
-    const currentIndex = WIP_STEPS.findIndex((s) => s.value === wip.currentStep);
-    const targetIndex = WIP_STEPS.findIndex((s) => s.value === targetStep);
-    const correctionReason = String(editData.correctionReason || "").trim();
-    const qtyChanged = safeQty !== Number(wip.qty);
-
-    // 대시보드 수정에서는 현재 공정보다 뒤 단계로 건너뛰는 것은 막습니다.
-    if (currentIndex >= 0 && targetIndex > currentIndex) {
-      return ctx.showToast(
-        "대시보드에서는 현재 또는 이전 공정으로만 변경할 수 있습니다.",
-        "error"
-      );
-    }
-
-    // 작업자 오입력 보정은 반드시 사유를 남겨 추후 추적 가능하게 합니다.
-    if (qtyChanged && !correctionReason) {
-      return ctx.showToast(
-        "수량을 수정할 때는 관리자 보정 사유를 입력해주세요.",
-        "error"
-      );
-    }
-
-    const saveChanges = async () => {
-      try {
-        await runTransaction(db, async (transaction) => {
-          const wipRef = getDocRef("wipList", wip.id);
-          const liveSnap = await transaction.get(wipRef);
-
-          if (!liveSnap.exists()) {
-            throw new Error("수정 대상 작업지시가 존재하지 않습니다.");
-          }
-
-          const live = liveSnap.data();
-          const liveQty = Number(live.qty) || 0;
-          const liveStep = live.currentStep;
-          const structuralChange =
-            safeQty !== liveQty || targetStep !== liveStep;
-
-          // 전기로 슬롯에 이미 배정된 상태에서 WIP만 수정하면
-          // 슬롯 합계와 WIP 수량이 달라지므로 수정 금지.
-          if (structuralChange && liveStep === "step5") {
-            const furnaceRef = getDocRef("equipment", "furnaces");
-            const furnaceSnap = await transaction.get(furnaceRef);
-            const liveFurnaces = furnaceSnap.exists() ? furnaceSnap.data() : {};
-
-            let allocatedQty = 0;
-            Object.values(liveFurnaces || {}).forEach((f) => {
-              Object.values(f?.slotData || {}).forEach((slot) => {
-                if (String(slot?.wipId || "") === String(wip.id)) {
-                  allocatedQty += Number(slot?.qty) || 0;
-                }
-              });
-            });
-
-            if (allocatedQty > 0) {
-              throw new Error(
-                `전기로에 ${allocatedQty}EA가 이미 배정되어 있습니다. 가동 전이면 열처리 화면에서 슬롯 배정을 먼저 해제한 뒤 수정해주세요.`
-              );
-            }
-          }
-
-          // 수축률 측정대는 슬롯별 수량이 이후 최종 WIP 수량의 근거가 되므로
-          // WIP만 수정하면 다음 단계에서 다시 원래 슬롯 합계로 덮어써집니다.
-          if (structuralChange && liveStep === "step5_shrink") {
-            const shrinkRef = getDocRef("equipment", "shrinkDesks");
-            const shrinkSnap = await transaction.get(shrinkRef);
-            const desks = shrinkSnap.exists() ? shrinkSnap.data() : {};
-
-            let slotQty = 0;
-            Object.values(desks || {}).forEach((desk) => {
-              [desk, ...(desk?.queue || [])].forEach(batch => Object.values(batch?.slotData || {}).forEach((slot) => {
-                if (String(slot?.wipId || "") === String(wip.id)) {
-                  slotQty += Number(slot?.qty) || 0;
-                }
-              }));
-            });
-
-            if (slotQty > 0) {
-              throw new Error(
-                `수축률 측정대에 슬롯 수량 ${slotQty}EA가 연결되어 있습니다. 이 단계는 슬롯별 수량을 함께 보정해야 하므로 WIP 단독 수정은 차단됩니다.`
-              );
-            }
-          }
-
-          const now = getKST();
-          const notes = [];
-
-          if (safeQty !== liveQty) {
-            notes.push(
-              `[${now}] [관리자 수량보정] ${liveQty}EA → ${safeQty}EA | 사유:${correctionReason}`
-            );
-          }
-
-          if (targetStep !== liveStep) {
-            const fromLabel =
-              WIP_STEPS.find((s) => s.value === liveStep)?.label || liveStep;
-            const toLabel =
-              WIP_STEPS.find((s) => s.value === targetStep)?.label || targetStep;
-            notes.push(
-              `[${now}] [관리자 공정롤백] ${fromLabel} → ${toLabel}`
-            );
-          }
-
-          const updateData = {
-            qty: safeQty,
-            currentStep: targetStep,
-            shrinkageRate:
-              editData.shrinkageRate || live.shrinkageRate || "",
-            details:
-              notes.length > 0
-                ? `${live.details || ""}\n${notes.join("\n")}`
-                : live.details || "",
-          };
-
-          // step1/step2는 아직 실제 배합 완료 전이므로 수량을 고치면
-          // 배합 지시 중량도 새 수량 기준으로 다시 맞춥니다.
-          if (
-            safeQty !== liveQty &&
-            ["step1", "step2"].includes(liveStep)
-          ) {
-            const totalWeight =
-              safeQty > 0
-                ? ((Number(live.singleWeight || 0) * safeQty) / 1000) *
-                    1.01 +
-                  0.2
-                : 0;
-            updateData.weight = totalWeight.toFixed(3);
-          }
-
-          if (safeQty !== liveQty) {
-            updateData.lastQtyCorrection = {
-              before: liveQty,
-              after: safeQty,
-              reason: correctionReason,
-              correctedAt: now,
-              correctedBy: "MASTER",
-            };
-          }
-
-          transaction.update(wipRef, updateData);
-        });
-
-        setEditingId(null);
-        setEditData({});
-        ctx.showToast(
-          targetStep !== wip.currentStep
-            ? "관리자 보정 및 공정 롤백 완료"
-            : qtyChanged
-            ? "수량 보정 완료 — 발주 잔량에 자동 반영됩니다."
-            : "수정 완료",
-          "success"
-        );
-      } catch (e) {
-        ctx.showToast(e?.message || "수정 실패", "error");
-      }
-    };
-
-    if (targetStep !== wip.currentStep) {
-      const fromLabel =
-        WIP_STEPS.find((s) => s.value === wip.currentStep)?.label ||
-        wip.currentStep;
-      const toLabel =
-        WIP_STEPS.find((s) => s.value === targetStep)?.label || targetStep;
-      ctx.showConfirm(
-        `${fromLabel} → ${toLabel}로 롤백하시겠습니까?\n\n※ 진행 상태만 변경되며 기존 공정 기록, 원재료 입출고 이력, 장비 데이터는 자동으로 삭제하거나 복원하지 않습니다.`,
-        saveChanges
-      );
-      return;
-    }
-
-    if (qtyChanged) {
-      ctx.showConfirm(
-        `${wip.mixLot} 수량을 ${wip.qty}EA → ${safeQty}EA로 보정하시겠습니까?\n\n사유: ${correctionReason}\n발주 잔량은 보정 직후 자동 재계산됩니다.`,
-        saveChanges
-      );
-      return;
-    }
-
-    await saveChanges();
+  const handleSaveWip = async wip => {
+    const admin = askAdmin(editData.correctionReason);
+    if (!admin) return;
+    try { await safeOps.cancelOrEdit(wip, { ...admin, qty: editData.qty, step: editData.currentStep || wip.currentStep, shrinkageRate: editData.shrinkageRate ?? wip.shrinkageRate ?? "" }); setEditingId(null); setEditData({}); ctx.showToast("관리자 보정 완료 (원본 보관)", "success"); }
+    catch(e) { ctx.showToast(e.message || String(e)); }
   };
-
-  const handleDeleteWip = (id) => {
-    const target = (wipList || []).find((w) => w.id === id);
-    if (!target) {
-      return ctx.showToast("해당 작업지시를 찾을 수 없습니다.", "error");
-    }
-
-    // step1은 원재료가 실제 차감되기 전이라 삭제 가능.
-    // 이후 공정은 원재료/장비/공정 이력이 연결되므로 강제 삭제 금지.
-    if (target.currentStep !== "step1") {
-      return ctx.showToast(
-        "원재료 창고 이후의 작업은 강제 삭제할 수 없습니다. 수량 오입력은 '수정' 기능의 관리자 보정으로 처리해주세요.",
-        "error"
-      );
-    }
-
-    ctx.showConfirm(
-      `${target.mixLot} 작업지시 ${target.qty}EA를 삭제하시겠습니까?\n삭제 즉시 해당 수량은 발주 잔량으로 자동 복구됩니다.`,
-      async () => {
-        try {
-          await deleteDoc(getDocRef("wipList", id));
-          ctx.showToast(
-            "작업지시 삭제 완료 — 발주 잔량 자동 복구",
-            "success"
-          );
-        } catch (e) {
-          ctx.showToast("삭제 실패", "error");
-        }
-      }
-    );
+  const handleDeleteWip = async id => {
+    const w = wipList.find(x => x.id === id); const admin = askAdmin(""); if (!w || !admin) return;
+    ctx.showConfirm(`${w.mixLot} / ${w.qty}EA: 현재 공정에서 취소하고 원본을 보관할까요? 원재료는 자동 반환되지 않습니다.`, async () => {
+      try { await safeOps.cancelOrEdit(w, { ...admin, cancel: true }); ctx.showToast("취소 완료. 로트 추적에 원본이 남습니다.", "success"); }
+      catch(e) { ctx.showToast(e.message || String(e)); }
+    });
   };
 
   const handleSaveInv = async (item) => {
@@ -1400,6 +1177,7 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
           if (!invSnap.exists()) throw new Error("재고 LOT가 존재하지 않습니다.");
 
           const live = invSnap.data();
+          assertSame(live, item, "원재료 LOT");
           const liveWeight = Number(live.weight) || 0;
           const liveLot = String(live.lot || "").trim().toUpperCase();
           const now = getKST();
@@ -1495,7 +1273,7 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
 
     if (!type) return ctx.showToast("품목을 선택해주세요.", "error");
     if (!lot) return ctx.showToast("LOT 번호를 입력해주세요.", "error");
-    if (!Number.isFinite(actualWeight) || actualWeight < 0) {
+    if (String(inventoryAuditData.actualWeight ?? "").trim() === "" || !Number.isFinite(actualWeight) || actualWeight < 0) {
       return ctx.showToast("실재고 중량을 0 이상의 숫자로 입력해주세요.", "error");
     }
     if (!operator) return ctx.showToast("실사/보정 담당자를 입력해주세요.", "error");
@@ -1530,20 +1308,13 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
     const applyAudit = async () => {
       try {
         await runTransaction(db, async (transaction) => {
-          // Firestore transaction은 READ를 먼저 끝낸 후 WRITE 합니다.
-          const sortedMatches = [...normalizedMatches].sort((a, b) => {
-            const da = String(a.date || "");
-            const dbb = String(b.date || "");
-            if (da !== dbb) return da.localeCompare(dbb);
-            return String(a.id).localeCompare(String(b.id));
-          });
-
-          const liveDocs = [];
-          for (const inv of sortedMatches) {
-            const ref = getDocRef("inventory", inv.id);
-            const snap = await transaction.get(ref);
-            if (snap.exists()) liveDocs.push({ ref, data: snap.data(), id: inv.id });
-          }
+          const currentRows = await transaction.list(getColRef("inventory"));
+          const liveMatches = currentRows.filter(s => s.data().type === type && String(s.data().lot || "").trim().toUpperCase() === lot);
+          if (liveMatches.length !== normalizedMatches.length) throw new Error("원재료 LOT 구성이 변경되었습니다. 다시 확인하세요.");
+          for (const row of liveMatches) assertSame(row.data(), normalizedMatches.find(x => x.id === row.id), "원재료 실사 대상");
+          if (currentRows.some(s => s.data().type !== type && String(s.data().lot || "").trim().toUpperCase() === lot && Number(s.data().weight)>0)) throw new Error("다른 품목에 같은 LOT가 존재합니다.");
+          const liveDocs = liveMatches.map(s => ({ref:s.ref,data:s.data(),id:s.id})).sort((a,b) => String(a.data.date || "").localeCompare(String(b.data.date || "")) || a.id.localeCompare(b.id));
+          transaction.annotate({kind:"inventory-stocktake",operator,reason,lot,type,actualWeight});
 
           const liveBeforeTotal = liveDocs.reduce(
             (sum, x) => sum + (Number(x.data.weight) || 0),
@@ -1648,6 +1419,13 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
 
   return (
     <div className="space-y-6">
+      <details className="bg-white border rounded-xl p-4">
+        <summary className="font-bold cursor-pointer">최근 안전 저장 기록 (최대 50건)</summary>
+        <p className="text-sm text-slate-500 my-2">재고 변경과 같은 저장에 원본·결과를 보관합니다. 종료 로트는 로트 이력 추적에서 검색하세요.</p>
+        {mesAudit.slice().sort((a,b)=>String(b.recordedAt).localeCompare(String(a.recordedAt))).map(a => <div key={a.id} className="text-sm border-t py-2">{a.recordedAt} | {a.label} | {a.actor} | {a.metadata?.reason || ""}</div>)}
+        {!mesAudit.length && <p className="text-sm">아직 시험 저장 기록이 없습니다.</p>}
+      </details>
+
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-6 rounded-xl shadow-sm border border-slate-100">
         <div>
           <h2 className="text-2xl font-black text-slate-800 tracking-tight">통합 관리자 대시보드</h2>
@@ -2012,100 +1790,29 @@ function Step0OrderManagement({ orderList, wipList, shippingHistory, masterSetti
 
   const handleAdd = async (e) => {
     e.preventDefault();
-    if (!newOrder.qty || newOrder.qty <= 0) return;
+    if (!Number.isSafeInteger(Number(newOrder.qty)) || Number(newOrder.qty) <= 0) return ctx.showToast("생산 수량은 양의 정수입니다.");
     const sWeight = Number(newOrder.singleWeight) || masterSettings.WEIGHT_BY_HEIGHT[newOrder.height];
     const reqBOM = calcBOM(newOrder.color, sWeight, newOrder.qty);
     const newItem = {
-      id: Date.now().toString(), orderNo: `ORD-${newOrder.date.replace(/-/g, "").slice(2)}-${Math.floor(Math.random() * 1000)}`,
+      id: uid("order"), orderNo: `ORD-${newOrder.date.replace(/-/g, "").slice(2)}-${Math.floor(Math.random() * 1000)}`,
       orderDate: newOrder.date, productCode: `HR-${getProductShade(newOrder.color)}${newOrder.height}`, color: normalizeProductType(newOrder.color), height: newOrder.height,
       singleWeight: sWeight, qty: parseInt(newOrder.qty), releasedQty: 0, reqBOM, status: "대기중", createdAt: serverTimestamp(),
     };
     try { await setDoc(getDocRef("orderList", newItem.id), newItem); ctx.showToast("생산 지시가 등록되었습니다.", "success"); } catch (err) { ctx.showToast("등록 실패", "error"); }
   };
 
-  const handleReleaseToWIP = async (order) => {
-    const inputQty = parseInt(releaseQtyMap[order.id]);
-    const progress = getOrderProgress(order, wipList, shippingHistory);
-    const remaining = progress.remainingQty;
-
-    if (!inputQty || inputQty <= 0) {
-      return ctx.showToast("투입할 수량을 입력해주세요.");
-    }
-    if (inputQty > remaining) {
-      return ctx.showToast(
-        `현재 추가 생산 필요 수량은 ${remaining}EA입니다.`,
-        "error"
-      );
-    }
-
-    ctx.showConfirm(
-      `${getProductLabel(order.color)} ${order.height}T ${inputQty}개를 소재 창고로 보내시겠습니까?\n\n현재 추가 생산 필요: ${remaining}EA`,
-      async () => {
-        try {
-          const newWipId =
-            Date.now().toString() + Math.random().toString().slice(2, 6);
-
-          // releasedQty를 잔량의 근거로 사용하지 않습니다.
-          // WIP 생성 자체가 발주 확보수량으로 자동 집계됩니다.
-          await setDoc(getDocRef("wipList", newWipId), {
-            id: newWipId,
-            orderId: order.id,
-            mixLot: `MIX-${getKSTDateOnly()}-${
-              Math.floor(Math.random() * 900) + 100
-            }`,
-            type: normalizeProductType(order.color),
-            height: order.height,
-            singleWeight: order.singleWeight,
-            qty: inputQty,
-            currentStep: "step1",
-            details: `[${getKST()}] 지시분할투입 (원본:${order.orderNo})`,
-          });
-
-          setReleaseQtyMap({ ...releaseQtyMap, [order.id]: "" });
-          ctx.showToast(
-            `${inputQty}개 소재 창고로 전송 완료`,
-            "success"
-          );
-          logProcessToGoogleSheet(
-            "step0",
-            {
-              mixLot: `투입-${order.orderNo}`,
-              type: normalizeProductType(order.color),
-              height: order.height,
-              qty: inputQty,
-            },
-            "시스템",
-            { details: `[발주 투입] 원본번호: ${order.orderNo}` }
-          );
-        } catch (e) {
-          ctx.showToast("투입 처리 중 오류 발생", "error");
-        }
-      }
-    );
+  const handleReleaseToWIP = async order => {
+    const amount = releaseQtyMap[order.id];
+    ctx.showConfirm(`소재 창고에 ${amount}EA를 투입할까요?`, async () => {
+      try { const w = await safeOps.release(order, amount); setReleaseQtyMap(p => ({ ...p, [order.id]: "" })); ctx.showToast("투입 완료", "success"); logProcessToGoogleSheet("step0", w, "시스템", {details:order.orderNo}); }
+      catch(e) { ctx.showToast(e.message || String(e)); }
+    });
   };
-
-  const handleDel = async (id) => {
-    const linkedWipCount = (wipList || []).filter(
-      (w) => String(w.orderId || "") === String(id)
-    ).length;
-    const linkedShippingCount = (shippingHistory || []).filter(
-      (h) => String(h.orderId || "") === String(id)
-    ).length;
-
-    if (linkedWipCount > 0 || linkedShippingCount > 0) {
-      return ctx.showToast(
-        "생산 또는 출고 이력이 연결된 발주는 삭제할 수 없습니다.",
-        "error"
-      );
-    }
-
-    ctx.showConfirm("삭제하시겠습니까?", async () => {
-      try {
-        await deleteDoc(getDocRef("orderList", id));
-        ctx.showToast("삭제됨", "success");
-      } catch (e) {
-        ctx.showToast("삭제 실패", "error");
-      }
+  const handleDel = async id => {
+    const order = orderList.find(o => o.id === id); if (!order) return;
+    ctx.showConfirm("생산 지시를 취소하고 기록을 보관할까요?", async () => {
+      try { await safeOps.cancelOrder(order); ctx.showToast("생산 지시 취소 완료", "success"); }
+      catch(e) { ctx.showToast(e.message || String(e)); }
     });
   };
 
@@ -2285,32 +1992,7 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
     const timeStr = getKST().slice(0, 16);
 
     try {
-      for (let item of validItems) {
-        const wVal = parseFloat(item.weight);
-        const newId = Date.now().toString() + Math.random().toString().slice(2, 7);
-        const histId = Date.now().toString() + Math.random().toString().slice(2, 7);
-
-        await setDoc(getDocRef("inventory", newId), {
-          id: newId,
-          lot: item.lot.trim(),
-          type: item.type,
-          weight: wVal,
-          date: dStr,
-          status: "입고완료",
-          createdAt: serverTimestamp()
-        });
-
-        await setDoc(getDocRef("inventoryHistory", histId), {
-          id: histId,
-          date: timeStr,
-          type: "IN",
-          materialType: item.type,
-          lot: item.lot.trim(),
-          qty: wVal,
-          note: "일괄입고",
-          createdAt: serverTimestamp()
-        });
-      }
+      await safeOps.inbound(validItems);
 
       setInboundItems(makeEmptyInboundItems(masterSettings.MATERIAL_TYPES));
       setIsModalOpen(false);
@@ -2328,12 +2010,7 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
     const totalW = Object.values(neededBOM).reduce((a, b) => a + b, 0);
 
     try {
-      await setDoc(getDocRef("wipList", lot.id), {
-        ...lot,
-        weight: totalW.toFixed(3),
-        currentStep: "step2",
-        details: `${lot.details || ""}\n[${getKST()}] [소재창고] 배합 대기로 이관 (담당:${op})`
-      });
+      await safeOps.advance(lot, "step2", { operator: op, patch: { weight: totalW.toFixed(3) }, note: `[소재창고] 배합 대기로 이관 | 담당:${op}` });
       ctx.showToast(`로트 ${lot.mixLot} 배합 공정으로 이관 완료`, "success");
       logProcessToGoogleSheet("step1", lot, op, { details: "배합 공정 이관 완료" });
     } catch (e) {
@@ -2627,7 +2304,12 @@ await runTransaction(db, async (transaction) => {
     }
 
     const wipSnap = await transaction.get(wipRef);
-
+    const settingsSnap = await transaction.get(getDocRef("equipment", "settings"));
+    assertSame(wipSnap.data(), activeJob, "배합 로트");
+    quantity(finalProducedQty, "배합 수량", false);
+    if (!activeMaterials.length || new Set(activeMaterials.map(m => selectedLots[m])).size !== activeMaterials.length) throw new Error("원료 선택 중복/누락입니다.");
+    const latestRatios = getProductRatios(mergeMasterSettings(settingsSnap.data() || {}), activeJob.type);
+    if (canonical(latestRatios) !== canonical(ratios)) throw new Error("배합비가 변경되었습니다. 새로고침하세요.");
 
     // ==========================================
     // 3. WIP 중복 처리 방지
@@ -2661,6 +2343,7 @@ await runTransaction(db, async (transaction) => {
       }
 
       const invItem = snap.data();
+      if (invItem.type !== mat || !Number.isFinite(Number(invItem.weight)) || !Number.isFinite(consumedBOM[mat]) || consumedBOM[mat] < 0) throw new Error("원료 종류/중량을 확인하세요.");
 
       if (
         Number(invItem.weight) <
@@ -2996,15 +2679,15 @@ function Step3FirstMolding({ wipList, masterSettings, ctx }) {
   const pendingWip = wipList.filter((w) => w.currentStep === "step3");
   const [formData, setFormData] = useState({});
   const handleDataChange = (id, f, v) => setFormData((p) => ({ ...p, [id]: { ...(p[id] || {}), [f]: v } }));
-  const calcAvg = (v1, v2, v3, dec = 2) => v1 && v2 && v3 ? ((Number(v1) + Number(v2) + Number(v3)) / 3).toFixed(dec) : (0).toFixed(dec);
+  const calcAvg = (v1, v2, v3, dec = 2) => [v1,v2,v3].every(v => v !== "" && v != null && Number.isFinite(Number(v)) && Number(v) > 0) ? ((Number(v1) + Number(v2) + Number(v3)) / 3).toFixed(dec) : "미입력";
 
   const moveNext = async (id) => {
     const d = formData[id] || {};
     if (!d.operator) return ctx.showToast("작업자 성명을 입력해주세요.", "error");
 
     const wItem = wipList.find((w) => w.id === id);
-    const aQty = parseInt(d.actualQty !== undefined ? d.actualQty : wItem.qty) || 0;
-    const defQty = parseInt(d.defects) || 0;
+    const aQty = Number(d.actualQty !== undefined ? d.actualQty : wItem?.qty);
+    const defQty = d.defects === "" || d.defects == null ? 0 : Number(d.defects);
 
     const dAvg = calcAvg(d.d1, d.d2, d.d3, 2);
     const hAvg = calcAvg(d.h1, d.h2, d.h3, 2);
@@ -3015,16 +2698,12 @@ function Step3FirstMolding({ wipList, masterSettings, ctx }) {
     const recordDetails = `[${getKST()}] [1차성형] 압력:${d.pressure || 0} | 직경:${dAvg}mm | 높이:${hAvg}mm | 무게:${wAvg}g | 담당:${d.operator}${defectStr}${noteStr}`;
 
     try {
-      await runTransaction(db, async (transaction) => {
-        const docRef = getDocRef("wipList", id);
-        const docSnap = await transaction.get(docRef);
-        if (!docSnap.exists()) throw "이미 삭제된 로트입니다.";
-        if (docSnap.data().currentStep !== "step3") throw "이미 다른 작업자가 처리한 로트입니다.";
-        transaction.update(docRef, { qty: Math.max(0, aQty - defQty), currentStep: "step4", details: `${docSnap.data().details || ""}\n${recordDetails}` });
-      });
+      if (Object.entries(d).some(([k,v]) => /^(d[123]|h[123]|w[123]|pressure)$/.test(k) && v !== "" && (!Number.isFinite(Number(v)) || Number(v) < 0))) throw new Error("측정값은 숫자로 입력하세요.");
+      if (aQty !== Number(wItem.qty) && !String(d.specialNote || "").trim()) throw new Error("성형 수량이 달라진 사유를 메모에 입력하세요.");
+      await safeOps.firstMolding(wItem, { actualQty: aQty, defects: defQty, defectReason: d.defectReason, operator: d.operator, note: recordDetails });
       ctx.showToast("1차 성형 완료", "success");
       logProcessToGoogleSheet("step3", { ...wItem, qty: aQty - defQty }, d.operator, { defects: defQty, defectReason: d.defectReason || "-", conditions: `압력:${d.pressure || 0}ton`, measurements: `직경:${dAvg}mm, 높이:${hAvg}mm, 무게:${wAvg}g`, details: d.specialNote || "-" });
-    } catch (err) { ctx.showToast(typeof err === "string" ? err : "오류 발생", "error"); }
+    } catch (err) { ctx.showToast(typeof err === "string" ? err : err.message || "오류 발생", "error"); }
   };
 
   return (
@@ -3120,14 +2799,14 @@ function Step4SecondMolding({ wipList, masterSettings, ctx }) {
   const pendingWip = wipList.filter((w) => w.currentStep === "step4");
   const [formData, setFormData] = useState({});
   const handleDataChange = (id, f, v) => setFormData((p) => ({ ...p, [id]: { ...(p[id] || {}), [f]: v } }));
-  const calcAvg = (v1, v2, v3, dec = 2) => v1 && v2 && v3 ? ((Number(v1) + Number(v2) + Number(v3)) / 3).toFixed(dec) : (0).toFixed(dec);
+  const calcAvg = (v1, v2, v3, dec = 2) => [v1,v2,v3].every(v => v !== "" && v != null && Number.isFinite(Number(v)) && Number(v) > 0) ? ((Number(v1) + Number(v2) + Number(v3)) / 3).toFixed(dec) : "미입력";
 
   const moveNext = async (id) => {
     const d = formData[id] || {};
     if (!d.operator) return ctx.showToast("작업자 성명을 필수로 입력해주세요.", "error");
 
-    const qtyA = parseInt(d.qtyA) || 0; const defA = parseInt(d.defectA) || 0;
-    const qtyB = parseInt(d.qtyB) || 0; const defB = parseInt(d.defectB) || 0;
+    const qtyA = Number(d.qtyA || 0); const defA = Number(d.defectA || 0);
+    const qtyB = Number(d.qtyB || 0); const defB = Number(d.defectB || 0);
     const wipItem = wipList.find((w) => w.id === id);
 
     if (qtyA === 0 && qtyB === 0) return ctx.showToast("A호기 또는 B호기 중 정상 생산 수량을 배정해주세요!", "error");
@@ -3139,36 +2818,14 @@ function Step4SecondMolding({ wipList, masterSettings, ctx }) {
     const curTime = getKST(); 
 
     try {
-      await runTransaction(db, async (transaction) => {
-        const docRef = getDocRef("wipList", id);
-        const docSnap = await transaction.get(docRef);
-        if (!docSnap.exists()) throw "이미 삭제된 로트입니다.";
-        if (docSnap.data().currentStep !== "step4") throw "이미 다른 작업자가 처리한 로트입니다.";
-        const currentData = docSnap.data();
-
-        // 🌟 수정: Step5 (열처리 대기) 로 넘어갑니다.
-        if (qtyA > 0) {
-          const defStrA = defA > 0 ? ` [불량 ${defA}개: ${d.defectReasonA || "사유미상"}]` : "";
-          const idA = Date.now().toString() + "A";
-          transaction.set(getDocRef("wipList", idA), {
-            ...currentData, id: idA, mixLot: `${currentData.mixLot}-A`, qty: qtyA, currentStep: "step5",
-            details: `${currentData.details || ""}\n[${curTime}] [2차성형 A호기] 압력:${pressA} | 직경:${dAvgA}mm | 높이:${hAvgA}mm | 담당:${d.operator}${defStrA}${noteStr}`,
-          });
-        }
-        if (qtyB > 0) {
-          const defStrB = defB > 0 ? ` [불량 ${defB}개: ${d.defectReasonB || "사유미상"}]` : "";
-          const idB = Date.now().toString() + "B";
-          transaction.set(getDocRef("wipList", idB), {
-            ...currentData, id: idB, mixLot: `${currentData.mixLot}-B`, qty: qtyB, currentStep: "step5",
-            details: `${currentData.details || ""}\n[${curTime}] [2차성형 B호기] 압력:${pressB} | 직경:${dAvgB}mm | 높이:${hAvgB}mm | 담당:${d.operator}${defStrB}${noteStr}`,
-          });
-        }
-        transaction.delete(docRef);
-      });
+      if (Object.entries(d).some(([k,v]) => /^(d[123][AB]|h[123][AB]|pressure[AB])$/.test(k) && v !== "" && (!Number.isFinite(Number(v)) || Number(v) < 0))) throw new Error("측정값은 숫자로 입력하세요.");
+      await safeOps.splitMolding(wipItem, { ...d, qtyA, qtyB, defectA: defA, defectB: defB,
+        noteA: `[2차성형 A] 압력:${pressA} | 직경:${dAvgA} | 높이:${hAvgA} | 불량:${defA} (${d.defectReasonA || "-"}) | 담당:${d.operator}${noteStr}`,
+        noteB: `[2차성형 B] 압력:${pressB} | 직경:${dAvgB} | 높이:${hAvgB} | 불량:${defB} (${d.defectReasonB || "-"}) | 담당:${d.operator}${noteStr}` });
       ctx.showToast("2차 성형 완료 및 열처리 이관", "success");
       if (qtyA > 0) logProcessToGoogleSheet("step4", { ...wipItem, qty: qtyA }, d.operator, { defects: defA, defectReason: d.defectReasonA || "-", equipment: "A호기", conditions: `압력:${d.pressureA || 0}MPa`, measurements: `직경:${dAvgA}mm, 높이:${hAvgA}mm`, details: d.specialNote || "-" });
       if (qtyB > 0) logProcessToGoogleSheet("step4", { ...wipItem, qty: qtyB }, d.operator, { defects: defB, defectReason: d.defectReasonB || "-", equipment: "B호기", conditions: `압력:${d.pressureB || 0}MPa`, measurements: `직경:${dAvgB}mm, 높이:${hAvgB}mm`, details: d.specialNote || "-" });
-    } catch (err) { ctx.showToast(typeof err === "string" ? err : "오류 발생", "error"); }
+    } catch (err) { ctx.showToast(typeof err === "string" ? err : err.message || "오류 발생", "error"); }
   };
 
   return (
@@ -3179,8 +2836,8 @@ function Step4SecondMolding({ wipList, masterSettings, ctx }) {
         {pendingWip.length === 0 && <div className="text-center py-12 text-slate-400 border-2 border-dashed rounded-xl">대기 중인 반제품이 없습니다.</div>}
         {pendingWip.map((wip) => {
           const d = formData[wip.id] || {};
-          const qtyA = parseInt(d.qtyA) || 0; const defA = parseInt(d.defectA) || 0;
-          const qtyB = parseInt(d.qtyB) || 0; const defB = parseInt(d.defectB) || 0;
+          const qtyA = Number(d.qtyA || 0); const defA = Number(d.defectA || 0);
+          const qtyB = Number(d.qtyB || 0); const defB = Number(d.defectB || 0);
           const dAvgA = calcAvg(d.d1A, d.d2A, d.d3A, 2); const hAvgA = calcAvg(d.h1A, d.h2A, d.h3A, 2);
           const dAvgB = calcAvg(d.d1B, d.d2B, d.d3B, 2); const hAvgB = calcAvg(d.h1B, d.h2B, d.h3B, 2);
 
@@ -3283,12 +2940,6 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
     return w.qty - used;
   };
 
-  const updateSlotData = async (fid, newSlotData) => {
-    const newFurnaces = cloneDeep(furnaces);
-    newFurnaces[fid].slotData = newSlotData;
-    await setDoc(getDocRef("equipment", "furnaces"), newFurnaces);
-  };
-
   const handleSlotClick = (fid, slotId) => {
     const f = furnaces[fid] || {};
     if (f.isHeating) return;
@@ -3308,290 +2959,25 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
   };
 
   const confirmPrompt = async () => {
-    const qty = parseInt(promptData.val);
-    if (isNaN(qty) || qty <= 0 || qty > promptData.max) {
-      setAlertModal({ isOpen: true, message: `수량은 1에서 ${promptData.max} 사이로 입력해주세요.`, type: "warning" });
-      return;
-    }
-    const w = wipList.find(i => i.id === selectedWipId);
-    const fid = promptData.fid;
-    const f = furnaces[fid] || {};
-    
-    const newSlotData = { ...f.slotData, [promptData.slotId]: { 
-        wipId: selectedWipId, mixLot: w.mixLot, type: w.type, height: w.height, qty: qty
-    }};
-
-    await updateSlotData(fid, newSlotData);
-    setPromptData({ isOpen: false, message: "", max: 0, val: "", fid: null, slotId: null });
+    try { const w = wipList.find(i => i.id === selectedWipId); await safeOps.allocateSlot(promptData.fid, promptData.slotId, null, w, promptData.val); setPromptData({isOpen:false,message:"",max:0,val:"",fid:null,slotId:null}); }
+    catch(e) { setAlertModal({isOpen:true,message:e.message,type:"error"}); }
   };
-
   const handleRemoveSlot = async (fid, slotId, e) => {
     e.stopPropagation();
-    const f = furnaces[fid] || {};
-    const newData = { ...f.slotData };
-    delete newData[slotId];
-    await updateSlotData(fid, newData);
+    try { await safeOps.allocateSlot(fid, slotId, furnaces[fid]?.slotData?.[slotId], null, 0); }
+    catch(error) { ctx.showToast(error.message || String(error)); }
+  };
+  const handleFurnaceInfo = async (fid, field, value, baseline) => {
+    try { await safeOps.furnaceField(fid, field, value, baseline); return true; }
+    catch(e) { ctx.showToast(e.message || String(e)); return false; }
   };
 
-  const handleFurnaceInfo = async (fid, field, val) => {
-    const newFurnaces = cloneDeep(furnaces);
-    if (!newFurnaces[fid]) return;
-    newFurnaces[fid][field] = val;
-    await setDoc(getDocRef("equipment", "furnaces"), newFurnaces);
-  };
-
-  const toggleHeating = async (fid) => {
-    const f = furnaces[fid] || {};
-    const db = getFirestore();
-    
-    if (!f.isHeating) {
-      if (Object.keys(f.slotData || {}).length === 0) {
-         setAlertModal({ isOpen: true, message: "전기로가 비어있습니다. 제품을 배정해주세요.", type: "warning" });
-         return;
-      }
-      if (!f.operator || f.operator.trim() === "") {
-        setAlertModal({ isOpen: true, message: "담당 작업자 이름을 입력해주세요.", type: "warning" });
-        return;
-      }
-     const newFurnaces = cloneDeep(furnaces);
-
-newFurnaces[fid].isHeating = true;
-
-// 열처리 시작시간 기록
-newFurnaces[fid].startedAt = getKST();
-
-await setDoc(
-  getDocRef("equipment", "furnaces"),
-  newFurnaces
-);
-      ctx.showToast("열처리 가동이 시작되었습니다.", "success");
-    } else {
-      // 🌟 가동 종료 (트랜잭션 규칙 엄격하게 적용: READ 먼저, WRITE 나중에)
-      const slotData = f.slotData || {};
-      const grouped = {};
-
-      Object.entries(slotData).forEach(([slotId, s]) => {
-         if (!grouped[s.wipId]) {
-            grouped[s.wipId] = { qty: 0, furnaceSlots: [] }; 
-         }
-         grouped[s.wipId].qty += Number(s.qty);
-         grouped[s.wipId].furnaceSlots.push({ fid, slotId, qty: Number(s.qty) }); 
-      });
-
-      try {
-        await runTransaction(db, async (transaction) => {
-           // ==========================================
-           // 1. [READ 단계] 업데이트할 모든 문서를 먼저 읽어옵니다.
-           // ==========================================
-           const wipSnaps = {};
-           for (const wId of Object.keys(grouped)) {
-             wipSnaps[wId] = await transaction.get(getDocRef("wipList", wId));
-           }
-           const shrinkRef = getDocRef("equipment", "shrinkDesks");
-           const shrinkSnap = await transaction.get(shrinkRef);
-           const furnaceRef = getDocRef("equipment", "furnaces");
-           const furnaceSnap = await transaction.get(furnaceRef);
-
-           // ==========================================
-           // 2. [WRITE 단계] 읽어온 문서를 바탕으로 업데이트를 수행합니다.
-           // ==========================================
-          // ==========================================
-// A. 열처리 완료 → 수축률 측정 대기
-// 전기로 / 위치 / 수량 / 온도 / 작업자 이력 저장
-// ==========================================
-const liveFurnace = furnaceSnap.exists() ? furnaceSnap.data()[fid] : null;
-if (!liveFurnace?.isHeating || JSON.stringify(liveFurnace) !== JSON.stringify(f)) {
-  throw new Error("전기로 데이터가 변경되었거나 이미 이관되었습니다. 새로고침 후 확인하세요.");
-}
-for (const wId of Object.keys(grouped)) {
-  if (!wipSnaps[wId]?.exists() || wipSnaps[wId].data().currentStep !== "step5") {
-    throw new Error("열처리 WIP 상태가 다릅니다. 중복 이관 또는 분할 배정을 확인하세요.");
-  }
-}
-for (const wId of Object.keys(grouped)) {
-  if (Number(wipSnaps[wId].data().qty) !== grouped[wId].qty) {
-    throw new Error("로트가 여러 전기로에 나뉘거나 일부만 배정되어 있습니다. 수량 유실 방지를 위해 로트 전체를 한 회차에 배정하거나 WIP를 먼저 분할하세요.");
-  }
-}
-const completedAt = getKST();
-
-for (const wId of Object.keys(grouped)) {
-  const snap = wipSnaps[wId];
-
-  if (snap && snap.exists()) {
-    const currentWip = snap.data();
-
-    const enrichedSlots =
-      grouped[wId].furnaceSlots.map((slot) => ({
-        furnaceId: slot.fid,
-        slotId: slot.slotId,
-        slotLabel:
-          getFurnaceSlotLabel(slot.slotId),
-        qty: Number(slot.qty) || 0,
-      }));
-
-    const slotSummary = enrichedSlots
-      .map(
-        (slot) =>
-          `${slot.furnaceId}호기 ${slot.slotLabel}(${slot.qty}EA)`
-      )
-      .join(", ");
-
-    const heatRecord =
-      `[${completedAt}] [열처리완료] ` +
-      `${slotSummary} | ` +
-      `온도:${f.temp || "1050"}°C | ` +
-      `담당:${f.operator || "미입력"}` +
-      `${
-        f.memo
-          ? ` | 메모:${f.memo}`
-          : ""
-      }`;
-
-    const previousHeatHistory =
-      Array.isArray(
-        currentWip.heatTreatmentHistory
-      )
-        ? currentWip.heatTreatmentHistory
-        : [];
-
-    transaction.update(snap.ref, {
-      currentStep: "step5_shrink",
-
-      // 마지막 열처리 슬롯
-      furnaceSlots: enrichedSlots,
-
-      // 구조화된 열처리 이력
-      heatTreatmentHistory: [
-        ...previousHeatHistory,
-        {
-          furnaceId: fid,
-          startedAt:
-            f.startedAt || "",
-          completedAt,
-          temperature:
-            f.temp || "1050",
-          operator:
-            f.operator || "",
-          memo:
-            f.memo || "",
-          slots: enrichedSlots,
-        },
-      ],
-
-      // 기존 타임라인에도 사람이 읽을 수 있게 기록
-      details:
-        `${currentWip.details || ""}\n` +
-        heatRecord,
-    });
-  }
-}
-
-           // B. 수축률 측정대로 12칸 데이터 복사
-           const currentDesks = shrinkSnap.exists() ? shrinkSnap.data() : { 1: {step: 0, slotData: {}}, 2: {step: 0, slotData: {}} };
-           const newShrinkSlotData = {};
-           Object.entries(slotData).forEach(([slotId, s]) => {
-             newShrinkSlotData[slotId] = {
-  wipId: s.wipId,
-  mixLot: s.mixLot,
-  type: s.type,
-  height: s.height,
-  qty: s.qty,
-
-  // 열처리 위치 추적정보
-  furnaceId: fid,
-  furnaceSlotId: slotId,
-  furnaceSlotLabel:
-    getFurnaceSlotLabel(slotId),
-
-  heatStartedAt:
-    f.startedAt || "",
-
-  heatCompletedAt:
-    completedAt,
-
-  heatTemperature:
-    f.temp || "1050",
-
-  measurements: [
-    {
-      position: "",
-      preArea: "",
-      postArea: "",
-      calcShrink: "",
-      calcExpand: ""
-    }
-  ]
-};
-           });
-           const incoming = {
-             batchId: `${fid}-${f.startedAt || completedAt}-${Date.now()}`,
-             revision: 0, createdAt: completedAt, step: 1,
-             operator: f.operator || "", memo: f.memo || "", slotData: newShrinkSlotData
-           };
-           const active = currentDesks[fid] || {};
-           if (Object.keys(active.slotData || {}).length) {
-             currentDesks[fid] = { ...active, queue: [...(active.queue || []), incoming] };
-           } else {
-             const waiting = [...(active.queue || []), incoming];
-             currentDesks[fid] = { ...waiting.shift(), queue: waiting };
-           }
-           transaction.set(shrinkRef, currentDesks);
-
-           // C. 가동 종료된 전기로 완벽 초기화
-           const currentFurnaces = furnaceSnap.exists() ? furnaceSnap.data() : { 1: {}, 2: {} };
-           currentFurnaces[fid] = {
-  isHeating: false,
-  temp: f.temp || "1050",
-  operator: "",
-  memo: "",
-  slotData: {},
-  startedAt: ""
-};
-           transaction.set(furnaceRef, currentFurnaces);
-        });
-
-        // Firestore 트랜잭션이 성공한 뒤에만 Google Sheets에 열처리 완료 로그를 남깁니다.
-        // 트랜잭션 내부에서 외부 HTTP 요청을 보내면 재시도 시 중복 기록될 수 있으므로 반드시 밖에서 실행합니다.
-        const heatProcessLogs = Object.entries(grouped).map(([wId, info]) => {
-          const originalWip = wipList.find(w => w.id === wId) || {};
-          return { wip: { ...originalWip, qty: info.qty }, operator: f.operator || "현장작업자",
-            slotSummary: info.furnaceSlots.map(slot => `${slot.fid}호기 ${getFurnaceSlotLabel(slot.slotId)}(${slot.qty}EA)`).join(", ") };
-        });
-        await Promise.all(
-          heatProcessLogs.map((item) =>
-            logProcessToGoogleSheet(
-              "step5",
-              item.wip,
-              item.operator,
-              {
-  equipment:
-    `${fid}호기`,
-
-  conditions:
-    `온도:${f.temp || "1050"}°C | ` +
-    `위치:${item.slotSummary}`,
-
-  details:
-    `열처리 완료 | ` +
-    `${item.slotSummary}` +
-    `${
-      f.memo
-        ? ` | 메모:${f.memo}`
-        : ""
-    }`,
-}
-            )
-          )
-        );
-
-        setAlertModal({ isOpen: true, message: `✅ 가동 종료!\n\n전기로가 비워졌으며, 배정되었던 위치 그대로 [수축률 측정 대기]로 이관되었습니다.`, type: "success" });
-      } catch (error) {
-        console.error("이관 에러:", error);
-        // 에러의 정확한 이유를 팝업창에 띄워줍니다.
-        setAlertModal({ isOpen: true, message: `이관 중 오류가 발생했습니다.\n사유: ${error.message}`, type: "error" });
-      }
-    }
+  const toggleHeating = async fid => {
+    const f = furnaces[fid];
+    try {
+      if (!f?.isHeating) { await safeOps.startHeat(fid, f); ctx.showToast("열처리 시작 완료", "success"); }
+      else { const moved = await safeOps.finishHeat(fid, f); ctx.showToast("열처리 완료 / 수축률 대기", "success"); for (const w of moved) logProcessToGoogleSheet("step5", w, f.operator, {details:w.details, equipment:`${fid}호기`}); }
+    } catch(e) { ctx.showToast(e.message || String(e)); }
   };
 
   return (
@@ -3675,18 +3061,18 @@ for (const wId of Object.keys(grouped)) {
                       <div className="flex gap-3 mb-4">
                         <div className="w-1/2">
                           <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center justify-between">목표 가동 온도 <span className="text-[8px] text-orange-500 border border-orange-200 bg-orange-50 px-1 rounded">목표:{masterSettings?.TARGET_TEMPERATURE?.[`furnace${id}`] || "1050"}</span></label>
-                          <SyncInput type="number" value={f.temp} onChange={(val) => handleFurnaceInfo(id, 'temp', val)} disabled={isH} className="w-full border-2 border-slate-200 bg-slate-50 text-slate-800 font-black text-center p-2.5 rounded-xl focus:border-indigo-400 outline-none disabled:opacity-60" />
+                          <SyncInput type="number" value={f.temp} onChange={(val, baseline) => handleFurnaceInfo(id, 'temp', val, baseline)} disabled={isH} className="w-full border-2 border-slate-200 bg-slate-50 text-slate-800 font-black text-center p-2.5 rounded-xl focus:border-indigo-400 outline-none disabled:opacity-60" />
                         </div>
                         <div className="w-1/2">
                           <label className="block text-xs font-bold text-slate-500 mb-1">담당 작업자</label>
-                          <SyncInput type="text" placeholder="성명" value={f.operator} onChange={(val) => handleFurnaceInfo(id, 'operator', val)} disabled={isH} className="w-full border-2 border-slate-200 p-2.5 rounded-xl text-center font-bold text-slate-800 focus:border-indigo-400 outline-none disabled:opacity-60" />
+                          <SyncInput type="text" placeholder="성명" value={f.operator} onChange={(val, baseline) => handleFurnaceInfo(id, 'operator', val, baseline)} disabled={isH} className="w-full border-2 border-slate-200 p-2.5 rounded-xl text-center font-bold text-slate-800 focus:border-indigo-400 outline-none disabled:opacity-60" />
                         </div>
                       </div>
 
                       {isH && (
                         <div className="mb-4 p-3 bg-orange-50 border border-orange-200 rounded-xl animate-fade-in">
                           <label className="block text-xs font-bold text-orange-800 mb-1">가동 특이사항(메모)</label>
-                          <SyncInput type="text" placeholder="특이사항이나 메모를 입력하세요" value={f.memo} onChange={(val) => handleFurnaceInfo(id, 'memo', val)} disabled={!isH} className="w-full border border-orange-300 p-2.5 rounded-lg font-bold text-slate-700 focus:outline-none" />
+                          <SyncInput type="text" placeholder="특이사항이나 메모를 입력하세요" value={f.memo} onChange={(val, baseline) => handleFurnaceInfo(id, 'memo', val, baseline)} disabled={!isH} className="w-full border border-orange-300 p-2.5 rounded-lg font-bold text-slate-700 focus:outline-none" />
                         </div>
                       )}
 
@@ -3967,6 +3353,7 @@ function Step5_5Shrinkage({ wipList, ctx }) {
       if (!wipSnap.exists() || wipSnap.data().currentStep !== "step5_shrink") throw new Error("현재 측정 대기 로트가 아닙니다.");
       const w = wipSnap.data();
       if (Object.values(all).some(d => [d, ...(d.queue || [])].some(b => Object.values(b.slotData || {}).some(s => s.wipId === wipId)))) throw new Error("이미 측정 작업에 등록되어 있습니다.");
+      if (w.slotAllocationNeedsReview) throw new Error("수량 보정 이후 장비 위치별 수량을 다시 확인해야 합니다.");
       const positions = w.furnaceSlots || [];
       const fid = positions[0]?.furnaceId ?? positions[0]?.fid;
       const validSlots = new Set(["L1","R1","L2","R2","L3","R3","L4","R4","L5","R5","L6","R6"]);
@@ -4218,229 +3605,15 @@ if (hasIncompleteMeasurement) {
   const finalizeProcess = async (fid, mergedLots, splitLots) => {
     const d = analyzedBatch.current;
     if (!d) throw new Error("먼저 측정 결과를 분석하세요.");
-    const curTime = getKST();
-    const db = getFirestore();
-    let processLogs = [];
-
     try {
-      await runTransaction(db, async (transaction) => {
-        // 트랜잭션이 재시도되더라도 외부 로그가 중복되지 않도록
-        // 이번 시도에서 생성될 로그 목록만 로컬 변수로 구성합니다.
-        const nextProcessLogs = [];
-
-        // ==========================================
-        // 1. [READ] 관련 WIP / 수축률 측정대 문서를 먼저 읽습니다.
-        // ==========================================
-        const allWipIds = new Set([
-          ...mergedLots.map((m) => m.wipId),
-          ...splitLots.map((s) => s.wipId),
-        ]);
-
-        const wipSnaps = {};
-        for (const wId of allWipIds) {
-          const snap = await transaction.get(getDocRef("wipList", wId));
-          if (snap.exists()) wipSnaps[wId] = snap;
-        }
-
-        const shrinkRef = getDocRef("equipment", "shrinkDesks");
-        const shrinkDoc = await transaction.get(shrinkRef);
-
-        const liveDesk = shrinkDoc.exists() ? shrinkDoc.data()[fid] : null;
-        if (!liveDesk || liveDesk.step !== 2 || deskVersion(liveDesk) !== deskVersion(d)) {
-          throw new Error("분석 이후 측정 데이터가 변경되었습니다. 다시 분석하세요.");
-        }
-        const analyzedSlots = [...mergedLots, ...splitLots].flatMap(lot => lot.slots);
-        if (!analyzedSlots.length || analyzedSlots.length !== Object.keys(d.slotData).length ||
-            new Set(analyzedSlots.map(x => x.sId)).size !== analyzedSlots.length) {
-          throw new Error("분석 대상 슬롯이 일치하지 않습니다.");
-        }
-        for (const wId of allWipIds) {
-          const w = wipSnaps[wId];
-          if (!w || w.data().currentStep !== "step5_shrink") throw new Error("이미 이관되었거나 존재하지 않는 로트입니다.");
-          const qty = Object.values(d.slotData).filter(x => x.wipId === wId).reduce((n, x) => n + Number(x.qty), 0);
-          if (!(qty > 0) || qty !== Number(w.data().qty)) throw new Error("로트 수량과 측정 수량이 다릅니다. 분할 배정 또는 누락 슬롯을 확인하세요.");
-          for (const [otherFid, desk] of Object.entries(shrinkDoc.data())) {
-            const otherBatches = [...(desk.queue || []), ...(String(otherFid) !== String(fid) ? [desk] : [])];
-            if (otherBatches.some(b => Object.values(b.slotData || {}).some(x => x.wipId === wId))) throw new Error("같은 WIP가 다른 대기 작업에도 있습니다. 배정을 먼저 확인하세요.");
-          }
-        }
-        // ==========================================
-        // 2. [WRITE] 기존 WIP를 제거하고 확정된 WIP를 새로 만듭니다.
-        // ==========================================
-        for (const wId of allWipIds) {
-          if (wipSnaps[wId]) transaction.delete(wipSnaps[wId].ref);
-        }
-
-        // ------------------------------------------
-        // A. 수축률이 하나로 확정되는 통합 LOT
-        // ------------------------------------------
-        mergedLots.forEach((m) => {
-          const snap = wipSnaps[m.wipId];
-          if (!snap) return;
-
-          const orig = snap.data();
-          const newId =
-            Date.now().toString() + Math.random().toString(36).substr(2, 5);
-          const slotKeysStr = m.slots
-            .map((s) => `${fid}호기 ${s.sId}`)
-            .join(", ");
-          const totalQty = m.slots.reduce(
-            (sum, s) => sum + (Number(s.qty) || 0),
-            0
-          );
-
-          const recordDetails =
-            `[${curTime}] [수축률확정] 위치(${slotKeysStr}) | ` +
-            `수축률:${m.finalShrink}% | 담당:${d.operator}`;
-
-          const newWip = {
-            ...orig,
-            id: newId,
-            qty: totalQty,
-            currentStep: "step6",
-            shrinkageRate: m.finalShrink,
-            details: `${orig.details || ""}
-${recordDetails}`,
-          };
-
-          transaction.set(getDocRef("wipList", newId), newWip);
-
-         const specimenMeasurements =
-  buildSpecimenMeasurementText(
-    fid,
-    m.slots.map((s) => s.sId),
-    d.slotData
-  );
-
-nextProcessLogs.push({
-  wip: newWip,
-  operator: d.operator,
-  measurements:
-    `평균수축률:${m.finalShrink}% | ${specimenMeasurements}`,
-  details: d.memo || "-",
-});
-        });
-
-        // ------------------------------------------
-        // B. 수축률 편차로 A/B 등으로 분할되는 LOT
-        // ------------------------------------------
-        splitLots.forEach((lot) => {
-          const groupMap = {};
-
-          lot.slots.forEach((s) => {
-            if (!groupMap[s.group]) groupMap[s.group] = [];
-            groupMap[s.group].push(s);
-          });
-
-          Object.entries(groupMap).forEach(([gName, sArr]) => {
-            const snap = wipSnaps[lot.wipId];
-            if (!snap || sArr.length === 0) return;
-
-            const orig = snap.data();
-            const gAvg = (
-              sArr.reduce((sum, s) => sum + (Number(s.shrinkVal) || 0), 0) /
-              sArr.length
-            ).toFixed(2);
-
-            const newId =
-              Date.now().toString() + Math.random().toString(36).substr(2, 5);
-            const suffix = Object.keys(groupMap).length > 1 ? `-${gName}` : "";
-            const newMixLot = `${orig.mixLot || ""}${suffix}`;
-            const slotKeysStr = sArr
-              .map((s) => `${fid}호기 ${s.sId}`)
-              .join(", ");
-            const totalQty = sArr.reduce(
-              (sum, s) => sum + (Number(s.qty) || 0),
-              0
-            );
-
-            const recordDetails =
-              `[${curTime}] [수축률확정] 위치(${slotKeysStr}) | ` +
-              `수축률:${gAvg}% | 분리됨(${gName}) | 담당:${d.operator}`;
-
-            const newWip = {
-              ...orig,
-              id: newId,
-              mixLot: newMixLot,
-              qty: totalQty,
-              currentStep: "step6",
-              shrinkageRate: gAvg,
-              details: `${orig.details || ""}
-${recordDetails}`,
-            };
-
-            transaction.set(getDocRef("wipList", newId), newWip);
-
-           const specimenMeasurements =
-  buildSpecimenMeasurementText(
-    fid,
-    sArr.map((s) => s.sId),
-    d.slotData
-  );
-
-nextProcessLogs.push({
-  wip: newWip,
-  operator: d.operator,
-  measurements:
-    `평균수축률:${gAvg}% | ${specimenMeasurements}`,
-  details:
-    `${d.memo || "-"} / 수축률 편차로 ${gName} 그룹 분할`,
-});
-          });
-        });
-
-        // ------------------------------------------
-        // C. 수축률 측정대 초기화
-        // ------------------------------------------
-        const currentDesks = shrinkDoc.exists() ? shrinkDoc.data() : {};
-        const waiting = [...(currentDesks[fid]?.queue || [])];
-        const { queue: archivedQueue, ...archivedBatch } = d;
-        transaction.set(getDocRef("shrinkArchives", d.batchId), {
-          ...archivedBatch, furnaceId: fid, completedAt: curTime, kind: "completed",
-          results: nextProcessLogs.map(log => ({ wipId: log.wip.id, mixLot: log.wip.mixLot, qty: log.wip.qty, shrinkageRate: log.wip.shrinkageRate }))
-        });
-        currentDesks[fid] = waiting.length ? { ...waiting.shift(), queue: waiting } : emptyDesk();
-        transaction.set(shrinkRef, currentDesks);
-
-        // 성공한 트랜잭션 시도의 로그 목록만 바깥으로 전달합니다.
-        processLogs = nextProcessLogs;
-      });
-
-      // Firestore commit 성공 이후 Google Sheets 기록.
-      // 따라서 transaction 재시도가 발생해도 Sheets 중복 기록이 생기지 않습니다.
-      const logResults = await Promise.allSettled(
-        processLogs.map((log) =>
-          logProcessToGoogleSheet(
-            "step5_shrink",
-            log.wip,
-            log.operator,
-            {
-              measurements: log.measurements,
-              details: log.details,
-            }
-          )
-        )
-      );
-
-      ctx.showToast("수축률 분석 및 검수 이관 완료", "success");
-      if (logResults.some(r => r.status === "rejected")) {
-        setAlertModal({ isOpen: true, message: "MES 이관 및 측정 이력 저장은 완료됐지만 일부 Google Sheets 로그 전송이 실패했습니다. MES 이관을 다시 실행하지 마세요.", type: "warning" });
-      }
-      setLotSplitModal({
-        isOpen: false,
-        fid: null,
-        lotsToSplit: [],
-        lotsToMerge: [],
-      });
-    } catch (e) {
-      console.error("수축률 확정/이관 오류:", e);
-      setAlertModal({
-        isOpen: true,
-        message: `이관 중 오류가 발생했습니다.
-사유: ${e.message}`,
-        type: "error",
-      });
-    }
+      const children = await safeOps.finishShrink(fid, d, mergedLots, splitLots);
+      analyzedBatch.current = null;
+      dirty.current[fid] = false;
+      setLotSplitModal(p => ({...p, isOpen:false}));
+      setSaveMessage("수축률 확정 완료 / 원본 보관");
+      for (const w of children) logProcessToGoogleSheet("step5_shrink", w, d.operator, { measurements:buildSpecimenMeasurementText(fid,w.furnaceSlots.map(s=>s.slotId),d.slotData),details:w.details });
+      ctx.showToast("수축률 확정 및 검수 이관 완료", "success");
+    } catch(e) { setAlertModal({isOpen:true,message:e.message||String(e),type:"error"}); }
   };
 
   const handleGroupChange = (lotIndex, slotIndex, newGroup) => {
@@ -4787,13 +3960,12 @@ function Step6Inspection({ wipList, ctx }) {
 
     try {
       const w = wipList.find((i) => i.id === id);
-      await setDoc(getDocRef("wipList", id), {
-        ...w, qty: Math.max(0, w.qty - defectQty), currentStep: "step7",
-        details: `${w.details || ""}\n[${getKST()}] [검수] 내경:${data.innerDia || 0} | 외경:${data.outerDia || 0} | 턱:${data.stepH || 0} | 제품:${data.prodH || 0} | 담당:${data.operator}${defectStr}`,
-      });
+      for (const key of ["innerDia", "outerDia", "stepH", "prodH"]) if (data[key] !== undefined && data[key] !== "") positiveNumber(data[key], key);
+      await safeOps.advance(w, "step7", { defects: data.defects, reason: data.defectReason, operator: data.operator,
+        note: `[검수] 내경:${data.innerDia || "미입력"} | 외경:${data.outerDia || "미입력"} | 턱:${data.stepH || "미입력"} | 제품:${data.prodH || "미입력"} | 담당:${data.operator}${defectStr} | ${data.memo || ""}` });
       ctx.showToast("검수 완료", "success");
       logProcessToGoogleSheet("step6", { ...w, qty: w.qty - defectQty }, data.operator, { defects: defectQty, defectReason: data.defectReason || "-", measurements: `내경:${data.innerDia}, 외경:${data.outerDia}, 턱:${data.stepH}, 제품:${data.prodH}`, details: data.memo || "검수완료" });
-    } catch (err) { ctx.showToast("오류 발생", "error"); }
+    } catch (err) { ctx.showToast(err.message || String(err), "error"); }
   };
 
   return (
@@ -4863,73 +4035,17 @@ function Step7Drying({ wipList, dryingRoom: room, ctx }) {
   const pendingWip = wipList.filter((w) => w.currentStep === "step7");
   const dryingWip = wipList.filter((w) => w.currentStep === "step7_drying");
 
-  const handleRoomConfig = async (field, val) => {
-    try { await setDoc(getDocRef("equipment", "dryingRoom"), { ...room, [field]: val }); } catch (e) { console.error("저장 오류:", e); }
+  const handleRoomConfig = async (field, val, baseline) => {
+    try { await safeOps.roomField(field, val, baseline); return true; } catch(e) { ctx.showToast(e.message || String(e)); return false; }
   };
-
-  const handleStartDrying = async (wipId) => {
-    if (!room?.operator) return ctx.showToast("건조실 담당자를 입력하세요.", "error");
-    try {
-      const w = wipList.find((i) => i.id === wipId);
-      await setDoc(getDocRef("wipList", wipId), { ...w, currentStep: "step7_drying" });
-      ctx.showToast("건조 시작", "success");
-    } catch (e) { ctx.showToast("오류 발생", "error"); }
+  const handleStartDrying = async id => {
+    try { await safeOps.dryStart(wipList.find(w => w.id === id)); ctx.showToast("건조 시작", "success"); } catch(e) { ctx.showToast(e.message || String(e)); }
   };
-
-  const handleCompData = async (id, field, val) => {
-    const cData = room?.completionData || {};
-    const tData = cData[id] || {};
-    try { await setDoc(getDocRef("equipment", "dryingRoom"), { ...room, completionData: { ...cData, [id]: { ...tData, [field]: val } } }); } catch (e) {}
+  const handleCompData = async (id, field, val, baseline) => {
+    try { await safeOps.dryField(id, field, val, baseline); return true; } catch(e) { ctx.showToast(e.message || String(e)); return false; }
   };
-
-  const handleCompleteItem = async (targetId) => {
-    const w = wipList.find((i) => i.id === targetId);
-    if (!w) return;
-
-    const cData = room?.completionData?.[targetId] || {};
-    const def = parseInt(cData.defects) || 0;
-    const remainQty = w.qty - def;
-
-    if (remainQty < 0) return ctx.showToast("불량 오류", "error");
-    const defStr = def > 0 ? ` [불량 ${def}개: ${cData.reason || "사유미상"}]` : "";
-    const memoStr = cData.specialNote ? ` [메모: ${cData.specialNote}]` : "";
-    const recordDetails = `[${getKST()}] [건조] 온도:${room?.temp || 60}°C | 습도:${room?.humidity || 20}% | 담당:${room?.operator || "미상"}${defStr}${memoStr}`;
-
-  try {
-  const packLot =
-  w.packLot ||
-  await ensurePackagingLot(targetId);
-
-const packLotCreatedAt =
-  w.packLotCreatedAt ||
-  getKST();
-  await setDoc(
-    getDocRef("wipList", targetId),
-    {
-      ...w,
-
-      // 생산 LOT는 그대로 보존
-      mixLot: w.mixLot,
-
-      // 포장 LOT 최초 확정
-      packLot,
-      packLotCreatedAt,
-
-      qty: remainQty,
-      currentStep: "step8",
-
-      details:
-        `${w.details || ""}\n` +
-        `${recordDetails}\n` +
-        `[${packLotCreatedAt}] [포장LOT확정] ${packLot}`,
-    }
-  );
-      const newCompData = { ...(room?.completionData || {}) };
-      delete newCompData[targetId];
-      await setDoc(getDocRef("equipment", "dryingRoom"), { ...room, completionData: newCompData });
-      ctx.showToast("건조 완료 및 포장 이관", "success");
-      logProcessToGoogleSheet("step7", { ...w, qty: remainQty }, room?.operator, { defects: def, defectReason: cData.reason || "-", conditions: `온도:${room?.temp || 60}°C, 습도:${room?.humidity || 20}%`, details: cData.specialNote || "-" });
-    } catch (err) { ctx.showToast("오류 발생", "error"); }
+  const handleCompleteItem = async id => {
+    try { const moved = await safeOps.dryComplete(wipList.find(w => w.id === id), room?.completionData?.[id] || {}); ctx.showToast("건조 완료 / 포장 대기", "success"); logProcessToGoogleSheet("step7", moved, room?.operator, {details:moved.details}); } catch(e) { ctx.showToast(e.message || String(e)); }
   };
 
   return (
@@ -4937,10 +4053,10 @@ const packLotCreatedAt =
       <div className="bg-white border p-6 rounded-xl shadow-sm">
         <h3 className="font-bold text-lg mb-4 flex items-center"><Wind className="w-5 h-5 mr-2 text-cyan-500" /> 건조실 설정 및 대기열</h3>
         <div className="grid grid-cols-2 gap-2 mb-3">
-          <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 ml-1">온도 (°C)</label><SyncInput type="text" value={room?.temp || ""} onChange={(val) => handleRoomConfig("temp", val)} className="border p-2 w-full rounded text-sm font-bold text-red-500 outline-none" /></div>
-          <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 ml-1">습도 (%)</label><SyncInput type="text" value={room?.humidity || ""} onChange={(val) => handleRoomConfig("humidity", val)} className="border p-2 w-full rounded text-sm font-bold text-blue-500 outline-none" /></div>
+          <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 ml-1">온도 (°C)</label><SyncInput type="text" value={room?.temp || ""} onChange={(val, baseline) => handleRoomConfig("temp", val, baseline)} className="border p-2 w-full rounded text-sm font-bold text-red-500 outline-none" /></div>
+          <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 ml-1">습도 (%)</label><SyncInput type="text" value={room?.humidity || ""} onChange={(val, baseline) => handleRoomConfig("humidity", val, baseline)} className="border p-2 w-full rounded text-sm font-bold text-blue-500 outline-none" /></div>
         </div>
-        <div className="space-y-1 mb-6"><label className="text-[10px] font-bold text-slate-400 ml-1">담당 작업자</label><SyncInput type="text" placeholder="성명 입력" value={room?.operator || ""} onChange={(val) => handleRoomConfig("operator", val)} className="border p-2 w-full rounded text-sm font-bold outline-none" /></div>
+        <div className="space-y-1 mb-6"><label className="text-[10px] font-bold text-slate-400 ml-1">담당 작업자</label><SyncInput type="text" placeholder="성명 입력" value={room?.operator || ""} onChange={(val, baseline) => handleRoomConfig("operator", val, baseline)} className="border p-2 w-full rounded text-sm font-bold outline-none" /></div>
         <div className="space-y-2">
           {pendingWip.length === 0 && <div className="text-slate-400 text-sm text-center py-8 border border-dashed rounded-lg">대기 중인 물량이 없습니다.</div>}
           {pendingWip.map((w) => (
@@ -4963,11 +4079,11 @@ const packLotCreatedAt =
                   <div><div className="text-[10px] font-mono font-bold text-cyan-700">{w.mixLot}</div><div className="font-black text-slate-800">{getProductLabel(w.type)} {w.height}T<span className="text-cyan-600 ml-1">({w.qty}개)</span></div></div>
                 </div>
                 <div className="grid grid-cols-2 gap-2 mb-2">
-                  <SyncInput type="number" placeholder="불량 수량" value={cData.defects || ""} onChange={(val) => handleCompData(w.id, "defects", val)} className="border border-red-200 p-2 text-xs rounded bg-white text-red-600 font-bold" />
-                  <SyncInput type="text" placeholder="불량 사유" value={cData.reason || ""} onChange={(val) => handleCompData(w.id, "reason", val)} className="border border-slate-200 p-2 text-xs rounded bg-white" />
+                  <SyncInput type="number" placeholder="불량 수량" value={cData.defects || ""} onChange={(val, baseline) => handleCompData(w.id, "defects", val, baseline)} className="border border-red-200 p-2 text-xs rounded bg-white text-red-600 font-bold" />
+                  <SyncInput type="text" placeholder="불량 사유" value={cData.reason || ""} onChange={(val, baseline) => handleCompData(w.id, "reason", val, baseline)} className="border border-slate-200 p-2 text-xs rounded bg-white" />
                 </div>
                 <div className="flex gap-2">
-                  <SyncInput type="text" placeholder="메모" value={cData.specialNote || ""} onChange={(val) => handleCompData(w.id, "specialNote", val)} className="border border-slate-200 p-2 text-xs flex-1 rounded bg-white" />
+                  <SyncInput type="text" placeholder="메모" value={cData.specialNote || ""} onChange={(val, baseline) => handleCompData(w.id, "specialNote", val, baseline)} className="border border-slate-200 p-2 text-xs flex-1 rounded bg-white" />
                   <button onClick={() => handleCompleteItem(w.id)} className="bg-cyan-600 text-white px-4 py-2 rounded-lg text-xs font-black shadow-md">건조 완료</button>
                 </div>
               </div>
@@ -5003,263 +4119,25 @@ function Step8Packaging({ wipList, orderList, ctx }) {
   // 과거 버전에서 이미 Step8에 들어와 있으나
   // packLot이 없는 WIP 자동 보정
   // ==========================================
-  useEffect(() => {
-    const missingPackLots = pendingWip.filter(
-      (w) => !w.packLot
-    );
-
-   missingPackLots.forEach((w) => {
-  ensurePackagingLot(w.id).catch((err) =>
-    console.error(
-      "포장 LOT 자동 생성 실패:",
-      err
-    )
-  );
-});
-  }, [wipList]);
-
-  // ==========================================
-  // 포장 완료
-  // mixLot은 절대 변경하지 않음
-  // ==========================================
-  const moveNext = async (wipId) => {
-    const data = formData[wipId] || {};
-    const wip = wipList.find(
-      (w) => w.id === wipId
-    );
-
-    if (
-      !data.operator ||
-      !wip?.shrinkageRate
-    ) {
-      return ctx.showToast(
-        "작업자 성명 입력 혹은 열처리 단계 수축률 데이터가 필요합니다.",
-        "error"
-      );
-    }
-
-    const defectQty =
-      parseInt(data.defects) || 0;
-
-    if (
-      defectQty < 0 ||
-      defectQty > Number(wip.qty)
-    ) {
-      return ctx.showToast(
-        "불량 수량을 확인해주세요.",
-        "error"
-      );
-    }
-
-    // 라벨 발행 전 포장완료 방지
-    const isPrinted =
-      Boolean(wip.labelPrintedAt) ||
-      Boolean(printedStatus[wipId]);
-
-    if (!isPrinted) {
-      return ctx.showToast(
-        "먼저 라벨을 출력한 후 포장완료를 눌러주세요.",
-        "error"
-      );
-    }
-
-    const defectStr =
-      defectQty > 0
-        ? ` [불량 ${defectQty}개: ${
-            data.defectReason || "사유미상"
-          }]`
-        : "";
-
-    let completedPackLot =
-  getPackagingLot(wip);
-
-    let finalQty =
-      Math.max(
-        0,
-        Number(wip.qty) - defectQty
-      );
-
-   try {
-  if (!completedPackLot) {
-    completedPackLot =
-      await ensurePackagingLot(wipId);
-  }
-
-  await runTransaction(
-        db,
-        async (transaction) => {
-          const wipRef =
-            getDocRef(
-              "wipList",
-              wipId
-            );
-
-          const snap =
-            await transaction.get(wipRef);
-
-          if (!snap.exists()) {
-            throw new Error(
-              "포장 대상 LOT가 존재하지 않습니다."
-            );
-          }
-
-          const live = snap.data();
-
-          if (
-            live.currentStep !== "step8"
-          ) {
-            throw new Error(
-              "이미 다른 작업자가 처리한 제품입니다."
-            );
-          }
-
-          const liveQty =
-            Number(live.qty) || 0;
-
-          if (defectQty > liveQty) {
-            throw new Error(
-              `현재 최신 수량은 ${liveQty}EA입니다. 불량 수량을 다시 확인해주세요.`
-            );
-          }
-
-         completedPackLot =
-  getPackagingLot(live) ||
-  completedPackLot;
-
-          finalQty =
-  Math.max(
-    0,
-    liveQty - defectQty
-  );
-
-// ==========================================
-// 라벨 출력 당시 조건과 현재 포장 조건 비교
-// 하나라도 바뀌었으면 반드시 재출력
-// ==========================================
-if (!live.labelPrintedAt) {
-  throw new Error(
-    "라벨 출력 기록이 없습니다. 먼저 라벨을 출력해주세요."
-  );
-}
-
-const printedQty =
-  Number(live.labelPrintedQty);
-
-const printedDefectQty =
-  Number(
-    live.labelPrintedDefectQty ?? 0
-  );
-
-const printedPackLot =
-  String(
-    live.labelPrintedPackLot || ""
-  ).trim();
-
-if (
-  !Number.isFinite(printedQty) ||
-  printedQty !== finalQty ||
-  printedDefectQty !== defectQty ||
-  printedPackLot !== completedPackLot
-) {
-  throw new Error(
-    "라벨 출력 후 최종수량, 불량수량 또는 LOT가 변경되었습니다. 현재 조건으로 라벨을 재출력한 뒤 포장완료를 눌러주세요."
-  );
-}
-
-const curTime = getKST();
-
-          transaction.update(
-            wipRef,
-            {
-              // ==================================
-              // 중요:
-              // mixLot은 생산 LOT이므로 손대지 않음
-              // ==================================
-
-              packLot:
-                completedPackLot,
-
-              packLotCreatedAt:
-                live.packLotCreatedAt ||
-                curTime,
-
-              qty: finalQty,
-
-              currentStep: "done",
-              productionLot: getTraceMixLot(live),
-
-              packagedAt: curTime,
-
-              shrinkageRate:
-                live.shrinkageRate,
-
-              details:
-                `${live.details || ""}\n` +
-                `[${curTime}] [포장완료] ` +
-                `포장LOT:${completedPackLot} | ` +
-                `생산LOT:${live.mixLot} | ` +
-                `담당:${data.operator} ` +
-                `[수축률: ${live.shrinkageRate}]` +
-                `${defectStr}` +
-                `${
-                  data.specialNote
-                    ? ` [메모:${data.specialNote}]`
-                    : ""
-                }`,
-            }
-          );
-        }
-      );
-
-      ctx.showToast(
-        `포장 완료 — ${completedPackLot}`,
-        "success"
-      );
-
-      logProcessToGoogleSheet(
-        "step8",
-        {
-          ...wip,
-          packLot: completedPackLot,
-          qty: finalQty,
-        },
-        data.operator,
-        {
-          defects: defectQty,
-          defectReason:
-            data.defectReason || "-",
-          measurements:
-            `S.F:${wip.shrinkageRate}`,
-          details:
-            `생산LOT:${wip.mixLot} / ` +
-            `포장LOT:${completedPackLot}` +
-            `${
-              data.specialNote
-                ? ` / ${data.specialNote}`
-                : ""
-            }`,
-        }
-      );
-    } catch (err) {
-      console.error(err);
-
-      ctx.showToast(
-        err?.message ||
-          "포장 완료 처리 중 오류 발생",
-        "error"
-      );
-    }
+  const moveNext = async wipId => {
+    const data = formData[wipId] || {}, wip = wipList.find(w => w.id === wipId);
+    if (!window.confirm("실물 라벨이 정상 출력되어 수량/LOT/제조일을 확인했습니까? 출력 요청만 보낸 것과 실제 출력은 다릅니다.")) return;
+    try { await safeOps.finishPack(wip, {defects:data.defects,reason:data.defectReason,operator:data.operator,physicalLabelConfirmed:true}); ctx.showToast("포장 완료", "success"); logProcessToGoogleSheet("step8", wip, data.operator, {details:data.specialNote || ""}); }
+    catch(e) { ctx.showToast(e.message || String(e)); }
   };
 
-  // ==========================================
-  // 라벨 출력
-  // 저장되어 있는 packLot만 사용
-  // ==========================================
   const handlePrintLabel =
     async (wipId) => {
-      const wip = wipList.find(
+      let wip = wipList.find(
         (w) => w.id === wipId
       );
+
+      try {
+        if (!wip) throw new Error("로트를 찾을 수 없습니다.");
+        if (!wip.packLot) { await ensurePackagingLot(wipId); wip = (await getDocFromServer(getDocRef("wipList", wipId))).data(); }
+        shrinkage(wip.shrinkageRate);
+        optionalQuantity(formData[wipId]?.defects);
+      } catch(e) { return ctx.showToast(e.message || String(e)); }
 
       if (!wip?.shrinkageRate) {
         return ctx.showToast(
@@ -5271,8 +4149,7 @@ const curTime = getKST();
       const data =
         formData[wipId] || {};
 
-      const defectQty =
-        parseInt(data.defects) || 0;
+      const defectQty = Number(data.defects || 0);
 
       if (
         defectQty < 0 ||
@@ -5372,36 +4249,7 @@ const manufacturedDate =
         ).toFixed(4);
 
       try {
-        // ======================================
-        // 라벨 출력 전 packLot을 Firestore에 먼저 고정
-        // ======================================
-        await setDoc(
-          getDocRef(
-            "wipList",
-            wip.id
-          ),
-          {
-            packLot: finalLot,
-
-            packLotCreatedAt:
-              wip.packLotCreatedAt ||
-              now,
-          },
-          { merge: true }
-        );
-
-        const database =
-          getFirestore();
-
-        // ======================================
-        // BarTender 출력 Queue
-        // ======================================
-        await addDoc(
-          collection(
-            database,
-            "print-queue"
-          ),
-         {
+        await safeOps.requestPrint(wip, { defects: defectQty, payload: {
   // 제품 식별
   sku: productSKU,
   displayName: productDisplayName,
@@ -5441,45 +4289,7 @@ const manufacturedDate =
 
   createdAt:
     serverTimestamp(),
-});
-        // 출력 이력 저장
-        try {
-          await setDoc(
-            getDocRef(
-              "wipList",
-              wip.id
-            ),
-           {
-  labelPrintedAt: now,
-
-  // 라벨 출력 당시 확정값 저장
-  labelPrintedQty: finalQty,
-
-  labelPrintedDefectQty:
-    defectQty,
-
-  labelPrintedPackLot:
-    finalLot,
-
-  labelPrintedShrinkage:
-    wip.shrinkageRate,
-
-  labelPrintCount:
-    (
-      Number(
-        wip.labelPrintCount
-      ) || 0
-    ) + 1,
-},
-            { merge: true }
-          );
-        } catch (saveErr) {
-          console.warn(
-            "라벨 출력 이력 저장 실패:",
-            saveErr
-          );
-        }
-
+} });
         ctx.showToast(
           `라벨 출력 명령 전송 완료 — ${finalLot} 🖨️`,
           "success"
@@ -5839,90 +4649,7 @@ ctx.showConfirm(
             Date.now().toString() + Math.random().toString().slice(2, 6);
           const curTime = getKST();
 
-          await runTransaction(db, async (transaction) => {
-            const wipRef = getDocRef("wipList", wip.id);
-            const liveSnap = await transaction.get(wipRef);
-
-            if (!liveSnap.exists()) {
-              throw new Error("이미 출고되었거나 삭제된 완제품입니다.");
-            }
-
-            const live = liveSnap.data();
-            const liveQty = Number(live.qty) || 0;
-
-            if (live.currentStep !== "done") {
-              throw new Error("완제품 창고에 있는 제품만 출고할 수 있습니다.");
-            }
-            if (safeQty > liveQty) {
-              throw new Error(
-                `현재 최신 재고는 ${liveQty}EA입니다. 출고 수량을 다시 확인해주세요.`
-              );
-            }
-
-           const shippingLot =
-  getPackagingLot(live) ||
-  live.mixLot;
-
-transaction.set(
-  getDocRef(
-    "shippingHistory",
-    hid
-  ),
-  {
-    id: hid,
-    sourceWipId: wip.id,
-    stockBeforeQty: liveQty,
-    remainingQty: liveQty - safeQty,
-
-    orderId:
-      live.orderId || "",
-
-    // 고객/제품에 표시되는 실제 LOT
-    lot: shippingLot,
-    packLot: shippingLot,
-
-    // 생산 추적용 LOT
-    originalLot:
-      live.mixLot,
-    productionLot: getTraceMixLot(live),
-
-    type:
-      live.type,
-
-    height:
-      live.height,
-
-    weight:
-      live.weight || "",
-
-    qty:
-      safeQty,
-
-    destination:
-      d.destination,
-
-    operator:
-      d.operator,
-
-    date:
-      curTime.slice(0, 16),
-
-    details:
-      live.details || "",
-
-    createdAt:
-      serverTimestamp(),
-  }
-);
-             
-
-            const remainQty = liveQty - safeQty;
-            if (remainQty <= 0) {
-              transaction.delete(wipRef);
-            } else {
-              transaction.update(wipRef, { qty: remainQty });
-            }
-          });
+          await safeOps.ship(wip, { qty: safeQty, operator: d.operator, destination: d.destination });
 
           setShipData(prev => { const next = { ...prev }; delete next[wip.id]; return next; });
           ctx.showToast(
@@ -6033,7 +4760,7 @@ transaction.set(
 // ==========================================
 // 추적 화면: Lot Genealogy Tracking 
 // ==========================================
-function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, ctx }) {
+function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, ctx, wipArchive = [] }) {
   const [searchLot, setSearchLot] = useState("");
   const [results, setResults] = useState([]);
   const [hasSearched, setHasSearched] = useState(false);
@@ -6047,9 +4774,9 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
     const isMatch = item => searchTerms.every(term =>
       `${item.lot || ""} ${item.packLot || ""} ${item.mixLot || ""} ${item.originalLot || ""} ${item.productionLot || ""} ${item.sourceLot || ""} ${getProductLabel(item.type)} ${item.height || ""}T ${item.destination || ""} ${item.operator || ""} ${item.details || ""}`.toUpperCase().includes(term));
 
-    const shippedMatches = shippingHistory.filter((h) => isMatch(h, true));
-    const wipMatches = wipList.filter((w) => isMatch(w, false));
-    const combined = [...shippedMatches.map((data) => ({ type: "shipped", data, collection: "shippingHistory" })), ...wipMatches.map((data) => ({ type: "wip", data, collection: "wipList" }))];
+    const shippedMatches = shippingHistory.filter((h) => isMatch(h));
+    const wipMatches = wipList.filter((w) => isMatch(w));
+    const combined = [...shippedMatches.map((data) => ({ type: "shipped", data, collection: "shippingHistory" })), ...wipMatches.map((data) => ({ type: "wip", data, collection: "wipList" })), ...wipArchive.filter(isMatch).map(data => ({type:"archived",data,collection:"wipArchive"}))];
 
     setResults(combined);
     setEditingId(null);
@@ -6065,46 +4792,32 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
       `${item.lot || ""} ${item.packLot || ""} ${item.mixLot || ""} ${item.originalLot || ""} ${item.productionLot || ""} ${item.sourceLot || ""} ${getProductLabel(item.type)} ${item.height || ""}T ${item.destination || ""} ${item.operator || ""} ${item.details || ""}`.toUpperCase().includes(term));
     setResults([
       ...shippingHistory.filter(matches).map(data => ({ type: "shipped", data, collection: "shippingHistory" })),
-      ...wipList.filter(matches).map(data => ({ type: "wip", data, collection: "wipList" }))
+      ...wipList.filter(matches).map(data => ({ type: "wip", data, collection: "wipList" })),
+      ...wipArchive.filter(matches).map(data => ({type:"archived",data,collection:"wipArchive"}))
     ]);
-  }, [wipList, shippingHistory, hasSearched, searchLot, editingId]);
+  }, [wipList, shippingHistory, wipArchive, hasSearched, searchLot, editingId]);
 
   const startEdit = (res) => { setEditData({ ...res.data }); setEditingId(res.data.id); };
 
-  const handleSaveEdit = async (res) => {
-    try {
-      await runTransaction(db, async transaction => {
-        const ref = getDocRef(res.collection, res.data.id);
-        const snap = await transaction.get(ref);
-        if (!snap.exists()) throw new Error("이미 출고되었거나 삭제된 데이터입니다. 다시 검색해주세요.");
-        const current = snap.data();
-        for (const key of ["qty", "currentStep", "details"]) {
-          if ((current[key] ?? "") !== (res.data[key] ?? "")) {
-            throw new Error("검색 이후 수량 또는 공정이 변경되었습니다. 다시 검색한 뒤 수정해주세요.");
-          }
-        }
-        const update = { qty: editData.qty, details: editData.details || "" };
-        if (res.collection === "wipList") update.currentStep = editData.currentStep || "";
-        if (!Number.isInteger(Number(update.qty)) || Number(update.qty) < 0) throw new Error("수량은 0 이상의 정수로 입력하세요.");
-        transaction.update(ref, update);
-      });
-      if (ctx) ctx.showToast("마스터 권한으로 수정되었습니다.", "success");
-      setResults(results.map((r) => r.data.id === res.data.id ? { ...r, data: editData } : r ));
-      setEditingId(null);
-    } catch (error) { if (ctx) ctx.showToast(error.message || "수정 실패", "error"); }
+  const handleSaveEdit = async res => {
+    if (res.collection !== "wipList") return ctx.showToast("종료/출고 원본은 덮어쓰지 않습니다.");
+    const admin = askAdmin(""); if (!admin) return;
+    try { await safeOps.cancelOrEdit(res.data, { ...admin, qty: editData.qty, step: editData.currentStep, notes: editData.details }); setEditingId(null); ctx.showToast("보정 완료 / 원본 보관", "success"); }
+    catch(e) { ctx.showToast(e.message || String(e)); }
   };
-
-  const handleDelete = (res) => {
-    const targetLot = res.data.mixLot || res.data.lot;
-    if (ctx && ctx.showConfirm) {
-      ctx.showConfirm(`[마스터 권한] 정말로 로트(${targetLot}) 데이터를 영구 삭제하시겠습니까?`, async () => {
-        try {
-          await deleteDoc(getDocRef(res.collection, res.data.id));
-          ctx.showToast(`로트(${targetLot}) 영구 삭제 완료`, "success");
-          setResults(results.filter((r) => r.data.id !== res.data.id));
-        } catch (error) { ctx.showToast("삭제 실패", "error"); }
-      });
-    }
+  const handleDelete = async res => {
+    if (res.collection !== "wipList") return ctx.showToast("종료/출고 이력은 삭제하지 않습니다.");
+    const admin = askAdmin(""); if (!admin) return;
+    ctx.showConfirm(`${res.data.mixLot}: 공정에서 제외하고 취소 원본을 보관할까요?`, async () => {
+      try { await safeOps.cancelOrEdit(res.data, { ...admin, cancel: true }); ctx.showToast("취소 완료 / 원본 보관", "success"); }
+      catch(e) { ctx.showToast(e.message || String(e)); }
+    });
+  };
+  const handleSample = async res => {
+    const amount = window.prompt("샘플로 출고할 수량"); if (!amount) return;
+    const operator = window.prompt("샘플 출고 담당자"); if (!operator) return;
+    const destination = window.prompt("샘플 출고처", "샘플발송"); if (!destination) return;
+    ctx.showConfirm(`${res.data.mixLot}: 샘플 ${amount}EA 출고할까요?`, async () => { try { await safeOps.ship(res.data, {qty:amount,operator,destination,sample:true}); ctx.showToast("샘플 출고 완료", "success"); } catch(e) { ctx.showToast(e.message || String(e)); } });
   };
 
   return (
@@ -6126,21 +4839,23 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
             const isEditing = editingId === result.data.id;
             let historyLogs = (result.data.details || "").split("\n").filter((line) => line.trim() !== "");
             if (result.type === "shipped") historyLogs.push(`[출고 완료] 출고일시:${result.data.date} | 출고처:${result.data.destination} | 담당:${result.data.operator}`);
+            if (result.type === "archived") historyLogs.push(`[${result.data.archivedAt || ""}] [종료 원본] ${result.data.archiveAction || ""} | 사유:${result.data.archiveContext?.reason || result.data.archiveContext?.note || "변경 기록 참조"} | 담당:${result.data.archiveActor || ""}`);
+
 
             return (
-              <div key={idx} className={`border-2 rounded-2xl p-6 transition-all ${isEditing ? "border-orange-400 bg-orange-50/30" : "border-indigo-100 bg-indigo-50/30"}`}>
+              <div key={`${result.collection}/${result.data.id}`} className={`border-2 rounded-2xl p-6 transition-all ${isEditing ? "border-orange-400 bg-orange-50/30" : "border-indigo-100 bg-indigo-50/30"}`}>
                 <div className={`flex flex-col md:flex-row justify-between items-start md:items-center border-b pb-4 mb-4 gap-4 ${isEditing ? "border-orange-200" : "border-indigo-100"}`}>
                   <div>
-                    <span className={`px-3 py-1 rounded-full text-xs font-black mr-3 ${result.type === "shipped" ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700"}`}>{result.type === "shipped" ? "출고 완료 제품" : result.data.currentStep === "done" ? "완제품 재고" : "생산 진행 중"}</span>
+                    <span className={`px-3 py-1 rounded-full text-xs font-black mr-3 ${result.type === "shipped" ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700"}`}>{result.type === "archived" ? "종료 원본 (재고 아님)" : result.type === "shipped" ? "출고 완료 제품" : result.data.currentStep === "done" ? "완제품 재고" : "생산 진행 중"}</span>
                     <span className="font-black text-2xl text-slate-800">{result.data.lot ||
  result.data.packLot ||
  result.data.mixLot}</span>
-                    <div className="mt-3 text-base font-black text-indigo-700">현재 공정: {result.type === "shipped" ? "출고 완료" : getCurrentProcessLabel(result.data.currentStep)}</div>
+                    <div className="mt-3 text-base font-black text-indigo-700">현재 공정: {result.type === "archived" ? "종료 원본 (재고 아님)" : result.type === "shipped" ? "출고 완료" : getCurrentProcessLabel(result.data.currentStep)}</div>
                     <LotLink item={result.data} />
                   </div>
                   <div className="text-left md:text-right flex flex-col items-start md:items-end">
                     <div className="font-black text-xl text-indigo-700">{getProductLabel(result.data.type)} {result.data.height}T</div>
-                    <div className="text-sm font-bold text-slate-500 mt-1">{result.type === "shipped" ? "출고 수량" : "현재 수량"}: {result.data.qty} EA</div>
+                    <div className="text-sm font-bold text-slate-500 mt-1">{result.type === "archived" ? "종료 당시 수량" : result.type === "shipped" ? "출고 수량" : "현재 수량"}: {result.data.qty} EA</div>
                     {result.data.weight && <div className="mt-1.5 text-xs font-black text-blue-700 bg-blue-50 border border-blue-200 px-2.5 py-1 rounded shadow-sm">원료 투입량: {result.data.weight} kg</div>}
                   </div>
                 </div>
@@ -6150,7 +4865,7 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
                   <div className="bg-white p-5 rounded-xl border shadow-sm text-sm text-slate-600 leading-relaxed grid grid-cols-1 gap-4">
                     {isEditing ? (
                       <>
-                        <div className="flex items-center"><strong className="w-24 text-slate-800">현재 수량:</strong> <input type="number" value={editData.qty || ""} onChange={(e) => setEditData({ ...editData, qty: Number(e.target.value) }) } className="border border-orange-300 rounded p-1.5 w-32 font-bold focus:outline-none" /></div>
+                        <div className="flex items-center"><strong className="w-24 text-slate-800">현재 수량:</strong> <input type="number" value={editData.qty || ""} onChange={(e) => setEditData({ ...editData, qty: e.target.value }) } className="border border-orange-300 rounded p-1.5 w-32 font-bold focus:outline-none" /></div>
                         <div className="flex items-center"><strong className="w-24 text-slate-800">진행 상태:</strong> <input type="text" value={editData.currentStep || ""} onChange={(e) => setEditData({ ...editData, currentStep: e.target.value }) } className="border border-orange-300 rounded p-1.5 flex-1 font-bold text-orange-700 focus:outline-none" /></div>
                         <div className="flex items-start"><strong className="w-24 text-slate-800 mt-1">누적 기록:</strong> <textarea value={editData.details || ""} onChange={(e) => setEditData({ ...editData, details: e.target.value }) } className="border border-orange-300 rounded p-2 flex-1 h-32 text-xs focus:outline-none whitespace-pre-wrap" /></div>
                       </>
@@ -6171,12 +4886,14 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
                   </div>
 
                   <div className="mt-6 pt-4 flex justify-between items-center border-t border-slate-200">
-                    <button onClick={() => handleDelete(result)} className="flex items-center text-red-500 bg-red-50 hover:bg-red-100 px-4 py-2.5 rounded-xl font-black text-sm transition-colors border border-red-200"><Trash2 className="w-4 h-4 mr-1.5" /> 데이터 영구 삭제</button>
+                    {result.type === "archived" && <strong>취소/분할/종료 원본 (현재 재고 아님): {result.data.archiveAction}</strong>}
+                    <button disabled={result.collection !== "wipList"} onClick={() => handleDelete(result)} className="flex items-center text-red-500 bg-red-50 hover:bg-red-100 px-4 py-2.5 rounded-xl font-black text-sm transition-colors border border-red-200"><Trash2 className="w-4 h-4 mr-1.5" /> 취소 (원본 보관)</button>
                     <div className="flex space-x-3">
+                      {result.collection === "wipList" && <button onClick={() => handleSample(result)} className="border rounded p-2">샘플 출고</button>}
                       {isEditing ? (
                         <><button onClick={() => setEditingId(null)} className="px-6 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-bold transition-colors">취소</button><button onClick={() => handleSaveEdit(result)} className="flex items-center px-6 py-2.5 bg-orange-500 hover:bg-orange-600 text-white rounded-xl font-black shadow-md transition-colors"><Save className="w-4 h-4 mr-1.5" /> 강제 수정 저장</button></>
                       ) : (
-                        <button onClick={() => startEdit(result)} className="flex items-center px-6 py-2.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-black shadow-md transition-colors"><Edit2 className="w-4 h-4 mr-1.5" /> 데이터 강제 수정</button>
+                        <button disabled={result.collection !== "wipList"} onClick={() => startEdit(result)} className="flex items-center px-6 py-2.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-black shadow-md transition-colors"><Edit2 className="w-4 h-4 mr-1.5" /> 데이터 강제 수정</button>
                       )}
                     </div>
                   </div>
@@ -6195,33 +4912,40 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
 // ==========================================
 function Step10Settings({ masterSettings, ctx }) {
   const [settings, setSettings] = useState(masterSettings);
+  const baseSettings = useRef(masterSettings);
+  const settingsDirty = useRef(false);
 
-  useEffect(() => { setSettings(masterSettings); }, [masterSettings]);
+  useEffect(() => { if (!settingsDirty.current) { baseSettings.current = masterSettings; setSettings(masterSettings); } }, [masterSettings]);
 
   const handleRatioChange = (color, material, value) => {
+      settingsDirty.current = true;
       const newSettings = cloneDeep(settings);
       if (!newSettings.RATIO_BY_COLOR[color]) newSettings.RATIO_BY_COLOR[color] = {};
-      newSettings.RATIO_BY_COLOR[color][material] = parseFloat(value) || 0;
+      newSettings.RATIO_BY_COLOR[color][material] = value;
       setSettings(newSettings);
   };
   const handleWeightChange = (height, value) => {
+      settingsDirty.current = true;
       const newSettings = cloneDeep(settings);
-      newSettings.WEIGHT_BY_HEIGHT[height] = parseInt(value) || 0;
+      newSettings.WEIGHT_BY_HEIGHT[height] = value;
       setSettings(newSettings);
   };
   const handlePressureChange = (stepKey, value) => {
+      settingsDirty.current = true;
       const newSettings = cloneDeep(settings);
       if (!newSettings.TARGET_PRESSURE) newSettings.TARGET_PRESSURE = { step3: "70", step4A: "250", step4B: "250" };
       newSettings.TARGET_PRESSURE[stepKey] = value;
       setSettings(newSettings);
   };
   const handleTemperatureChange = (furnaceKey, value) => {
+      settingsDirty.current = true;
       const newSettings = cloneDeep(settings);
       if (!newSettings.TARGET_TEMPERATURE) newSettings.TARGET_TEMPERATURE = { furnace1: "1050", furnace2: "1050" };
       newSettings.TARGET_TEMPERATURE[furnaceKey] = value;
       setSettings(newSettings);
   };
   const handleSafetyThresholdChange = (type, value) => {
+      settingsDirty.current = true;
       const newSettings = cloneDeep(settings);
       if (!newSettings.SAFETY_THRESHOLD || typeof newSettings.SAFETY_THRESHOLD !== "object") {
           newSettings.SAFETY_THRESHOLD = { "4Y-W": "50", "4Y-W-S": "50", "4Y-Y": "50", "5E-P": "50", "4Y-G": "50" };
@@ -6232,9 +4956,24 @@ function Step10Settings({ masterSettings, ctx }) {
 
   const handleSave = async () => {
       try {
-          await setDoc(getDocRef("equipment", "settings"), settings);
+          if (!ctx.isAdmin) throw new Error("관리자 모드가 필요합니다.");
+          const normalized = cloneDeep(settings);
+          for (const [height,v] of Object.entries(normalized.WEIGHT_BY_HEIGHT)) normalized.WEIGHT_BY_HEIGHT[height] = positiveNumber(v, `${height}T 단중`);
+          for (const ratios of Object.values(normalized.RATIO_BY_COLOR)) {
+            for (const [mat,v] of Object.entries(ratios)) ratios[mat] = positiveNumber(v, mat, true);
+            if (Math.abs(Object.values(ratios).reduce((a,b)=>a+b,0)-1)>0.0001) throw new Error("배합 비율 합계는 1이어야 합니다.");
+          }
+          for (const v of Object.values(normalized.TARGET_PRESSURE || {})) positiveNumber(v, "압력");
+          for (const v of Object.values(normalized.TARGET_TEMPERATURE || {})) positiveNumber(v, "온도");
+          for (const v of Object.values(normalized.SAFETY_THRESHOLD || {})) positiveNumber(v, "안전재고", true);
+          await runTransaction(db, async tx => {
+            const ref = getDocRef("equipment", "settings"), snap = await tx.get(ref);
+            assertSame(mergeMasterSettings(snap.data() || {}), baseSettings.current, "마스터 설정");
+            tx.set(ref, normalized);
+          });
+          settingsDirty.current = false; baseSettings.current = normalized; setSettings(normalized);
           ctx.showToast("마스터 설정이 클라우드에 성공적으로 저장되었습니다.", "success");
-      } catch(e) { ctx.showToast("설정 저장 실패", "error"); }
+      } catch(e) { ctx.showToast(e.message || "설정 저장 실패", "error"); }
   };
 
   return (

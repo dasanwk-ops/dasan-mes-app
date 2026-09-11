@@ -1,0 +1,16 @@
+PASS component-construction: DasanMES
+PASS component-construction: DashboardView
+PASS component-construction: Step0OrderManagement
+PASS component-construction: Step1MaterialWarehouse
+PASS component-construction: Step2Mixing
+PASS component-construction: Step3FirstMolding
+PASS component-construction: Step4SecondMolding
+PASS component-construction: Step5HeatTreatment
+PASS component-construction: Step5_5Shrinkage
+PASS component-construction: Step6Inspection
+PASS component-construction: Step7Drying
+PASS component-construction: Step8Packaging
+PASS component-construction: Step9FinishedGoods
+PASS component-construction: StepTracking
+PASS component-construction: Step10Settings
+PASS 15 component constructions and dashboard navigation; React effects, DOM and browser NOT tested.
