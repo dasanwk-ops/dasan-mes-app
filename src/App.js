@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { getAuth, onAuthStateChanged, signInAnonymously, getFirestore, MES_MODE, ROOT, runtimeError, EXTERNAL_SYNC_ENABLED, LIVE_WRITES_ENABLED } from "./mesRuntime.mjs";
 import { collection, doc, setDoc, deleteDoc, onSnapshot, runTransaction, serverTimestamp, addDoc, getDocFromServer, subscribePending, pendingWrites, limitedQuery } from "./mesDatabase.mjs";
 import { createOperations } from "./mesOperations.mjs";
+import { getWipProcessStatus } from "./mesProcessStatus.mjs";
 import { assertSame, quantity, optionalQuantity, positiveNumber, canonical, uid, shrinkage, printFingerprint, invalidateLabel } from "./mesSafetyCore.mjs";
 import { LayoutDashboard, Package, Beaker, BoxSelect, Cylinder, Flame, Microscope, Wind, Printer, Plus, ArrowRight, CheckCircle2, AlertCircle, ShoppingCart, Calculator, History, X, Layers, Split, Edit2, Trash2, Save, Play, Thermometer, Droplets, Archive, Truck, Search, Database, RefreshCcw, Boxes, Lock, Settings } from "lucide-react";
 
@@ -1691,6 +1692,7 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
                 const isEditing = editingId === wip.id;
                 const currentStepIndex = WIP_STEPS.findIndex((s) => s.value === wip.currentStep);
                 const rollbackSteps = currentStepIndex >= 0 ? WIP_STEPS.slice(0, currentStepIndex + 1) : WIP_STEPS;
+                const processStatus = getWipProcessStatus(wip, furnaces, WIP_STEPS.find((s) => s.value === wip.currentStep)?.label || "공정 확인 필요");
                 return (
                   <tr key={wip.id} className="hover:bg-slate-50 transition-colors">
                     <td className="px-4 py-3 font-medium text-blue-600">{wip.mixLot}</td>
@@ -1739,13 +1741,13 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
                         >
                           {rollbackSteps.map((step) => (
                             <option key={step.value} value={step.value}>
-                              {step.value === wip.currentStep ? `현재: ${step.label}` : `↩ ${step.label}`}
+                              {step.value === wip.currentStep ? `현재: ${processStatus.label}` : `↩ ${step.label}`}
                             </option>
                           ))}
                         </select>
                       ) : (
-                        <span className={`px-2 py-1 border rounded text-[10px] font-bold ${wip.currentStep.includes("heating") ? "bg-orange-50 text-orange-700" : "bg-white text-slate-600"}`}>
-                          {WIP_STEPS.find((s) => s.value === wip.currentStep)?.label || "대기중"}
+                        <span className={`px-2 py-1 border rounded text-[10px] font-bold ${processStatus.tone === "heating" ? "bg-orange-50 text-orange-700" : processStatus.tone === "warning" ? "bg-red-50 text-red-700" : processStatus.tone === "assigned" ? "bg-blue-50 text-blue-700" : "bg-white text-slate-600"}`}>
+                          {processStatus.label}
                         </span>
                       )}
                     </td>

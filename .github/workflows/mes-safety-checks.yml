@@ -1,0 +1,33 @@
+name: MES synthetic safety checks
+on:
+  push:
+    branches: [mes-safety-test]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'tools/**'
+      - 'package.json'
+      - '.github/workflows/mes-safety-checks.yml'
+permissions:
+  contents: read
+jobs:
+  synthetic-tests:
+    if: github.repository == 'dasanwk-ops/dasan-mes-app' && github.ref == 'refs/heads/mes-safety-test'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Read exact test commit
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          git init -q .
+          git remote add origin https://github.com/dasanwk-ops/dasan-mes-app.git
+          git fetch --depth=1 origin "$SOURCE_SHA"
+          git checkout --detach FETCH_HEAD
+      - name: Synthetic tests only (no Firebase or printers)
+        run: |
+          node --version
+          node --test tests/*.test.mjs
+      - name: Check module syntax
+        run: |
+          for file in src/*.mjs; do node --check "$file"; done
