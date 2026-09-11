@@ -3,6 +3,8 @@ import { getAuth, onAuthStateChanged, signInAnonymously, getFirestore, MES_MODE,
 import { collection, doc, setDoc, deleteDoc, onSnapshot, runTransaction, serverTimestamp, addDoc, getDocFromServer, subscribePending, pendingWrites, limitedQuery } from "./mesDatabase.mjs";
 import { createOperations } from "./mesOperations.mjs";
 import { getWipProcessStatus } from "./mesProcessStatus.mjs";
+import { reviewShrinkage } from "./mesShrinkReview.mjs";
+import { switchShrinkBatch } from "./mesShrinkQueue.mjs";
 import { assertSame, quantity, optionalQuantity, positiveNumber, canonical, uid, shrinkage, printFingerprint, invalidateLabel } from "./mesSafetyCore.mjs";
 import { LayoutDashboard, Package, Beaker, BoxSelect, Cylinder, Flame, Microscope, Wind, Printer, Plus, ArrowRight, CheckCircle2, AlertCircle, ShoppingCart, Calculator, History, X, Layers, Split, Edit2, Trash2, Save, Play, Thermometer, Droplets, Archive, Truck, Search, Database, RefreshCcw, Boxes, Lock, Settings } from "lucide-react";
 
@@ -3135,7 +3137,7 @@ const recalcShrinkSlots = slots => {
     slot.slotAvgExpand = values.length ? (1 / (1 - Number(slot.slotAvgShrink) / 100)).toFixed(4) : "";
   });
 };
-function Step5_5Shrinkage({ wipList, ctx }) {
+function Step5_5Shrinkage({ wipList, furnaces, ctx }) {
   const pendingWip = wipList.filter(w => w.currentStep === "step5_shrink");
   const [selectedWipId, setSelectedWipId] = useState(null);
 
@@ -3154,6 +3156,10 @@ function Step5_5Shrinkage({ wipList, ctx }) {
   const [saveMessage, setSaveMessage] = useState("");
   const serverDesks = useRef({});
   const emptyDesk = () => ({ step: 0, operator: "", memo: "", slotData: {}, queue: [] });
+  let connectionReview;
+  try { connectionReview = reviewShrinkage(wipList, shrinkDesks, furnaces || {}); }
+  catch (error) { connectionReview = { batches: [], pending: [], error: error.message, orphanSlotCount: 0, orphanSlotQty: 0 }; }
+
   useEffect(() => {
     const unsub = onSnapshot(getDocRef("equipment", "shrinkDesks"), snap => {
       const data = snap.exists() ? snap.data() : {};
@@ -3304,19 +3310,16 @@ function Step5_5Shrinkage({ wipList, ctx }) {
     finally { busyRef.current = false; setBusy(false); }
   };
   const selectBatch = (fid, batchId) => guarded(async () => {
+    if (!loaded) throw new Error("측정 자료를 다시 불러와주세요.");
     if (dirty.current[fid]) await saveDesk(fid);
-    await runTransaction(getFirestore(), async tx => {
-      const ref = getDocRef("equipment", "shrinkDesks");
-      const snap = await tx.get(ref); const all = snap.data() || {};
-      const active = all[fid] || emptyDesk();
-      const queue = [...(active.queue || [])];
-      const index = queue.findIndex(b => b.batchId === batchId);
-      if (index < 0) throw new Error("대기 작업이 변경되었습니다.");
-      const chosen = queue.splice(index, 1)[0];
-      const { queue: ignored, ...old } = active;
-      if (Object.keys(old.slotData || {}).length) queue.unshift(old);
-      tx.set(ref, { ...all, [fid]: { ...chosen, queue } });
-    });
+    const next = await switchShrinkBatch(db, ROOT, fid, serverDesks.current[fid], batchId,
+      ctx.isAdmin ? "관리자(작업 선택)" : "현장(작업 선택)");
+    analyzedBatch.current = null;
+    draftBase.current[fid] = cloneDeep(next);
+    serverDesks.current = { ...serverDesks.current, [fid]: next };
+    shrinkDesksRef.current = { ...shrinkDesksRef.current, [fid]: next };
+    setShrinkDesks(shrinkDesksRef.current);
+    setSaveMessage("작업 선택 완료. 이전 작업과 입력값은 대기열에 그대로 보존됩니다.");
   });
   const isolateStale = fid => guarded(async () => {
     if (dirty.current[fid]) await saveDesk(fid);
@@ -3650,6 +3653,20 @@ if (hasIncompleteMeasurement) {
         <div className="mb-4 p-3 bg-amber-50 border rounded text-sm">{saveMessage || "입력 후 저장하세요. 저장 완료 표시를 확인한 뒤 화면을 이동하세요."}</div>
         <div className="mb-4 text-sm">측정대에 없는 대기 로트: {pendingWip.filter(w => !Object.values(shrinkDesks).some(d => [d, ...(d.queue || [])].some(b => Object.values(b.slotData || {}).some(s => s.wipId === w.id)))).map(w => `${w.mixLot} (${w.qty}개)`).join(", ") || "없음"}. 누락 로트는 실측 기록과 열처리 위치 확인 후 복구가 필요합니다.</div>
         <div className="mb-4 flex flex-wrap gap-2">{pendingWip.filter(w => !Object.values(shrinkDesks).some(d => [d, ...(d.queue || [])].some(b => Object.values(b.slotData || {}).some(s => s.wipId === w.id)))).map(w => <button disabled={busy || !loaded || lotSplitModal.isOpen} key={w.id} onClick={() => recoverOrphan(w.id)} className="border rounded p-2 bg-white text-sm">{w.mixLot} 누락 작업 등록 (면적 재입력)</button>)}</div>
+        {loaded && <div className="mb-4 p-4 border rounded-xl bg-amber-50 text-sm space-y-2">
+          <h3 className="font-bold">수축률 작업 연결 점검 (조회 전용)</h3>
+          <p>수량 합계가 맞아도 위치 연결과 실측 기록은 별도 확인이 필요합니다. 연결 정상은 실측/품질 승인이 아닙니다.</p>
+          {connectionReview.error ? <p role="alert">{connectionReview.error}</p> : <>
+            <p>현재 로트 없는 위치: {connectionReview.orphanSlotCount}곳 / 기록상 {connectionReview.orphanSlotQty}EA (실제 재고에 더하지 않음)</p>
+            {connectionReview.pending.filter(w => w.status !== "linked").map(w => <p key={w.wipId}>{w.mixLot}: 로트 {w.quantity ?? "확인 필요"}EA / 작업 연결 {w.linkedQty}EA / 확인 필요</p>)}
+            {connectionReview.batches.filter(b => b.slotCount > 0).map(b => <div key={b.key} className="border-t pt-2">
+              <strong>{b.fid}호기 {b.active ? "현재" : "대기"} / {b.lots.join(", ")} / {b.quantity}EA</strong>
+              <p>{b.issues.length ? [...new Set(b.issues.map(i => i.message))].join(" / ") : "위치와 수량 연결 정상"}</p>
+              <p>소결 전 실측 확인 필요: {b.preMissing}곳 / 소결 후: {b.postMissing}곳</p>
+            </div>)}
+          </>}
+          <p className="font-bold">오래된 작업을 삭제하지 말고, 아래 대기열에서 연결이 맞는 새 작업을 선택하세요. 기존 작업과 측정값은 보존됩니다.</p>
+        </div>}
         <fieldset disabled={busy || !loaded || lotSplitModal.isOpen} className="grid grid-cols-1 gap-8">
           {[1, 2].map(id => {
             const d = shrinkDesks[id] || { step: 0, slotData: {} };
@@ -3684,7 +3701,7 @@ if (hasIncompleteMeasurement) {
 
                 <div className="p-3 bg-white text-sm space-y-2">
                   <div>현재 작업: {d.createdAt || d.batchId || "기존 데이터"} / 대기 {d.queue?.length || 0}건</div>
-                  {(d.queue || []).map(b => <button key={b.batchId} onClick={() => selectBatch(id, b.batchId)} className="block border rounded p-2 w-full text-left">작업 선택: {b.createdAt || b.batchId} · {b.step === 2 ? "소결 후 측정 대기" : "소결 전 입력"} · {[...new Set(Object.values(b.slotData || {}).map(s => s.mixLot))].join(", ")}</button>)}
+                  {(d.queue || []).map(b => <button key={b.batchId} disabled={!connectionReview.batches.some(r => r.fid === String(id) && !r.active && r.batchId === b.batchId && r.selectable)} onClick={() => selectBatch(id, b.batchId)} className="block border rounded p-2 w-full text-left">작업 선택: {b.createdAt || b.batchId} · {b.step === 2 ? "소결 후 측정 대기" : "소결 전 입력"} · {[...new Set(Object.values(b.slotData || {}).map(s => s.mixLot))].join(", ")}</button>)}
                   {Boolean(d.stageIssues?.length) && <div className="border border-amber-300 rounded p-3 bg-amber-50 text-amber-900">
                     <div className="font-bold">입력값 저장됨 · 공정 확인 필요 {d.stageIssues.length}개</div>
                     <div className="mt-1">아래 슬롯은 최종 이관 전에 실물 LOT와 대조하세요. 혼재 데이터 분리는 원본과 입력 면적을 백업하고 해당 슬롯을 측정대에서 제외합니다.</div>

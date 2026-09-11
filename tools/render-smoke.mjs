@@ -2,12 +2,14 @@
 // Requires TypeScript locally, or MES_TYPESCRIPT_PATH to an installed compiler.
 import {createRequire} from 'node:module';import fs from 'node:fs';import vm from 'node:vm';import path from 'node:path';import {fileURLToPath} from 'node:url';import assert from 'node:assert/strict';
 import * as status from '../src/mesProcessStatus.mjs';
+import * as shrinkReview from '../src/mesShrinkReview.mjs';
+import * as shrinkQueue from '../src/mesShrinkQueue.mjs';
 import * as store from '../src/mesDatabase.mjs';import * as core from '../src/mesSafetyCore.mjs';import * as operations from '../src/mesOperations.mjs';import {makeDemoData} from '../src/mesDemoData.mjs';
 const require=createRequire(import.meta.url),ts=require(process.env.MES_TYPESCRIPT_PATH||'typescript');const base=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const root='artifacts/dasan-mes-app/public/data',db=store.createMemoryDatabase(makeDemoData(root));store.configureDatabase(db,{root,canWrite:()=>true,actor:()=> 'DEMO'});
 let current;const effects=[];
 const React={createElement:(type,props,...children)=>({type,props:props||{},children}),useState:(initial)=>{const i=current.n++,c=current;if(!(i in c.state))c.state[i]=typeof initial==='function'?initial():initial;return[c.state[i],v=>{c.state[i]=typeof v==='function'?v(c.state[i]):v;}];},useRef:v=>{const i=current.n++;return current.state[i]??(current.state[i]={current:v});},useEffect:(fn,deps)=>{effects.push(fn);},useMemo:fn=>fn(),Fragment:'Fragment'};
-const modules={'react':{...React,default:React},'lucide-react':new Proxy({},{get:(_,name)=>function Icon(){return{name};}}),'./mesProcessStatus.mjs':status,'./mesDatabase.mjs':store,'./mesSafetyCore.mjs':core,'./mesOperations.mjs':operations,'./mesRuntime.mjs':{ROOT:root,MES_MODE:'demo',runtimeError:'',EXTERNAL_SYNC_ENABLED:false,LIVE_WRITES_ENABLED:false,getAuth:()=>({__mesDemo:true}),getFirestore:()=>db,onAuthStateChanged:()=>()=>{},signInAnonymously:()=>Promise.resolve({})}};
+const modules={'react':{...React,default:React},'lucide-react':new Proxy({},{get:(_,name)=>function Icon(){return{name};}}),'./mesProcessStatus.mjs':status,'./mesShrinkReview.mjs':shrinkReview,'./mesShrinkQueue.mjs':shrinkQueue,'./mesDatabase.mjs':store,'./mesSafetyCore.mjs':core,'./mesOperations.mjs':operations,'./mesRuntime.mjs':{ROOT:root,MES_MODE:'demo',runtimeError:'',EXTERNAL_SYNC_ENABLED:false,LIVE_WRITES_ENABLED:false,getAuth:()=>({__mesDemo:true}),getFirestore:()=>db,onAuthStateChanged:()=>()=>{},signInAnonymously:()=>Promise.resolve({})}};
 const source=fs.readFileSync(path.join(base,'src/App.js'),'utf8');
 const names=[...source.matchAll(/^(?:export default )?function (\w+)/gm)].map(x=>x[1]);
 const compiled=ts.transpileModule(source+'\nexports.__components = {'+names.join(',')+',DEFAULT_MASTER_SETTINGS};',{fileName:'App.jsx',compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}}).outputText;
