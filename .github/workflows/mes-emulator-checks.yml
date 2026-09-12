@@ -1,0 +1,29 @@
+name: MES Firebase emulator checks
+on:
+  push:
+    branches: [mes-safety-test]
+    paths:
+      - 'src/**'
+      - 'tests/emulator/**'
+      - 'package.json'
+      - '.github/workflows/mes-emulator-checks.yml'
+permissions:
+  contents: read
+jobs:
+  emulator:
+    if: github.repository_id == '1197083974' && github.ref == 'refs/heads/mes-safety-test'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GCLOUD_PROJECT: demo-dasan-mes
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install app dependencies
+        run: npm install --ignore-scripts
+      - name: Install Firebase CLI
+        run: npm install --no-save --ignore-scripts firebase-tools
+      - name: Run Auth and Firestore emulator integration tests
+        run: npx firebase --project demo-dasan-mes --config tests/emulator/firebase.json emulators:exec --only auth,firestore "node tests/emulator/run-native.mjs"
