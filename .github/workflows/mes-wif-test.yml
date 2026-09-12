@@ -1,0 +1,27 @@
+name: MES read-only identity test
+on:
+  push:
+    branches: [mes-safety-test]
+    paths: ['.github/workflows/mes-wif-test.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  identity-test:
+    if: github.repository_id == '1197083974' && github.ref == 'refs/heads/mes-safety-test'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - id: auth
+        name: Authenticate MES read-only service account
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/782401133060/locations/global/workloadIdentityPools/github-mes-audit/providers/github-mes-audit
+          service_account: mes-audit-reader@dasanind-mes.iam.gserviceaccount.com
+          token_format: access_token
+          access_token_lifetime: 300s
+      - name: Confirm authentication only
+        run: |
+          test -n "${{ steps.auth.outputs.access_token }}"
+          echo "MES read-only identity authentication succeeded."
