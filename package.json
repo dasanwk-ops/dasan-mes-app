@@ -16,8 +16,8 @@
     "autoprefixer": "^10.0.0"
   },
   "scripts": {
-    "start": "react-scripts start",
-    "build": "react-scripts build",
+    "start": "node tools/apply-main-remainder-close.cjs && react-scripts start",
+    "build": "node tools/apply-main-remainder-close.cjs && react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
   },
