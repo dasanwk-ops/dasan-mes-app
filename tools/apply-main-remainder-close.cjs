@@ -19,6 +19,13 @@ function replaceOnce(path, oldText, newText, label) {
 
 replaceOnce(
   'src/App.js',
+  `  // 과거 데이터 중 이미 완전히 종료됐지만 WIP/출고 이력이 남아있지 않은 건 보호\n  const legacyClosed =\n    linkedWip.length === 0 &&\n    linkedShipping.length === 0 &&\n    ["완료", "출고완료"].includes(order?.status);`,
+  `  // 과거 생산완료 건은 불량/폐기 처리로 최종 WIP 수량이 0이어도 다시 생산 잔량으로 만들지 않습니다.\n  // 단, 살아있는 공정 WIP가 하나라도 있으면 완료 상태를 신뢰하지 않고 현재 WIP 기준으로 계산합니다.\n  const legacyClosedStatus = ["완료", "출고완료", "생산완료"].includes(order?.status);\n  const hasActiveLinkedWip = linkedWip.some((w) => w.currentStep !== "done");\n  const hasLegacyCloseEvidence =\n    linkedWip.length > 0 ||\n    linkedShipping.length > 0 ||\n    Math.max(0, Number(order?.releasedQty) || 0) >= orderQty;\n  const legacyClosed =\n    legacyClosedStatus &&\n    !hasActiveLinkedWip &&\n    hasLegacyCloseEvidence;`,
+  'legacy-completed-order-guard'
+);
+
+replaceOnce(
+  'src/App.js',
   `  const rawCoveredQty = legacyClosed ? orderQty : wipQty + shippedQty;\n  const coveredQty = Math.min(orderQty, rawCoveredQty);\n  const remainingQty = Math.max(0, orderQty - coveredQty);\n  const overQty = Math.max(0, rawCoveredQty - orderQty);\n\n  let status = "대기중";\n  if (order?.status === "취소") status = "취소";\n  else if (legacyClosed || (orderQty > 0 && shippedQty >= orderQty)) status = "출고완료";`,
   `  const remainderClosed = order?.status === "잔량마감";\n  const rawCoveredQty = (legacyClosed || remainderClosed) ? orderQty : wipQty + shippedQty;\n  const coveredQty = Math.min(orderQty, rawCoveredQty);\n  const remainingQty = Math.max(0, orderQty - coveredQty);\n  const overQty = Math.max(0, rawCoveredQty - orderQty);\n\n  let status = "대기중";\n  if (order?.status === "취소") status = "취소";\n  else if (remainderClosed) status = "잔량마감";\n  else if (legacyClosed || (orderQty > 0 && shippedQty >= orderQty)) status = "출고완료";`,
   'progress-close-status'
