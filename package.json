@@ -17,7 +17,7 @@
   },
   "scripts": {
     "start": "react-scripts start",
-    "build": "react-scripts build",
+    "build": "node tools/apply-order-remainder-close-patch.cjs && node --test tests/order-remainder-close.test.mjs && react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
     "safety:test": "node --test tests/*.test.mjs",
