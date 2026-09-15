@@ -1,0 +1,210 @@
+name: Add order remainder close
+
+on:
+  push:
+    branches: [mes-safety-test]
+    paths:
+      - .github/workflows/add-order-remainder-close.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: mes-safety-test
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Patch guarded remainder close
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, found {count}')
+              p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          # 1) Operations layer: block release after close, add atomic remainder-close operation.
+          replace_once(
+              'src/mesOperations.mjs',
+              "      const r=ref('orderList',order.id),os=await tx.get(r);assertSame(os.data(),order,'생산 지시');invariant(os.data().status!=='취소','취소된 생산 지시입니다.');",
+              "      const r=ref('orderList',order.id),os=await tx.get(r);const liveOrder=os.data();assertSame(liveOrder,order,'생산 지시');invariant(!['취소','잔량마감'].includes(liveOrder.status),'취소 또는 잔량마감된 생산 지시입니다.');",
+              'release close guard'
+          )
+
+          close_fn = r'''  async function closeOrderRemainder(expected,{operator,reason}) {
+    requiredText(operator,'마감 담당자');requiredText(reason,'마감 사유');
+    return transact('생산 지시 잔량 마감',operator,async tx=>{
+      const r=ref('orderList',expected.id),s=await tx.get(r),live=s.data();assertSame(live,expected,'생산 지시');
+      invariant(!['취소','잔량마감'].includes(live.status),'이미 취소 또는 잔량마감된 생산 지시입니다.');
+      const ws=await tx.list(col('wipList')),hs=await tx.list(col('shippingHistory'));
+      const linked=[...ws,...hs].map(x=>x.data()).filter(x=>String(x.orderId||'')===String(expected.id));
+      invariant(linked.length>0,'생산/출고 이력이 없는 지시는 잔량마감 대신 취소를 사용하세요.');
+      const covered=linked.reduce((n,x)=>n+Math.max(0,Number(x.qty)||0),0);
+      const total=quantity(live.qty,'지시 수량',false),remainder=Math.max(0,total-covered);
+      invariant(remainder>0,'현재 남은 생산 수량이 없습니다.');
+      tx.annotate({kind:'order-remainder-close',orderId:expected.id,orderNo:live.orderNo||'',totalQty:total,coveredQty:covered,remainderQty:remainder,operator,reason});
+      tx.update(r,{status:'잔량마감',remainderClosedQty:remainder,remainderCoveredQty:covered,remainderClosedAt:kst(),remainderClosedBy:operator,remainderCloseReason:reason});
+      return {total,covered,remainder};
+    });
+  }
+'''
+          replace_once(
+              'src/mesOperations.mjs',
+              "  async function cancelOrder(expected) {\n",
+              close_fn + "  async function cancelOrder(expected) {\n",
+              'insert closeOrderRemainder'
+          )
+          replace_once(
+              'src/mesOperations.mjs',
+              "return { finishShrink,advance,firstMolding,splitMolding,allocateSlot,furnaceField,startHeat,finishHeat,roomField,dryStart,dryField,dryComplete,ensurePack,cancelOrEdit,ship,release,cancelOrder,inbound,requestPrint,finishPack };",
+              "return { finishShrink,advance,firstMolding,splitMolding,allocateSlot,furnaceField,startHeat,finishHeat,roomField,dryStart,dryField,dryComplete,ensurePack,cancelOrEdit,ship,release,closeOrderRemainder,cancelOrder,inbound,requestPrint,finishPack };",
+              'export closeOrderRemainder'
+          )
+
+          # 2) UI/progress engine: closed remainder counts as intentionally complete and disappears from pending list.
+          replace_once(
+              'src/App.js',
+              '''  const rawCoveredQty = legacyClosed ? orderQty : wipQty + shippedQty;
+  const coveredQty = Math.min(orderQty, rawCoveredQty);
+  const remainingQty = Math.max(0, orderQty - coveredQty);
+  const overQty = Math.max(0, rawCoveredQty - orderQty);
+
+  let status = "대기중";
+  if (order?.status === "취소") status = "취소";
+  else if (legacyClosed || (orderQty > 0 && shippedQty >= orderQty)) status = "출고완료";''',
+              '''  const remainderClosed = order?.status === "잔량마감";
+  const rawCoveredQty = (legacyClosed || remainderClosed) ? orderQty : wipQty + shippedQty;
+  const coveredQty = Math.min(orderQty, rawCoveredQty);
+  const remainingQty = Math.max(0, orderQty - coveredQty);
+  const overQty = Math.max(0, rawCoveredQty - orderQty);
+
+  let status = "대기중";
+  if (order?.status === "취소") status = "취소";
+  else if (remainderClosed) status = "잔량마감";
+  else if (legacyClosed || (orderQty > 0 && shippedQty >= orderQty)) status = "출고완료";''',
+              'progress remainder close'
+          )
+
+          close_handler = r'''  const handleCloseRemainder = async order => {
+    const progress = getOrderProgress(order,wipList,shippingHistory);
+    if (progress.remainingQty <= 0) return ctx.showToast('남은 생산 수량이 없습니다.','error');
+    const audit = askAdmin('생산 단위상 잔량 미생산 마감');
+    if (!audit) return;
+    ctx.showConfirm(`${order.orderNo}\n지시수량: ${progress.orderQty}EA\n현재 반영: ${progress.rawCoveredQty}EA\n남은 수량: ${progress.remainingQty}EA\n\n남은 수량만 미생산 마감하고 기존 생산/출고 이력은 그대로 보관할까요?`, async () => {
+      try {
+        const result = await safeOps.closeOrderRemainder(order,audit);
+        ctx.showToast(`잔량 ${result.remainder}EA 마감 완료`,'success');
+      } catch(e) { ctx.showToast(e.message || String(e),'error'); }
+    });
+  };
+'''
+          replace_once(
+              'src/App.js',
+              '''  const activeOrders = orderList.filter((o) => {''',
+              close_handler + '''\n  const activeOrders = orderList.filter((o) => {''',
+              'insert close handler'
+          )
+
+          replace_once(
+              'src/App.js',
+              '''                      <div className="flex justify-center gap-2"><button onClick={() => handleDel(order.id)} className="text-red-300 hover:text-red-600"><Trash2 className="w-4 h-4" /></button></div>''',
+              '''                      <div className="flex justify-center gap-2 items-center">
+                        <button onClick={() => handleCloseRemainder(order)} className="text-[10px] px-2 py-1.5 rounded font-black bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 whitespace-nowrap">잔량마감</button>
+                        <button title="생산/출고 이력이 없는 지시 취소" onClick={() => handleDel(order.id)} className="text-red-300 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                      </div>''',
+              'add remainder close button'
+          )
+
+          # 3) Focused regression tests for preservation, blocking repeat release, and history-less cancellation path.
+          Path('tests/order-remainder-close.test.mjs').write_text(r'''import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createMemoryDatabase,configureDatabase,doc} from '../src/mesDatabase.mjs';
+import {createOperations} from '../src/mesOperations.mjs';
+
+const root='artifacts/demo-mes/public/data';
+function setup({order,wips=[],ships=[]}){
+  const seed={
+    [`${root}/orderList/${order.id}`]:order,
+    [`${root}/equipment/furnaces`]:{'1':{isHeating:false,temp:'1050',operator:'',slotData:{}},'2':{isHeating:false,temp:'1050',operator:'',slotData:{}}},
+    [`${root}/equipment/shrinkDesks`]:{'1':{step:0,slotData:{},queue:[]},'2':{step:0,slotData:{},queue:[]}},
+    [`${root}/equipment/dryingRoom`]:{dryingWipIds:[],cartItems:[],completionData:{}},
+  };
+  for(const w of wips) seed[`${root}/wipList/${w.id}`]=w;
+  for(const h of ships) seed[`${root}/shippingHistory/${h.id}`]=h;
+  const db=createMemoryDatabase(seed);configureDatabase(db,{root,canWrite:()=>true,actor:()=> 'TEST'});
+  return {db,ops:createOperations(db,root,()=>true),get:(c,id)=>db.docs.get(`${root}/${c}/${id}`)};
+}
+
+test('잔량마감은 지시수량과 기존 WIP를 보존하고 남은 수량만 기록한다',async()=>{
+  const order={id:'o1',orderNo:'ORD-DEMO-1',qty:100,status:'생산중',color:'345 BL3',height:'25',singleWeight:650};
+  const w={id:'w1',orderId:'o1',mixLot:'MIX-DEMO-1',qty:98,currentStep:'step5',type:'345 BL3',height:'25',singleWeight:650,details:'original'};
+  const s=setup({order,wips:[w]});
+  const result=await s.ops.closeOrderRemainder(order,{operator:'MASTER',reason:'생산 단위상 2EA 미생산'});
+  assert.equal(result.remainder,2);
+  assert.equal(s.get('orderList','o1').qty,100);
+  assert.equal(s.get('orderList','o1').status,'잔량마감');
+  assert.equal(s.get('orderList','o1').remainderClosedQty,2);
+  assert.equal(s.get('wipList','w1').qty,98);
+});
+
+test('잔량마감 후 추가 공정 투입은 차단된다',async()=>{
+  const order={id:'o1',orderNo:'ORD-DEMO-1',qty:100,status:'생산중',color:'345 BL3',height:'25',singleWeight:650};
+  const w={id:'w1',orderId:'o1',mixLot:'MIX-DEMO-1',qty:98,currentStep:'step5',type:'345 BL3',height:'25',singleWeight:650,details:'original'};
+  const s=setup({order,wips:[w]});
+  await s.ops.closeOrderRemainder(order,{operator:'MASTER',reason:'마감'});
+  const closed=s.get('orderList','o1');
+  await assert.rejects(s.ops.release(closed,1));
+});
+
+test('과거 0EA 완료 WIP가 연결된 발주도 잔량마감할 수 있다',async()=>{
+  const order={id:'o1',orderNo:'ORD-OLD',qty:10,status:'생산완료',color:'345 BL3',height:'25',singleWeight:620};
+  const w={id:'w0',orderId:'o1',mixLot:'FOLD',qty:0,currentStep:'done',type:'BL3',height:'25',singleWeight:620,details:'old completed record'};
+  const s=setup({order,wips:[w]});
+  const result=await s.ops.closeOrderRemainder(order,{operator:'MASTER',reason:'과거 종료건 정리'});
+  assert.equal(result.remainder,10);
+  assert.equal(s.get('wipList','w0').details,'old completed record');
+  assert.equal(s.get('orderList','o1').status,'잔량마감');
+});
+
+test('생산/출고 이력이 전혀 없는 지시는 잔량마감 대신 취소를 사용한다',async()=>{
+  const order={id:'o1',orderNo:'ORD-EMPTY',qty:10,status:'대기중',color:'345 BL3',height:'25',singleWeight:650};
+  const s=setup({order});
+  await assert.rejects(s.ops.closeOrderRemainder(order,{operator:'MASTER',reason:'정리'}));
+});
+''',encoding='utf-8')
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Safety tests
+        run: npm run safety:test
+
+      - name: Render smoke
+        run: npm run safety:render-smoke
+
+      - name: Build
+        run: npm run build
+
+      - name: Commit tested patch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/App.js src/mesOperations.mjs tests/order-remainder-close.test.mjs
+          git diff --cached --check
+          git commit -m "Add guarded order remainder close" || exit 0
+          git push origin HEAD:mes-safety-test
