@@ -17,12 +17,20 @@
   },
   "scripts": {
     "start": "node tools/apply-main-remainder-close.cjs && node tools/apply-order-state-reconcile.cjs && node tools/apply-label-partial-reprint.cjs && react-scripts start",
-    "build": "node tools/apply-main-remainder-close.cjs && node tools/apply-order-state-reconcile.cjs && node tools/apply-label-partial-reprint.cjs && react-scripts build",
+    "build": "node tools/apply-main-remainder-close.cjs && node tools/apply-order-state-reconcile.cjs && react-scripts build && node tools/fix-667-shrinkage.cjs",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
   },
   "browserslist": {
-    "production": [">0.2%", "not dead", "not op_mini all"],
-    "development": ["last 1 chrome version", "last 1 firefox version", "last 1 safari version"]
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
   }
 }
