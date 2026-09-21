@@ -1,4 +1,4 @@
-name: MES encrypted backup test
+name: MES encrypted backup worker
 
 on:
   push:
@@ -7,6 +7,7 @@ on:
       - ".github/workflows/mes-encrypted-backup-test.yml"
       - "tools/export-firestore-full.mjs"
       - "backup/MES_BACKUP_PUBLIC_KEY.pem"
+      - "backup/AUTO_BACKUP_TRIGGER.txt"
   workflow_dispatch:
 
 permissions:
