@@ -1,0 +1,28 @@
+name: Fix 667 shrinkage 19.7665
+
+on:
+  push:
+    branches:
+      - fix-667-shrinkage-197665
+    paths:
+      - ".github/workflows/fix-667-shrinkage.yml"
+      - "tools/fix-667-shrinkage.cjs"
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Apply guarded Firestore correction
+        run: node tools/fix-667-shrinkage.cjs
