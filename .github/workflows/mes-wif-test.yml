@@ -11,7 +11,7 @@ jobs:
   identity-test:
     if: github.repository_id == '1197083974' && github.ref == 'refs/heads/mes-safety-test'
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     steps:
       - id: auth
         name: Authenticate MES read-only service account
@@ -25,3 +25,33 @@ jobs:
         run: |
           test -n "${{ steps.auth.outputs.access_token }}"
           echo "MES read-only identity authentication succeeded."
+      - name: Read Firestore PITR and backup settings
+        env:
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          set -euo pipefail
+          DB_URL="https://firestore.googleapis.com/v1/projects/dasanind-mes/databases/%28default%29"
+          curl -fsS -H "Authorization: Bearer ${ACCESS_TOKEN}" "${DB_URL}" > firestore-db-info.json
+          echo "FIRESTORE_DATABASE_INFO"
+          jq '{
+            name,
+            locationId,
+            type,
+            pointInTimeRecoveryEnablement,
+            earliestVersionTime,
+            versionRetentionPeriod,
+            deleteProtectionState
+          }' firestore-db-info.json
+
+          LOCATION="$(jq -r '.locationId // empty' firestore-db-info.json)"
+          if [ -n "${LOCATION}" ]; then
+            BACKUPS_URL="https://firestore.googleapis.com/v1/projects/dasanind-mes/locations/${LOCATION}/backups"
+            echo "FIRESTORE_BACKUPS"
+            HTTP_CODE="$(curl -sS -o firestore-backups.json -w '%{http_code}' -H "Authorization: Bearer ${ACCESS_TOKEN}" "${BACKUPS_URL}")"
+            echo "HTTP ${HTTP_CODE}"
+            if [ "${HTTP_CODE}" = "200" ]; then
+              jq '{backupCount: ((.backups // []) | length), backups: [(.backups // [])[] | {name, state, database, databaseUid, snapshotTime, expireTime}]}' firestore-backups.json
+            else
+              cat firestore-backups.json
+            fi
+          fi
