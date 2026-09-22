@@ -1,0 +1,58 @@
+name: Check 667 live record
+
+on:
+  push:
+    branches: [mes-safety-test]
+    paths:
+      - ".github/workflows/check-667-live.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/782401133060/locations/global/workloadIdentityPools/github-mes-audit/providers/github-mes-audit
+          service_account: mes-audit-reader@dasanind-mes.iam.gserviceaccount.com
+          token_format: access_token
+          access_token_lifetime: 600s
+      - name: Read 667
+        env:
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          node - <<'NODE'
+          const https = require('https');
+          const url = 'https://firestore.googleapis.com/v1/projects/dasanind-mes/databases/(default)/documents/artifacts/dasan-mes-app/public/data/wipList/stocktake-recovery-260724-667';
+          const token = process.env.ACCESS_TOKEN;
+          https.get(url, {headers:{Authorization:'Bearer '+token}}, res => {
+            let d=''; res.on('data',c=>d+=c); res.on('end',()=> {
+              if(res.statusCode!==200){ console.error(res.statusCode,d); process.exit(1); }
+              const j=JSON.parse(d), f=j.fields||{};
+              const val=x=>x?.stringValue ?? x?.integerValue ?? x?.booleanValue ?? null;
+              const arr=x=>(x?.arrayValue?.values||[]).map(v=>{
+                const m=v.mapValue?.fields||{};
+                return {completedAt:val(m.completedAt),recoveryReason:val(m.recoveryReason),recoverySubstitute:val(m.recoverySubstitute)};
+              });
+              const rec=f.stocktakeRecovery?.mapValue?.fields||{};
+              console.log(JSON.stringify({
+                currentStep:val(f.currentStep),
+                qty:val(f.qty),
+                mixLot:val(f.mixLot),
+                shrinkageRate:val(f.shrinkageRate),
+                heatTreatmentHistory:arr(f.heatTreatmentHistory),
+                heatDateSubstitute:val(rec.heatDateSubstitute),
+                heatDateRecoveryReason:val(rec.heatDateRecoveryReason),
+                needsHeatHistory:val(rec.needsHeatHistory),
+                needsShrinkageData:val(rec.needsShrinkageData),
+                details:val(f.details)
+              },null,2));
+            });
+          }).on('error',e=>{console.error(e);process.exit(1)});
+          NODE
