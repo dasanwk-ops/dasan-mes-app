@@ -16,8 +16,8 @@
     "autoprefixer": "^10.0.0"
   },
   "scripts": {
-    "start": "node tools/apply-main-remainder-close.cjs && node tools/apply-order-state-reconcile.cjs && node tools/apply-667-shrinkage-runtime-fix.cjs && react-scripts start",
-    "build": "node tools/apply-main-remainder-close.cjs && node tools/apply-order-state-reconcile.cjs && node tools/apply-667-shrinkage-runtime-fix.cjs && react-scripts build",
+    "start": "node tools/apply-main-remainder-close.cjs && node tools/apply-order-state-reconcile.cjs && node tools/apply-667-label-date-fallback.cjs && react-scripts start",
+    "build": "node tools/apply-main-remainder-close.cjs && node tools/apply-order-state-reconcile.cjs && node tools/apply-667-label-date-fallback.cjs && react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
   },
