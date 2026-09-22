@@ -3012,7 +3012,7 @@ function Step3FirstMolding({ wipList, masterSettings, ctx }) {
 
     const defectStr = defQty > 0 ? ` [불량 ${defQty}개: ${d.defectReason || "사유미상"}]` : "";
     const noteStr = d.specialNote ? ` [메모: ${d.specialNote}]` : "";
-    const recordDetails = `[${getKST()}] [1차성형] 압력:${d.pressure || 0} | 직경:${dAvg}mm | 높이:${hAvg}mm | 무게:${wAvg}g | 담당:${d.operator}${defectStr}${noteStr}`;
+    const recordDetails = `[${getKST()}] [1차성형] 압력:${d.pressure || "70"} | 직경:${dAvg}mm | 높이:${hAvg}mm | 무게:${wAvg}g | 담당:${d.operator}${defectStr}${noteStr}`;
 
     try {
       await runTransaction(db, async (transaction) => {
@@ -3023,7 +3023,7 @@ function Step3FirstMolding({ wipList, masterSettings, ctx }) {
         transaction.update(docRef, { qty: Math.max(0, aQty - defQty), currentStep: "step4", details: `${docSnap.data().details || ""}\n${recordDetails}` });
       });
       ctx.showToast("1차 성형 완료", "success");
-      logProcessToGoogleSheet("step3", { ...wItem, qty: aQty - defQty }, d.operator, { defects: defQty, defectReason: d.defectReason || "-", conditions: `압력:${d.pressure || 0}ton`, measurements: `직경:${dAvg}mm, 높이:${hAvg}mm, 무게:${wAvg}g`, details: d.specialNote || "-" });
+      logProcessToGoogleSheet("step3", { ...wItem, qty: aQty - defQty }, d.operator, { defects: defQty, defectReason: d.defectReason || "-", conditions: `압력:${d.pressure || "70"}ton`, measurements: `직경:${dAvg}mm, 높이:${hAvg}mm, 무게:${wAvg}g`, details: d.specialNote || "-" });
     } catch (err) { ctx.showToast(typeof err === "string" ? err : "오류 발생", "error"); }
   };
 
@@ -3062,7 +3062,7 @@ function Step3FirstMolding({ wipList, masterSettings, ctx }) {
                <div className="xl:col-span-2 bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-center space-y-4">
                   <div>
                     <label className="text-xs font-bold text-slate-500 mb-2 flex items-center justify-between"><div className="flex items-center"><Cylinder className="w-3.5 h-3.5 mr-1" /> 성형 압력</div><span className="text-[10px] text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100">목표: {masterSettings?.TARGET_PRESSURE?.step3 || "70"}ton</span></label>
-                    <input type="text" placeholder="실제 압력 기입" value={d.pressure || ""} onChange={(e) => handleDataChange(wip.id, "pressure", e.target.value)} className="border border-slate-300 rounded-lg p-2.5 text-sm font-black text-indigo-600 w-full text-center" />
+                    <input type="text" placeholder="실제 압력 기입" value={d.pressure !== undefined ? d.pressure : "70"} onChange={(e) => handleDataChange(wip.id, "pressure", e.target.value)} className="border border-slate-300 rounded-lg p-2.5 text-sm font-black text-indigo-600 w-full text-center" />
                   </div>
                   <div><label className="text-xs font-bold text-slate-500 mb-2 block">특이사항 (메모)</label><input type="text" placeholder="특이사항 기입" value={d.specialNote || ""} onChange={(e) => handleDataChange(wip.id, "specialNote", e.target.value)} className="border border-slate-300 rounded-lg p-2 text-xs w-full" /></div>
                 </div>
@@ -3133,8 +3133,8 @@ function Step4SecondMolding({ wipList, masterSettings, ctx }) {
     if (qtyA === 0 && qtyB === 0) return ctx.showToast("A호기 또는 B호기 중 정상 생산 수량을 배정해주세요!", "error");
     if (qtyA + defA + qtyB + defB !== wipItem.qty) return ctx.showToast("입력한 수량 합계(정상+불량)가 대기 수량과 불일치합니다.", "error");
 
-    const dAvgA = calcAvg(d.d1A, d.d2A, d.d3A, 2); const hAvgA = calcAvg(d.h1A, d.h2A, d.h3A, 2); const pressA = d.pressureA || 0;
-    const dAvgB = calcAvg(d.d1B, d.d2B, d.d3B, 2); const hAvgB = calcAvg(d.h1B, d.h2B, d.h3B, 2); const pressB = d.pressureB || 0;
+    const dAvgA = calcAvg(d.d1A, d.d2A, d.d3A, 2); const hAvgA = calcAvg(d.h1A, d.h2A, d.h3A, 2); const pressA = d.pressureA || "250";
+    const dAvgB = calcAvg(d.d1B, d.d2B, d.d3B, 2); const hAvgB = calcAvg(d.h1B, d.h2B, d.h3B, 2); const pressB = d.pressureB || "250";
     const noteStr = d.specialNote ? ` [메모:${d.specialNote}]` : "";
     const curTime = getKST(); 
 
@@ -3166,8 +3166,8 @@ function Step4SecondMolding({ wipList, masterSettings, ctx }) {
         transaction.delete(docRef);
       });
       ctx.showToast("2차 성형 완료 및 열처리 이관", "success");
-      if (qtyA > 0) logProcessToGoogleSheet("step4", { ...wipItem, qty: qtyA }, d.operator, { defects: defA, defectReason: d.defectReasonA || "-", equipment: "A호기", conditions: `압력:${d.pressureA || 0}MPa`, measurements: `직경:${dAvgA}mm, 높이:${hAvgA}mm`, details: d.specialNote || "-" });
-      if (qtyB > 0) logProcessToGoogleSheet("step4", { ...wipItem, qty: qtyB }, d.operator, { defects: defB, defectReason: d.defectReasonB || "-", equipment: "B호기", conditions: `압력:${d.pressureB || 0}MPa`, measurements: `직경:${dAvgB}mm, 높이:${hAvgB}mm`, details: d.specialNote || "-" });
+      if (qtyA > 0) logProcessToGoogleSheet("step4", { ...wipItem, qty: qtyA }, d.operator, { defects: defA, defectReason: d.defectReasonA || "-", equipment: "A호기", conditions: `압력:${pressA}MPa`, measurements: `직경:${dAvgA}mm, 높이:${hAvgA}mm`, details: d.specialNote || "-" });
+      if (qtyB > 0) logProcessToGoogleSheet("step4", { ...wipItem, qty: qtyB }, d.operator, { defects: defB, defectReason: d.defectReasonB || "-", equipment: "B호기", conditions: `압력:${pressB}MPa`, measurements: `직경:${dAvgB}mm, 높이:${hAvgB}mm`, details: d.specialNote || "-" });
     } catch (err) { ctx.showToast(typeof err === "string" ? err : "오류 발생", "error"); }
   };
 
@@ -3209,7 +3209,7 @@ function Step4SecondMolding({ wipList, masterSettings, ctx }) {
                     </div>
                   </div>
                   <div className={`space-y-3 ${qtyA > 0 ? "opacity-100" : "opacity-40 grayscale pointer-events-none"}`}>
-                    <div className="flex items-center space-x-2"><span className="text-xs font-bold text-slate-500 w-12 flex flex-col"><span>압력</span><span className="text-[9px] text-blue-500 mt-0.5">목표:{masterSettings?.TARGET_PRESSURE?.step4A || "250"}</span></span><input type="text" placeholder="실제 압력" value={d.pressureA || ""} onChange={(e) => handleDataChange(wip.id, "pressureA", e.target.value)} className="border rounded p-1.5 text-xs w-full" /></div>
+                    <div className="flex items-center space-x-2"><span className="text-xs font-bold text-slate-500 w-12 flex flex-col"><span>압력</span><span className="text-[9px] text-blue-500 mt-0.5">목표:{masterSettings?.TARGET_PRESSURE?.step4A || "250"}</span></span><input type="text" placeholder="실제 압력" value={d.pressureA !== undefined ? d.pressureA : "250"} onChange={(e) => handleDataChange(wip.id, "pressureA", e.target.value)} className="border rounded p-1.5 text-xs w-full" /></div>
                     <div className="flex items-center space-x-2"><span className="text-xs font-bold text-slate-500 w-12">직경(3)</span><input type="text" inputMode="decimal" placeholder="#1" value={d.d1A || ""} onChange={(e) => handleDataChange(wip.id, "d1A", e.target.value)} className="border rounded p-1.5 text-xs w-1/3 text-center" /><input type="text" inputMode="decimal" placeholder="#2" value={d.d2A || ""} onChange={(e) => handleDataChange(wip.id, "d2A", e.target.value)} className="border rounded p-1.5 text-xs w-1/3 text-center" /><input type="text" inputMode="decimal" placeholder="#3" value={d.d3A || ""} onChange={(e) => handleDataChange(wip.id, "d3A", e.target.value)} className="border rounded p-1.5 text-xs w-1/3 text-center" /><span className="text-xs font-bold text-indigo-600 w-12 text-right">{dAvgA}</span></div>
                     <div className="flex items-center space-x-2"><span className="text-xs font-bold text-slate-500 w-12">높이(3)</span><input type="text" inputMode="decimal" placeholder="#1" value={d.h1A || ""} onChange={(e) => handleDataChange(wip.id, "h1A", e.target.value)} className="border rounded p-1.5 text-xs w-1/3 text-center" /><input type="text" inputMode="decimal" placeholder="#2" value={d.h2A || ""} onChange={(e) => handleDataChange(wip.id, "h2A", e.target.value)} className="border rounded p-1.5 text-xs w-1/3 text-center" /><input type="text" inputMode="decimal" placeholder="#3" value={d.h3A || ""} onChange={(e) => handleDataChange(wip.id, "h3A", e.target.value)} className="border rounded p-1.5 text-xs w-1/3 text-center" /><span className="text-xs font-bold text-indigo-600 w-12 text-right">{hAvgA}</span></div>
                     {defA > 0 && <input type="text" placeholder="A호기 불량 사유 기입" value={d.defectReasonA || ""} onChange={(e) => handleDataChange(wip.id, "defectReasonA", e.target.value)} className="border border-red-300 bg-red-50 rounded p-1.5 text-xs w-full outline-none focus:ring-red-200" />}
@@ -3226,7 +3226,7 @@ function Step4SecondMolding({ wipList, masterSettings, ctx }) {
                     </div>
                   </div>
                   <div className={`space-y-3 ${qtyB > 0 ? "opacity-100" : "opacity-40 grayscale pointer-events-none"}`}>
-                  <div className="flex items-center space-x-2"><span className="text-xs font-bold text-slate-500 w-12 flex flex-col"><span>압력</span><span className="text-[9px] text-blue-500 mt-0.5">목표:{masterSettings?.TARGET_PRESSURE?.step4B || "250"}</span></span><input type="text" placeholder="실제 압력" value={d.pressureB || ""} onChange={(e) => handleDataChange(wip.id, "pressureB", e.target.value)} className="border rounded p-1.5 text-xs w-full" /></div>
+                  <div className="flex items-center space-x-2"><span className="text-xs font-bold text-slate-500 w-12 flex flex-col"><span>압력</span><span className="text-[9px] text-blue-500 mt-0.5">목표:{masterSettings?.TARGET_PRESSURE?.step4B || "250"}</span></span><input type="text" placeholder="실제 압력" value={d.pressureB !== undefined ? d.pressureB : "250"} onChange={(e) => handleDataChange(wip.id, "pressureB", e.target.value)} className="border rounded p-1.5 text-xs w-full" /></div>
                     <div className="flex items-center space-x-2"><span className="text-xs font-bold text-slate-500 w-12">직경(3)</span><input type="text" inputMode="decimal" placeholder="#1" value={d.d1B || ""} onChange={(e) => handleDataChange(wip.id, "d1B", e.target.value)} className="border rounded p-1.5 text-xs w-1/3 text-center" /><input type="text" inputMode="decimal" placeholder="#2" value={d.d2B || ""} onChange={(e) => handleDataChange(wip.id, "d2B", e.target.value)} className="border rounded p-1.5 text-xs w-1/3 text-center" /><input type="text" inputMode="decimal" placeholder="#3" value={d.d3B || ""} onChange={(e) => handleDataChange(wip.id, "d3B", e.target.value)} className="border rounded p-1.5 text-xs w-1/3 text-center" /><span className="text-xs font-bold text-blue-600 w-12 text-right">{dAvgB}</span></div>
                     <div className="flex items-center space-x-2"><span className="text-xs font-bold text-slate-500 w-12">높이(3)</span><input type="text" inputMode="decimal" placeholder="#1" value={d.h1B || ""} onChange={(e) => handleDataChange(wip.id, "h1B", e.target.value)} className="border rounded p-1.5 text-xs w-1/3 text-center" /><input type="text" inputMode="decimal" placeholder="#2" value={d.h2B || ""} onChange={(e) => handleDataChange(wip.id, "h2B", e.target.value)} className="border rounded p-1.5 text-xs w-1/3 text-center" /><input type="text" inputMode="decimal" placeholder="#3" value={d.h3B || ""} onChange={(e) => handleDataChange(wip.id, "h3B", e.target.value)} className="border rounded p-1.5 text-xs w-1/3 text-center" /><span className="text-xs font-bold text-blue-600 w-12 text-right">{hAvgB}</span></div>
                     {defB > 0 && <input type="text" placeholder="B호기 불량 사유 기입" value={d.defectReasonB || ""} onChange={(e) => handleDataChange(wip.id, "defectReasonB", e.target.value)} className="border border-red-300 bg-red-50 rounded p-1.5 text-xs w-full outline-none focus:ring-red-200" />}
