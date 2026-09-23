@@ -33,8 +33,8 @@ replaceOnce(
 
 replaceOnce(
   'src/App.js',
-  `  const handleReleaseToWIP = async (order) => {\n    const inputQty = parseInt(releaseQtyMap[order.id]);`,
-  `  const handleReleaseToWIP = async (order) => {\n    if (["취소", "잔량마감"].includes(order?.status)) {\n      return ctx.showToast("취소 또는 잔량마감된 생산 지시는 추가 투입할 수 없습니다.", "error");\n    }\n    const inputQty = parseInt(releaseQtyMap[order.id]);`,
+  `  const handleReleaseToWIP = async (order) => {\n    const inputQty = Number(releaseQtyMap[order.id]);`,
+  `  const handleReleaseToWIP = async (order) => {\n    if (["취소", "잔량마감"].includes(order?.status)) {\n      return ctx.showToast("취소 또는 잔량마감된 생산 지시는 추가 투입할 수 없습니다.", "error");\n    }\n    const inputQty = Number(releaseQtyMap[order.id]);`,
   'release-close-guard'
 );
 
