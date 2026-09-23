@@ -51,7 +51,7 @@ test('sample lot passes through lab loading, heating, measurement and inspection
     expect(desk().textContent).toContain('TEST-LAB-001');
     expect(desk().textContent).toContain('수량: 6개');
     expect(desk().textContent).not.toMatch(/[1-6]층/);
-    await change(desk().querySelector('select'), '가운데');
+    expect(desk().querySelector('select')).toBeNull();
     await change(desk().querySelector('input[type="number"]'), '100');
     await click(textNode(desk(), '[1단계] 소결 전 면적 임시저장 및 잠금', 'button'));
     expect(container.textContent).toContain('소결 전 면적 저장 및 잠금이 완료되었습니다');
