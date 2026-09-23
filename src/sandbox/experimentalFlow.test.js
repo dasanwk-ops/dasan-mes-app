@@ -40,7 +40,7 @@ const values = name => Object.entries(stored()).filter(([p]) => p.startsWith(ROO
 
 for (const scenario of [
   {name:'experimental without specimen',experimental:true,specimen:false,kg:6.28},
-  {name:'experimental with specimen',experimental:true,specimen:true,kg:6.48},
+  {name:'experimental with specimen',experimental:true,specimen:true,kg:6.543},
   {name:'ordinary production retains allowance',experimental:false,specimen:true,kg:6.543},
 ]) {
   test(`${scenario.name}: order → warehouse → actual powder consumption → molding`, async () => {
@@ -53,10 +53,7 @@ for (const scenario of [
       await check(container.querySelector('[aria-label="실험용 생산"]'), true);
       if (scenario.specimen) {
         await check(container.querySelector('[aria-label="수축률 시편 포함"]'), true);
-        // Missing specimen powder must not create a zero-powder specimen order.
-        await act(async () => Simulate.submit(container.querySelector('form')));
-        expect(values('orderList')).toHaveLength(0);
-        await change(container.querySelector('[aria-label="시편 추가 분말"]'), '200');
+        expect(container.querySelector('[aria-label="시편 추가 분말"]')).toBeNull();
       }
     }
     expect(container.querySelector('[data-testid="order-bom"]').textContent).toContain(scenario.kg.toFixed(3)+'kg');
@@ -112,13 +109,12 @@ for (const scenario of [
   });
 }
 
-test('experimental release caps each lot at ten; unchecked specimen ignores a previously entered amount', async () => {
+test('experimental release caps each lot at ten; unchecked specimen removes all allowances', async () => {
   await render(); await click(node(container, '발주 관리')); await click(node(container, '345 BL0'));
   await change(container.querySelector('form').querySelectorAll('input[type="number"]')[1], '20');
   await check(container.querySelector('[aria-label="실험용 생산"]'), true);
   await check(container.querySelector('[aria-label="수축률 시편 포함"]'), true);
-  await change(container.querySelector('[aria-label="시편 추가 분말"]'), '200');
-  expect(container.querySelector('[data-testid="order-bom"]').textContent).toContain('12.960kg');
+  expect(container.querySelector('[data-testid="order-bom"]').textContent).toContain('12.886kg');
   await check(container.querySelector('[aria-label="수축률 시편 포함"]'), false);
   expect(container.querySelector('[data-testid="order-bom"]').textContent).toContain('12.560kg');
   await act(async () => Simulate.submit(container.querySelector('form')));
@@ -204,15 +200,41 @@ test('lab loads ten pieces, rejects eleven and fractional input and rejects a la
 });
 
 
-test('partial experimental mixing reserves specimen powder before computing producible pieces', async () => {
-  await setDoc(ref('wipList/partial-mix'),{id:'partial-mix',mixLot:'PARTIAL-TEST',qty:10,singleWeight:628,weight:'6.480',type:'345 BL0',height:'25',
+test('partial experimental mixing reserves both specimen powder and the one-percent allowance', async () => {
+  await setDoc(ref('wipList/partial-mix'),{id:'partial-mix',mixLot:'PARTIAL-TEST',qty:10,singleWeight:628,weight:'6.543',type:'345 BL0',height:'25',
     currentStep:'step2',isExperimental:true,includeShrinkageSpecimen:true,specimenPowderG:200});
   await render(); await click(node(container,'혼합'));
   await click(node(container,'원료 부족 부분 배합 (추가 생산 자동 반영)'));
   await change(container.querySelector('select'),'demo-4Y-W');
-  await change(container.querySelector('[placeholder="예: 300"]'),'1310');
+  await change(container.querySelector('[placeholder="예: 300"]'),'1460');
   expect(node(container,'실제 생산 진행 수량','div').parentElement.textContent).toContain('1 EA');
   await change(container.querySelector('[placeholder="작업자 성명"]'),'혼합 담당');
   await click(node(container,'배합 완료 및 재고 차감'));
-  expect(stored()[ROOT+'wipList/partial-mix']).toMatchObject({currentStep:'step3',qty:1,weight:'1.310',includeShrinkageSpecimen:true,specimenPowderG:200});
+  expect(stored()[ROOT+'wipList/partial-mix']).toMatchObject({currentStep:'step3',qty:1,weight:'1.460',includeShrinkageSpecimen:true,specimenPowderG:200});
+});
+
+
+test('reported 650g × 4 screenshot: included-specimen BOM equals ordinary production for every material', async () => {
+  await render(); await click(node(container,'발주 관리')); await click(node(container,'234 BL2'));
+  const inputs=container.querySelector('form').querySelectorAll('input[type="number"]');
+  await change(inputs[0],'650'); await change(inputs[1],'4');
+  const bom=()=>container.querySelector('[data-testid="order-bom"]');
+  const rows=()=>[...bom().querySelectorAll('.flex-1')].map(n=>n.textContent);
+  const ordinary=rows();
+  expect(ordinary).toEqual(['4Y-W-S2.703kg','4Y-Y0.110kg','5E-P0.013kg']);
+  await check(container.querySelector('[aria-label="실험용 생산"]'),true);
+  await check(container.querySelector('[aria-label="수축률 시편 포함"]'),true);
+  expect(rows()).toEqual(ordinary);
+  expect(container.querySelector('[aria-label="시편 추가 분말"]')).toBeNull();
+  await act(async()=>Simulate.submit(container.querySelector('form')));
+  const order=values('orderList')[0];
+  expect(Object.values(order.reqBOM).reduce((a,b)=>a+b,0)).toBeCloseTo(2.826,9);
+  await change(container.querySelector('[placeholder="수량"]'),'4');
+  await click(node(container,'공정 투입')); await click(node(container,'확인'));
+  const wip=values('wipList').find(w=>w.orderId===order.id);
+  await click(node(container,'원재료 창고'));
+  expect(container.textContent).toContain('합계: 2.826 kg');
+  for (const kg of ['2.703kg','0.110kg','0.013kg']) expect(container.textContent).toContain(kg);
+  await change(container.querySelector('[placeholder="작업자"]'),'소재 담당'); await click(node(container,'배합실 이관'));
+  expect(stored()[ROOT+'wipList/'+wip.id].weight).toBe('2.826');
 });
