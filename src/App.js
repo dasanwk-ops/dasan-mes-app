@@ -702,7 +702,7 @@ const DEFAULT_MASTER_SETTINGS = {
     "234 B1":  { "4Y-W": 0.0, "4Y-W-S": 0.9004, "4Y-Y": 0.0920, "5E-P": 0.0076, "4Y-G": 0.0 },
   },
   TARGET_PRESSURE: { step3: "70", step4A: "250", step4B: "250" },
-  TARGET_TEMPERATURE: { furnace1: "1050", furnace2: "1050" },
+  TARGET_TEMPERATURE: { furnace1: "1050", furnace2: "1050", furnacelab: "1050" },
   SAFETY_THRESHOLD: { "4Y-W": "50", "4Y-W-S": "50", "4Y-Y": "50", "5E-P": "50", "4Y-G": "50" }
 };
 
@@ -787,9 +787,25 @@ const PROCESS_STEPS = [
   { id: "tracking", name: "로트 이력 추적", icon: Search },
 ];
 
+const HEAT_FURNACE_IDS = [1, 2, "lab"];
+const STANDARD_FURNACE_SLOTS = [
+    { id: "L6", label: "좌측 6층" }, { id: "R6", label: "우측 6층" },
+    { id: "L5", label: "좌측 5층" }, { id: "R5", label: "우측 5층" },
+    { id: "L4", label: "좌측 4층" }, { id: "R4", label: "우측 4층" },
+    { id: "L3", label: "좌측 3층" }, { id: "R3", label: "우측 3층" },
+    { id: "L2", label: "좌측 2층" }, { id: "R2", label: "우측 2층" },
+    { id: "L1", label: "좌측 1층" }, { id: "R1", label: "우측 1층" }
+  ];
+const getFurnaceLabel = fid => String(fid) === "lab" ? "실험로" : `${fid}호기`;
+const getFurnaceSlots = fid => String(fid) === "lab"
+  ? [{ id: "SINGLE", label: "단일 공간" }] : STANDARD_FURNACE_SLOTS;
+const getFurnaceSlotLabel = slotId => slotId === "SINGLE" ? "단일 공간"
+  : STANDARD_FURNACE_SLOTS.find(slot => slot.id === slotId)?.label || slotId;
+
 const DEFAULT_FURNACES = {
   1: { isHeating: false, temp: "1050", operator: "", memo: "", slotData: {} },
   2: { isHeating: false, temp: "1050", operator: "", memo: "", slotData: {} },
+  lab: { isHeating: false, temp: "1050", operator: "", memo: "", slotData: {} },
   3: { isHeating: false },
   4: { isHeating: false },
 };
@@ -3267,26 +3283,11 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
   const [alertModal, setAlertModal] = useState({ isOpen: false, message: "", type: "info" });
   const [promptData, setPromptData] = useState({ isOpen: false, message: "", max: 0, val: "", fid: null, slotId: null });
 
-  const slots = [
-    { id: "L6", label: "좌측 6층" }, { id: "R6", label: "우측 6층" },
-    { id: "L5", label: "좌측 5층" }, { id: "R5", label: "우측 5층" },
-    { id: "L4", label: "좌측 4층" }, { id: "R4", label: "우측 4층" },
-    { id: "L3", label: "좌측 3층" }, { id: "R3", label: "우측 3층" },
-    { id: "L2", label: "좌측 2층" }, { id: "R2", label: "우측 2층" },
-    { id: "L1", label: "좌측 1층" }, { id: "R1", label: "우측 1층" }
-  ];
-
-  const getFurnaceSlotLabel = (slotId) => {
-  return (
-    slots.find((slot) => slot.id === slotId)?.label ||
-    slotId
-  );
-};
   const getRemainingQty = (wipId) => {
     const w = wipList.find(i => i.id === wipId);
     if (!w) return 0;
     let used = 0;
-    [1, 2].forEach(fid => {
+    HEAT_FURNACE_IDS.forEach(fid => {
       const f = furnaces[fid] || {};
       Object.values(f.slotData || {}).forEach(s => { if (s.wipId === wipId) used += Number(s.qty); });
     });
@@ -3313,8 +3314,8 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
       return;
     }
     
-    const defaultQty = Math.min(28, remain);
-    setPromptData({ isOpen: true, message: `[${slotId}] 칸에 배정할 수량을 입력하세요. (최대 ${remain}개 가능)`, max: remain, val: defaultQty.toString(), fid: fid, slotId: slotId });
+    const defaultQty = String(fid) === "lab" ? remain : Math.min(28, remain);
+    setPromptData({ isOpen: true, message: `[${getFurnaceLabel(fid)} · ${getFurnaceSlotLabel(slotId)}] 배정할 수량을 입력하세요. (최대 ${remain}개 가능)`, max: remain, val: defaultQty.toString(), fid: fid, slotId: slotId });
   };
 
   const confirmPrompt = async () => {
@@ -3443,7 +3444,7 @@ for (const wId of Object.keys(grouped)) {
     const slotSummary = enrichedSlots
       .map(
         (slot) =>
-          `${slot.furnaceId}호기 ${slot.slotLabel}(${slot.qty}EA)`
+          `${getFurnaceLabel(slot.furnaceId)} ${slot.slotLabel}(${slot.qty}EA)`
       )
       .join(", ");
 
@@ -3566,7 +3567,7 @@ for (const wId of Object.keys(grouped)) {
         const heatProcessLogs = Object.entries(grouped).map(([wId, info]) => {
           const originalWip = wipList.find(w => w.id === wId) || {};
           return { wip: { ...originalWip, qty: info.qty }, operator: f.operator || "현장작업자",
-            slotSummary: info.furnaceSlots.map(slot => `${slot.fid}호기 ${getFurnaceSlotLabel(slot.slotId)}(${slot.qty}EA)`).join(", ") };
+            slotSummary: info.furnaceSlots.map(slot => `${getFurnaceLabel(slot.fid)} ${getFurnaceSlotLabel(slot.slotId)}(${slot.qty}EA)`).join(", ") };
         });
         await Promise.all(
           heatProcessLogs.map((item) =>
@@ -3576,7 +3577,7 @@ for (const wId of Object.keys(grouped)) {
               item.operator,
               {
   equipment:
-    `${fid}호기`,
+    `${getFurnaceLabel(fid)}`,
 
   conditions:
     `온도:${f.temp || "1050"}°C | ` +
@@ -3604,59 +3605,24 @@ for (const wId of Object.keys(grouped)) {
     }
   };
 
-  return (
-    <div className="min-h-screen bg-slate-50 p-4 sm:p-6 font-sans">
-      <div className="max-w-[1500px] mx-auto">
-        <div className="bg-white rounded-2xl shadow-lg border-b-4 border-orange-500 mb-6 overflow-hidden flex items-center p-5">
-          <Flame className="w-8 h-8 text-orange-500 mr-3" />
-          <h1 className="font-black text-2xl text-slate-800 tracking-wide">열처리 전기로 가동 관리</h1>
-        </div>
-        <div className="flex flex-col xl:flex-row gap-6">
-          
-          {/* ======================= 왼쪽: 대기열 ======================= */}
-          <div className="w-full xl:w-1/4 flex flex-col gap-6">
-            <div className="bg-white border rounded-2xl overflow-hidden h-fit shadow-lg">
-              <div className="bg-slate-700 text-white font-bold p-4 text-center flex items-center justify-center gap-2">
-                <BoxSelect className="w-5 h-5" /> 대기열 (클릭 선택)
-              </div>
-              <div className="p-4 space-y-3 bg-slate-50 max-h-[70vh] overflow-y-auto">
-                {wipList.filter(w => w.currentStep === "step5").map(wip => {
-                  const remain = getRemainingQty(wip.id);
-                  if (remain <= 0) return null;
-                  const isSel = selectedWipId === wip.id;
-                  return (
-                    <div key={wip.id} onClick={() => setSelectedWipId(wip.id)} className={`p-4 border-2 rounded-xl cursor-pointer transition-all ${isSel ? 'bg-indigo-50 border-indigo-500 shadow-md transform scale-[1.02]' : 'bg-white hover:border-slate-300'}`}>
-                      <div className="text-xs text-slate-500 font-mono mb-1 bg-slate-100 inline-block px-2 py-0.5 rounded">{wip.mixLot}</div>
-                      <div className="font-black text-slate-800 text-lg mt-1">{getProductLabel(wip.type)} <span className="text-slate-500">{wip.height}T</span></div>
-                      <div className="text-sm font-bold text-indigo-600 mt-2">잔여 수량: {remain}개</div>
-                    </div>
-                  );
-                })}
-                {wipList.filter(w => w.currentStep === "step5" && getRemainingQty(w.id) > 0).length === 0 && (
-                  <div className="text-center text-slate-500 py-6 font-bold text-sm bg-white rounded-xl border border-dashed">대기 중인 제품이 없습니다.</div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* ======================= 오른쪽: 전기로 패널 ======================= */}
-          <div className="w-full xl:w-3/4 grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {[1, 2].map(id => {
+  const renderFurnace = id => {
+              const compact = id === "lab";
+              const slots = getFurnaceSlots(id);
               const f = furnaces[id] || {};
               const isH = f.isHeating;
               const hasData = Object.keys(f.slotData || {}).length > 0;
               
               let cardStyle = isH ? "border-orange-500 shadow-orange-200 shadow-xl bg-orange-50/30" : "border-slate-300 bg-white shadow-md"; 
               let headerStyle = isH ? "bg-orange-500 text-white animate-pulse" : "bg-slate-500 text-white"; 
-              let headerText = isH ? `🔥 ${id}호기 열처리 가동 중` : `🧊 ${id}호기 배정 대기`; 
+              let headerText = isH ? `🔥 ${getFurnaceLabel(id)} 열처리 가동 중` : `🧊 ${getFurnaceLabel(id)} 배정 대기`;
 
               return (
-                <div key={id} className={`flex flex-col border-4 rounded-2xl overflow-hidden transition-all duration-300 ${cardStyle}`}>
-                  <div className={`p-4 text-center font-black text-xl flex justify-center items-center ${headerStyle}`}>{headerText}</div>
-                  <div className="flex flex-col flex-grow p-4 sm:p-5">
+                <div key={id} data-testid={`furnace-${id}`} className={`flex flex-col border-4 rounded-2xl overflow-hidden transition-all duration-300 ${cardStyle}`}>
+                  <div className={`${compact ? "p-3 text-lg" : "p-4 text-xl"} text-center font-black flex justify-center items-center ${headerStyle}`}>{headerText}</div>
+                  <div className={compact ? "flex flex-col p-3" : "flex flex-col flex-grow p-4 sm:p-5"}>
                     {!isH && <div className="text-center font-bold mb-4 text-sm py-2.5 rounded-lg border shadow-sm text-indigo-800 bg-indigo-50 border-indigo-200">빈칸을 클릭하여 제품을 배정하세요.</div>}
                     
-                    <div className={`grid grid-cols-2 gap-2 sm:gap-3 p-3 sm:p-4 rounded-xl border-4 mb-auto ${hasData ? 'bg-slate-100 border-slate-300' : 'bg-slate-200 border-slate-300'}`}>
+                    <div className={`grid ${compact ? "grid-cols-1" : "grid-cols-2"} gap-2 sm:gap-3 p-3 sm:p-4 rounded-xl border-4 mb-auto ${hasData ? 'bg-slate-100 border-slate-300' : 'bg-slate-200 border-slate-300'}`}>
                       {slots.map(slot => {
                         const sData = f.slotData?.[slot.id];
                         const isEmpty = !sData;
@@ -3700,14 +3666,54 @@ for (const wId of Object.keys(grouped)) {
                         </div>
                       )}
 
-                      <button onClick={() => toggleHeating(id)} className={`w-full py-4 rounded-xl font-black text-lg shadow-md text-white transition-transform active:scale-95 ${isH ? 'bg-rose-500 hover:bg-rose-600 animate-pulse' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
-                        {isH ? "가동 종료 (측정 대기로 이관)" : "전기로 가동 시작"}
+                      <button onClick={() => toggleHeating(id)} className={`w-full ${compact ? "py-3 text-sm" : "py-4 text-lg"} rounded-xl font-black shadow-md text-white transition-transform active:scale-95 ${isH ? 'bg-rose-500 hover:bg-rose-600 animate-pulse' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
+                        {isH ? (compact ? "실험로 완료 · 측정 이관" : "가동 종료 (측정 대기로 이관)") : (compact ? "실험로 가동 시작" : "전기로 가동 시작")}
                       </button>
                     </div>
                   </div>
                 </div>
               );
-            })}
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 p-4 sm:p-6 font-sans">
+      <div className="max-w-[1500px] mx-auto">
+        <div className="bg-white rounded-2xl shadow-lg border-b-4 border-orange-500 mb-6 overflow-hidden flex items-center p-5">
+          <Flame className="w-8 h-8 text-orange-500 mr-3" />
+          <h1 className="font-black text-2xl text-slate-800 tracking-wide">열처리 전기로 가동 관리</h1>
+        </div>
+        <div className="flex flex-col xl:flex-row gap-6">
+
+          {/* ======================= 왼쪽: 대기열 ======================= */}
+          <div className="w-full xl:w-1/4 grid grid-cols-1 md:grid-cols-2 xl:flex xl:flex-col gap-6 self-start">
+            <div className="bg-white border rounded-2xl overflow-hidden h-fit shadow-lg">
+              <div className="bg-slate-700 text-white font-bold p-4 text-center flex items-center justify-center gap-2">
+                <BoxSelect className="w-5 h-5" /> 대기열 (클릭 선택)
+              </div>
+              <div className="p-4 space-y-3 bg-slate-50 max-h-[70vh] overflow-y-auto">
+                {wipList.filter(w => w.currentStep === "step5").map(wip => {
+                  const remain = getRemainingQty(wip.id);
+                  if (remain <= 0) return null;
+                  const isSel = selectedWipId === wip.id;
+                  return (
+                    <div key={wip.id} onClick={() => setSelectedWipId(wip.id)} className={`p-4 border-2 rounded-xl cursor-pointer transition-all ${isSel ? 'bg-indigo-50 border-indigo-500 shadow-md transform scale-[1.02]' : 'bg-white hover:border-slate-300'}`}>
+                      <div className="text-xs text-slate-500 font-mono mb-1 bg-slate-100 inline-block px-2 py-0.5 rounded">{wip.mixLot}</div>
+                      <div className="font-black text-slate-800 text-lg mt-1">{getProductLabel(wip.type)} <span className="text-slate-500">{wip.height}T</span></div>
+                      <div className="text-sm font-bold text-indigo-600 mt-2">잔여 수량: {remain}개</div>
+                    </div>
+                  );
+                })}
+                {wipList.filter(w => w.currentStep === "step5" && getRemainingQty(w.id) > 0).length === 0 && (
+                  <div className="text-center text-slate-500 py-6 font-bold text-sm bg-white rounded-xl border border-dashed">대기 중인 제품이 없습니다.</div>
+                )}
+              </div>
+            </div>
+            {renderFurnace("lab")}
+          </div>
+
+          {/* ======================= 오른쪽: 전기로 패널 ======================= */}
+          <div className="w-full xl:w-3/4 grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {[1, 2].map(renderFurnace)}
           </div>
         </div>
       </div>
@@ -3763,7 +3769,8 @@ function Step5_5Shrinkage({ wipList, ctx }) {
 
   const [shrinkDesks, setShrinkDesks] = useState({
     1: { step: 0, operator: "", memo: "", slotData: {} },
-    2: { step: 0, operator: "", memo: "", slotData: {} }
+    2: { step: 0, operator: "", memo: "", slotData: {} },
+    lab: { step: 0, operator: "", memo: "", slotData: {} }
   });
   const shrinkDesksRef = useRef(shrinkDesks);
 
@@ -3781,7 +3788,7 @@ function Step5_5Shrinkage({ wipList, ctx }) {
       const data = snap.exists() ? snap.data() : {};
       serverDesks.current = data;
       const next = {};
-      [1, 2].forEach(fid => {
+      HEAT_FURNACE_IDS.forEach(fid => {
         next[fid] = dirty.current[fid] ? shrinkDesksRef.current[fid] : { ...emptyDesk(), ...data[fid] };
       });
       shrinkDesksRef.current = next;
@@ -3979,8 +3986,8 @@ function Step5_5Shrinkage({ wipList, ctx }) {
       if (Object.values(all).some(d => [d, ...(d.queue || [])].some(b => Object.values(b.slotData || {}).some(s => s.wipId === wipId)))) throw new Error("이미 측정 작업에 등록되어 있습니다.");
       const positions = w.furnaceSlots || [];
       const fid = positions[0]?.furnaceId ?? positions[0]?.fid;
-      const validSlots = new Set(["L1","R1","L2","R2","L3","R3","L4","R4","L5","R5","L6","R6"]);
-      if (!positions.length || !["1", "2"].includes(String(fid)) ||
+      const validSlots = new Set(getFurnaceSlots(fid).map(slot => slot.id));
+      if (!positions.length || !HEAT_FURNACE_IDS.map(String).includes(String(fid)) ||
           positions.some(p => String(p.furnaceId ?? p.fid) !== String(fid) || !validSlots.has(p.slotId) || !(Number(p.qty) > 0)) ||
           new Set(positions.map(p => p.slotId)).size !== positions.length ||
           positions.reduce((n,p) => n + Number(p.qty),0) !== Number(w.qty)) {
@@ -3999,14 +4006,7 @@ function Step5_5Shrinkage({ wipList, ctx }) {
   const [alertModal, setAlertModal] = useState({ isOpen: false, message: "", type: "info" });
   const [lotSplitModal, setLotSplitModal] = useState({ isOpen: false, fid: null, lotsToSplit: [], lotsToMerge: [], newSlotDataCache: null });
 
-  const slots = [
-    { id: "L6", label: "좌측 6층" }, { id: "R6", label: "우측 6층" },
-    { id: "L5", label: "좌측 5층" }, { id: "R5", label: "우측 5층" },
-    { id: "L4", label: "좌측 4층" }, { id: "R4", label: "우측 4층" },
-    { id: "L3", label: "좌측 3층" }, { id: "R3", label: "우측 3층" },
-    { id: "L2", label: "좌측 2층" }, { id: "R2", label: "우측 2층" },
-    { id: "L1", label: "좌측 1층" }, { id: "R1", label: "우측 1층" }
-  ];
+
   const buildSpecimenMeasurementText = (
   fid,
   slotIds,
@@ -4019,11 +4019,11 @@ function Step5_5Shrinkage({ wipList, ctx }) {
       if (!targetSlot) return [];
 
       const slotLabel =
-        slots.find((s) => s.id === sId)?.label || sId;
+        getFurnaceSlotLabel(sId);
 
       return (targetSlot.measurements || []).map(
         (m, idx) =>
-          `${fid}호기/${slotLabel}/시편${idx + 1}` +
+          `${getFurnaceLabel(fid)}/${slotLabel}/시편${idx + 1}` +
           `/위치:${m.position || "-"}` +
           `/소결전:${m.preArea || "-"}` +
           `/소결후:${m.postArea || "-"}` +
@@ -4292,7 +4292,7 @@ if (hasIncompleteMeasurement) {
           const newId =
             Date.now().toString() + Math.random().toString(36).substr(2, 5);
           const slotKeysStr = m.slots
-            .map((s) => `${fid}호기 ${s.sId}`)
+            .map((s) => `${getFurnaceLabel(fid)} ${getFurnaceSlotLabel(s.sId)}`)
             .join(", ");
           const totalQty = m.slots.reduce(
             (sum, s) => sum + (Number(s.qty) || 0),
@@ -4357,7 +4357,7 @@ nextProcessLogs.push({
             const suffix = Object.keys(groupMap).length > 1 ? `-${gName}` : "";
             const newMixLot = `${orig.mixLot || ""}${suffix}`;
             const slotKeysStr = sArr
-              .map((s) => `${fid}호기 ${s.sId}`)
+              .map((s) => `${getFurnaceLabel(fid)} ${getFurnaceSlotLabel(s.sId)}`)
               .join(", ");
             const totalQty = sArr.reduce(
               (sum, s) => sum + (Number(s.qty) || 0),
@@ -4486,7 +4486,8 @@ nextProcessLogs.push({
         <div className="mb-4 text-sm">측정대에 없는 대기 로트: {pendingWip.filter(w => !Object.values(shrinkDesks).some(d => [d, ...(d.queue || [])].some(b => Object.values(b.slotData || {}).some(s => s.wipId === w.id)))).map(w => `${w.mixLot} (${w.qty}개)`).join(", ") || "없음"}. 누락 로트는 실측 기록과 열처리 위치 확인 후 복구가 필요합니다.</div>
         <div className="mb-4 flex flex-wrap gap-2">{pendingWip.filter(w => !Object.values(shrinkDesks).some(d => [d, ...(d.queue || [])].some(b => Object.values(b.slotData || {}).some(s => s.wipId === w.id)))).map(w => <button disabled={busy || !loaded || lotSplitModal.isOpen} key={w.id} onClick={() => recoverOrphan(w.id)} className="border rounded p-2 bg-white text-sm">{w.mixLot} 누락 작업 등록 (면적 재입력)</button>)}</div>
         <fieldset disabled={busy || !loaded || lotSplitModal.isOpen} className="grid grid-cols-1 gap-8">
-          {[1, 2].map(id => {
+          {HEAT_FURNACE_IDS.map(id => {
+            const slots = getFurnaceSlots(id);
             const d = shrinkDesks[id] || { step: 0, slotData: {} };
             const hasData = Object.keys(d.slotData).length > 0;
             const isStep1 = d.step === 1; // 소결 전
@@ -4494,25 +4495,25 @@ nextProcessLogs.push({
             
             let cardStyle = "border-slate-300 bg-slate-50 opacity-70";
             let headerStyle = "bg-slate-500 text-white";
-            let headerText = `🔒 ${id}호기 (측정 대상 없음)`;
+            let headerText = `🔒 ${getFurnaceLabel(id)} (측정 대상 없음)`;
             let phaseMessage = "전기로 가동이 완료되면 이곳으로 제품이 이관됩니다.";
 
             if (hasData) {
               if (isStep1) {
                 cardStyle = "border-indigo-400 shadow-indigo-100 shadow-xl bg-white";
                 headerStyle = "bg-indigo-600 text-white";
-                headerText = `📝 ${id}호기 : 소결 전 면적 입력 중`;
+                headerText = `📝 ${getFurnaceLabel(id)} : 소결 전 면적 입력 중`;
                 phaseMessage = "👉 소결 공정 시작 전, 각 칸의 '소결 전 면적'을 입력하고 저장하세요.";
               } else if (isStep2) {
                 cardStyle = "border-orange-400 shadow-orange-100 shadow-xl bg-orange-50/30";
                 headerStyle = "bg-orange-500 text-white";
-                headerText = `⏳ ${id}호기 : 소결 후 면적 입력 대기`;
+                headerText = `⏳ ${getFurnaceLabel(id)} : 소결 후 면적 입력 대기`;
                 phaseMessage = "👉 소결이 완료되었습니다! '소결 후 면적'을 입력하면 수축률/확대율이 계산됩니다.";
               }
             }
 
             return (
-              <div key={`${id}-${d.batchId || "legacy"}`} className={`flex flex-col border-4 rounded-2xl overflow-hidden transition-all duration-300 ${cardStyle}`}>
+              <div data-testid={`shrink-${id}`} key={`${id}-${d.batchId || "legacy"}`} className={`flex flex-col border-4 rounded-2xl overflow-hidden transition-all duration-300 ${cardStyle}`}>
                 <div className={`p-4 text-center font-black text-xl flex justify-center items-center ${headerStyle}`}>
                   {headerText}
                 </div>
@@ -4523,7 +4524,7 @@ nextProcessLogs.push({
                   {Boolean(d.stageIssues?.length) && <div className="border border-amber-300 rounded p-3 bg-amber-50 text-amber-900">
                     <div className="font-bold">입력값 저장됨 · 공정 확인 필요 {d.stageIssues.length}개</div>
                     <div className="mt-1">아래 슬롯은 최종 이관 전에 실물 LOT와 대조하세요. 혼재 데이터 분리는 원본과 입력 면적을 백업하고 해당 슬롯을 측정대에서 제외합니다.</div>
-                    {d.stageIssues.map(issue => <div key={issue.slotId} className="mt-2 font-bold">{id}호기 {slots.find(s => s.id === issue.slotId)?.label || issue.slotId} · {issue.mixLot || "LOT 미지정"} · {issue.reason}</div>)}
+                    {d.stageIssues.map(issue => <div key={issue.slotId} className="mt-2 font-bold">{getFurnaceLabel(id)} {slots.find(s => s.id === issue.slotId)?.label || issue.slotId} · {issue.mixLot || "LOT 미지정"} · {issue.reason}</div>)}
                   </div>}
                   <button onClick={() => isolateStale(id)} className="border rounded p-2 text-red-700">혼재 데이터 분리 (원본 백업)</button>
                   {hasData && <button onClick={() => guarded(() => saveDesk(id))} className="border rounded p-2 ml-2 text-blue-700">입력 저장</button>}
@@ -4533,7 +4534,7 @@ nextProcessLogs.push({
                   {hasData && <div className={`text-center font-bold mb-4 text-sm py-2.5 rounded-lg border shadow-sm ${isStep1 ? 'text-indigo-800 bg-indigo-50 border-indigo-200' : 'text-orange-800 bg-orange-50 border-orange-200'}`}>{phaseMessage}</div>}
                   
                   {/* 12칸 그리드 (기존 레이아웃 복원 & 불량 칸 제거) */}
-                  <div className={`grid grid-cols-2 gap-2 sm:gap-3 p-3 sm:p-4 rounded-xl border-4 mb-auto ${hasData ? 'bg-slate-100 border-slate-300' : 'bg-slate-200 border-slate-300'}`}>
+                  <div className={`grid ${id === "lab" ? "grid-cols-1 max-w-2xl w-full" : "grid-cols-2"} gap-2 sm:gap-3 p-3 sm:p-4 rounded-xl border-4 mb-auto ${hasData ? 'bg-slate-100 border-slate-300' : 'bg-slate-200 border-slate-300'}`}>
                     {slots.map(slot => {
                       const sData = d.slotData[slot.id];
                       const isEmpty = !sData;
@@ -4542,7 +4543,7 @@ nextProcessLogs.push({
                         return (
                           <div key={slot.id} className="border-2 border-dashed border-slate-300 rounded-xl p-2 min-h-[60px] flex items-center justify-center bg-white/50">
                            <span className="text-xs text-slate-400 font-bold">
-  {id}호기 · {slot.label} (비어있음)
+  {getFurnaceLabel(id)} · {slot.label} (비어있음)
 </span>
                           </div>
                         );
@@ -4557,7 +4558,7 @@ nextProcessLogs.push({
                          <div className="flex justify-between items-center mb-3">
   <div className="flex items-center gap-2">
     <span className="px-2 py-1 rounded text-xs font-black bg-slate-800 text-white">
-      {id}호기
+      {getFurnaceLabel(id)}
     </span>
 
     <span className={`px-2 py-1 rounded text-xs font-black ${titleBg}`}>
@@ -4749,11 +4750,11 @@ nextProcessLogs.push({
                   <h4 className="font-black text-rose-800 mb-3 border-b border-rose-200 pb-2">품번: {lot.baseMixLot}</h4>
                   <div className="flex flex-col gap-2">
                     {lot.slots?.map((s, sIdx) => {
-                      const slotLabel = slots.find(sl => sl.id === s.sId)?.label || s.sId;
+                      const slotLabel = getFurnaceSlotLabel(s.sId);
                       return (
                         <div key={sIdx} className="flex justify-between items-center bg-white p-3 rounded-lg border border-rose-100 shadow-sm">
                           <div className="flex items-center gap-3">
-                            <span className="font-black text-slate-700 bg-white border border-slate-300 px-2 py-1 rounded text-xs">{lotSplitModal.fid}호기 {slotLabel}</span>
+                            <span className="font-black text-slate-700 bg-white border border-slate-300 px-2 py-1 rounded text-xs">{getFurnaceLabel(lotSplitModal.fid)} {slotLabel}</span>
                             <span className="text-sm font-bold text-slate-700">수축률: <span className="text-rose-600 text-lg">{s.shrinkVal}%</span></span>
                           </div>
                           <div className="flex items-center gap-2">
@@ -6288,6 +6289,7 @@ function Step10Settings({ masterSettings, ctx }) {
                       <div className="space-y-3">
                           <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border"><span className="font-black text-orange-700 w-28 flex items-center"><Flame className="w-4 h-4 mr-1"/> 1호기 온도</span><div className="relative"><input type="text" value={settings.TARGET_TEMPERATURE?.furnace1 || ""} onChange={(e) => handleTemperatureChange("furnace1", e.target.value)} className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-orange-500 outline-none pr-10" /><span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">°C</span></div></div>
                           <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border"><span className="font-black text-orange-700 w-28 flex items-center"><Flame className="w-4 h-4 mr-1"/> 2호기 온도</span><div className="relative"><input type="text" value={settings.TARGET_TEMPERATURE?.furnace2 || ""} onChange={(e) => handleTemperatureChange("furnace2", e.target.value)} className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-orange-500 outline-none pr-10" /><span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">°C</span></div></div>
+                          <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border"><span className="font-black text-orange-700 w-28 flex items-center"><Flame className="w-4 h-4 mr-1"/> 실험로 온도</span><div className="relative"><input type="text" value={settings.TARGET_TEMPERATURE?.furnacelab || ""} onChange={(e) => handleTemperatureChange("furnacelab", e.target.value)} className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-orange-500 outline-none pr-10" /><span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">°C</span></div></div>
                       </div>
                   </div>
 

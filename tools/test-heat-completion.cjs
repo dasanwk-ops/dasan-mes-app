@@ -13,8 +13,8 @@ function section(start, end) {
   assert.ok(from >= 0 && to > from, `Missing source section: ${start}`);
   return source.slice(from, to);
 }
-const stateCode = section('const DEFAULT_FURNACES =', 'const DEFAULT_DRYING_ROOM =');
-const handlerCode = section('  const toggleHeating = async (fid) => {', '\n  return (');
+const stateCode = section('const HEAT_FURNACE_IDS =', 'const DEFAULT_DRYING_ROOM =');
+const handlerCode = section('  const toggleHeating = async (fid) => {', '\n  const renderFurnace =');
 const clone = value => JSON.parse(JSON.stringify(value));
 const sorted = value => Array.isArray(value) ? value.map(sorted)
   : value && typeof value === 'object'
@@ -29,10 +29,10 @@ const baseFurnace = () => sorted({
   },
 });
 
-function setup({ live = baseFurnace(), screen = live, wip, desks = {}, legacy = false } = {}) {
+function setup({ live = baseFurnace(), screen = live, wip, desks = {}, legacy = false, fid = "1" } = {}) {
   const otherFurnace = { isHeating: true, memo: 'Keep other furnace', slotData: {} };
   let data = {
-    'equipment/furnaces': { 1: clone(live), 2: clone(otherFurnace) },
+    'equipment/furnaces': { [fid]: clone(live), 2: clone(otherFurnace) },
     'equipment/shrinkDesks': clone(desks),
   };
   if (wip !== null) data['wipList/w1'] = wip || {
@@ -75,13 +75,14 @@ function setup({ live = baseFurnace(), screen = live, wip, desks = {}, legacy = 
   });
   vm.runInContext(stateCode, context);
   context.screen = clone(screen);
-  vm.runInContext('furnaces[1] = { ...DEFAULT_FURNACES[1], ...screen };', context);
+  context.fid = fid;
+  vm.runInContext('furnaces[fid] = { ...DEFAULT_FURNACES[fid], ...screen };', context);
   const handler = legacy ? handlerCode.replace(
     'getFurnaceComparisonKey(fid, liveFurnace) !== getFurnaceComparisonKey(fid, f)',
     'JSON.stringify(liveFurnace) !== JSON.stringify(f)'
   ) : handlerCode;
   vm.runInContext(`${handler}\nthis.complete = toggleHeating;`, context);
-  return { complete: () => context.complete('1'), alerts, logs,
+  return { complete: () => context.complete(fid), alerts, logs,
     data: () => clone(data), commits: () => commits, otherFurnace };
 }
 
@@ -179,3 +180,35 @@ for (const [label, wip] of Object.entries({
     assert.equal(h.logs.length, 0);
   });
 }
+
+
+test('lab single chamber preserves quantity/history and uses a separate measurement desk', async () => {
+  const live = baseFurnace();
+  live.slotData = { SINGLE: { ...live.slotData.L1, qty: 10 } };
+  const productionDesk = { batchId: 'production', step: 2, slotData: { L1: { wipId: 'other', qty: 28 } } };
+  const h = setup({ fid: 'lab', live, desks: { 1: productionDesk } });
+  await h.complete();
+  assert.equal(h.alerts.at(-1).type, 'success');
+  const data = h.data();
+  assert.deepEqual(data['equipment/shrinkDesks'][1], productionDesk);
+  assert.equal(data['equipment/shrinkDesks'].lab.slotData.SINGLE.qty, 10);
+  assert.deepEqual(Object.keys(data['equipment/shrinkDesks'].lab.slotData), ['SINGLE']);
+  assert.equal(data['wipList/w1'].qty, 10);
+  assert.equal(data['wipList/w1'].heatTreatmentHistory.length, 2);
+  assert.equal(data['wipList/w1'].heatTreatmentHistory[1].furnaceId, 'lab');
+  assert.match(data['wipList/w1'].details, /실험로 단일 공간/);
+  assert.equal(data['equipment/furnaces'].lab.isHeating, false);
+  assert.deepEqual(data['equipment/furnaces'][2], h.otherFurnace);
+  await h.complete();
+  assert.equal(h.commits(), 1);
+});
+
+test('lab assignments are deducted from the waiting quantity', () => {
+  const code = section('  const getRemainingQty =', '  const updateSlotData =');
+  const context = vm.createContext({
+    wipList: [{id:'w1',qty:12}],
+    furnaces: {1:{slotData:{L1:{wipId:'w1',qty:4}}},lab:{slotData:{SINGLE:{wipId:'w1',qty:6}}}},
+  });
+  vm.runInContext(stateCode + code + '; this.remaining = getRemainingQty("w1");',context);
+  assert.equal(context.remaining, 2);
+});
