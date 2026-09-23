@@ -1,0 +1,9 @@
+{
+  "headers": [{
+    "source": "/(.*)",
+    "headers": [
+      { "key": "Content-Security-Policy", "value": "connect-src 'none'; form-action 'none'; base-uri 'self'" },
+      { "key": "X-Robots-Tag", "value": "noindex, nofollow" }
+    ]
+  }]
+}
