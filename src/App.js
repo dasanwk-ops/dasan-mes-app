@@ -796,10 +796,18 @@ const getPowderWeightKg = (item, qty = item.qty) => {
 const getOrderPowderWeightKg = (item, qty = item.qty) => getPowderWeightKg(item, qty);
 const getExperimentalLabel = item => item.isExperimental
   ? `실험용 · 시편 ${includesShrinkageSpecimen(item) ? "포함 (일반 생산과 동일)" : "미포함"}` : "";
+const getPrintableShrinkage = item => {
+  if (item?.isExperimental === true && item?.shrinkageStatus === "not_measured") return "미측정";
+  const value = Number(item?.shrinkageRate);
+  return item?.shrinkageStatus !== "not_measured" && Number.isFinite(value) && value > 0 && value < 100 ? String(item.shrinkageRate) : null;
+};
+const isLabSlotId = id => id === "SINGLE" || String(id).startsWith("LAB_");
+const getLabLoadQty = slotData => Object.values(slotData || {}).reduce((sum, slot) => sum + Number(slot.qty), 0);
+const isUnmeasuredSlot = (fid, slot) => String(fid) === "lab" && slot.skipMeasurement === true;
 const validateLabSlots = slotData => {
   const slots = Object.entries(slotData || {});
-  if (slots.some(([id, slot]) => id !== "SINGLE" || !Number.isInteger(Number(slot.qty)) || Number(slot.qty) < 1) ||
-      slots.reduce((sum, [, slot]) => sum + Number(slot.qty), 0) > LAB_FURNACE_CAPACITY) {
+  if (slots.some(([id, slot]) => !isLabSlotId(id) || !slot.wipId || !Number.isInteger(Number(slot.qty)) || Number(slot.qty) < 1) ||
+      getLabLoadQty(slotData) > LAB_FURNACE_CAPACITY || new Set(slots.map(([, slot]) => slot.wipId)).size !== slots.length) {
     throw new Error(`실험로는 단일 공간에 최대 ${LAB_FURNACE_CAPACITY}개까지 배정할 수 있습니다.`);
   }
 };
@@ -812,9 +820,9 @@ const STANDARD_FURNACE_SLOTS = [
     { id: "L1", label: "좌측 1층" }, { id: "R1", label: "우측 1층" }
   ];
 const getFurnaceLabel = fid => String(fid) === "lab" ? "실험로" : `${fid}호기`;
-const getFurnaceSlots = fid => String(fid) === "lab"
-  ? [{ id: "SINGLE", label: "단일 공간" }] : STANDARD_FURNACE_SLOTS;
-const getFurnaceSlotLabel = slotId => slotId === "SINGLE" ? "단일 공간"
+const getFurnaceSlots = (fid, slotData = {}) => String(fid) === "lab"
+  ? (Object.keys(slotData).length ? Object.keys(slotData) : ["SINGLE"]).map(id => ({ id, label: "단일 공간" })) : STANDARD_FURNACE_SLOTS;
+const getFurnaceSlotLabel = slotId => isLabSlotId(slotId) ? "단일 공간"
   : STANDARD_FURNACE_SLOTS.find(slot => slot.id === slotId)?.label || slotId;
 
 const DEFAULT_FURNACES = {
@@ -2974,13 +2982,13 @@ const usedLotInfoStr = activeMaterials
             {!isShortageMode ? (
               <>
                 <div className="bg-slate-50 rounded-2xl p-6 border mb-8 flex justify-center gap-12">
-                  <div className="text-center"><Cylinder className="w-12 h-12 text-indigo-500 mb-3 mx-auto" /><div className="font-bold text-slate-600">15kg 꽉 찬 통</div><div className="text-3xl font-black text-indigo-700 mt-1">{fullBatches} 통</div></div>
-                  <div className="text-4xl font-black text-slate-300 mt-6">+</div>
-                  <div className={`text-center ${remainder > 0 ? "" : "opacity-30 grayscale"}`}><Cylinder className="w-12 h-12 text-orange-400 mb-3 mx-auto" /><div className="font-bold text-slate-600">나머지 미달 통</div><div className="text-3xl font-black text-orange-600 mt-1">{remainder > 0 ? 1 : 0} 통</div>{remainder > 0 && <div className="text-sm font-black text-orange-700 mt-2">{remainder.toFixed(3)} kg</div>}</div>
+                  {fullBatches > 0 && <div className="text-center"><Cylinder className="w-12 h-12 text-indigo-500 mb-3 mx-auto" /><div className="font-bold text-slate-600">15kg 꽉 찬 통</div><div className="text-3xl font-black text-indigo-700 mt-1">{fullBatches} 통</div></div>}
+                  {fullBatches > 0 && remainder > 0 && <div className="text-4xl font-black text-slate-300 mt-6">+</div>}
+                  {remainder > 0 && <div className="text-center"><Cylinder className="w-12 h-12 text-orange-400 mb-3 mx-auto" /><div className="font-bold text-slate-600">나머지 미달 통</div><div className="text-3xl font-black text-orange-600 mt-1">{remainder > 0 ? 1 : 0} 통</div>{remainder > 0 && <div className="text-sm font-black text-orange-700 mt-2">{remainder.toFixed(3)} kg</div>}</div>}
                 </div>
 
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-                  <div className="border-2 border-indigo-100 bg-indigo-50/40 rounded-2xl p-6 relative overflow-hidden shadow-sm">
+                <div data-testid="mix-container-plan" className={`grid grid-cols-1 ${fullBatches > 0 && remainder > 0 ? "lg:grid-cols-2" : ""} gap-8 mb-8`}>
+                  {fullBatches > 0 && <div className="border-2 border-indigo-100 bg-indigo-50/40 rounded-2xl p-6 relative overflow-hidden shadow-sm">
                     <div className="absolute top-0 left-0 w-2 h-full bg-indigo-500"></div>
                     <h4 className="text-xl font-black text-indigo-900 mb-5 flex items-center"><span className="bg-indigo-600 text-white w-8 h-8 rounded-full inline-flex items-center justify-center text-base mr-3 shadow-md">{fullBatches}</span> 15kg 통 1개당 투입량</h4>
                     <div className="space-y-3">
@@ -2988,9 +2996,9 @@ const usedLotInfoStr = activeMaterials
                         <div key={mat} className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-indigo-100"><span className="font-black text-slate-700 text-lg">{mat}</span><span className="font-black text-indigo-700 text-2xl">{(15 * ratio).toFixed(3)} <span className="text-sm text-slate-400">kg</span></span></div>
                       ) : null)}
                     </div>
-                  </div>
+                  </div>}
 
-                  {remainder > 0 ? (
+                  {remainder > 0 && (
                     <div className="border-2 border-orange-100 bg-orange-50/40 rounded-2xl p-6 relative overflow-hidden shadow-sm">
                       <div className="absolute top-0 left-0 w-2 h-full bg-orange-400"></div>
                       <h4 className="text-xl font-black text-orange-900 mb-5 flex items-center"><span className="bg-orange-500 text-white w-8 h-8 rounded-full inline-flex items-center justify-center text-base mr-3 shadow-md">1</span> 최종 미달 통 ({remainder.toFixed(3)}kg) 투입량</h4>
@@ -3000,7 +3008,7 @@ const usedLotInfoStr = activeMaterials
                         ) : null)}
                       </div>
                     </div>
-                  ) : <div className="border-2 border-dashed border-slate-200 bg-slate-50/80 rounded-2xl p-6 flex flex-col items-center justify-center text-slate-400 min-h-[250px]"><CheckCircle2 className="w-16 h-16 mb-3 opacity-30 text-indigo-500" /><div className="font-black text-lg text-slate-500">나머지 미달 통 없음</div></div>}
+                  )}
                 </div>
               </>
             ) : (
@@ -3376,7 +3384,15 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
       setAlertModal({ isOpen: true, message: "실험로는 최대 10개입니다. 10개 이하로 분할된 로트를 선택하세요.", type: "warning" });
       return;
     }
-    const maxQty = String(fid) === "lab" ? Math.min(LAB_FURNACE_CAPACITY, remain) : remain;
+    const available = LAB_FURNACE_CAPACITY - getLabLoadQty(f.slotData);
+    if (String(fid) === "lab") {
+      if (remain > available) {
+        setAlertModal({ isOpen: true, message: `실험로 잔여 용량은 ${available}개입니다. 선택한 로트 ${remain}개를 추가할 수 없습니다.`, type: "warning" });
+        return;
+      }
+      slotId = Object.keys(f.slotData || {}).length ? `LAB_${selectedWipId}` : "SINGLE";
+    }
+    const maxQty = String(fid) === "lab" ? Math.min(available, remain) : remain;
     const defaultQty = String(fid) === "lab" ? maxQty : Math.min(28, remain);
     setPromptData({ isOpen: true, message: `[${getFurnaceLabel(fid)} · ${getFurnaceSlotLabel(slotId)}] 배정할 수량을 입력하세요. (최대 ${maxQty}개 가능)`, max: maxQty, val: defaultQty.toString(), fid: fid, slotId: slotId });
   };
@@ -3706,8 +3722,8 @@ for (const wId of Object.keys(grouped)) {
 
   const renderFurnace = id => {
               const compact = id === "lab";
-              const slots = getFurnaceSlots(id);
               const f = furnaces[id] || {};
+              const slots = getFurnaceSlots(id, f.slotData);
               const isH = f.isHeating;
               const hasData = Object.keys(f.slotData || {}).length > 0;
               
@@ -3718,9 +3734,9 @@ for (const wId of Object.keys(grouped)) {
               return (
                 <div key={id} data-testid={`furnace-${id}`} className={`flex flex-col border-4 rounded-2xl overflow-hidden transition-all duration-300 ${cardStyle}`}>
                   <div className={`${compact ? "p-3 text-lg" : "p-4 text-xl"} text-center font-black flex justify-center items-center ${headerStyle}`}>{headerText}</div>
-                  {compact && <div className="text-center text-xs font-bold bg-amber-50 text-amber-900 p-2">단일 공간 · 최대 10개</div>}
+                  {compact && <div className="text-center text-xs font-bold bg-amber-50 text-amber-900 p-2">단일 공간 · 합계 {getLabLoadQty(f.slotData)} / 10개</div>}
                   <div className={compact ? "flex flex-col p-3" : "flex flex-col flex-grow p-4 sm:p-5"}>
-                    {!isH && <div className="text-center font-bold mb-4 text-sm py-2.5 rounded-lg border shadow-sm text-indigo-800 bg-indigo-50 border-indigo-200">빈칸을 클릭하여 제품을 배정하세요.</div>}
+                    {!isH && <div className="text-center font-bold mb-4 text-sm py-2.5 rounded-lg border shadow-sm text-indigo-800 bg-indigo-50 border-indigo-200">{compact ? "대기열에서 제품을 선택한 뒤 추가하세요." : "빈칸을 클릭하여 제품을 배정하세요."}</div>}
                     
                     <div className={`grid ${compact ? "grid-cols-1" : "grid-cols-2"} gap-2 sm:gap-3 p-3 sm:p-4 rounded-xl border-4 mb-auto ${hasData ? 'bg-slate-100 border-slate-300' : 'bg-slate-200 border-slate-300'}`}>
                       {slots.map(slot => {
@@ -3735,10 +3751,10 @@ for (const wId of Object.keys(grouped)) {
                         return (
                           <div key={slot.id} className={`relative border-2 rounded-xl p-2 sm:p-3 flex flex-col items-center justify-center transition-all min-h-[80px] bg-white shadow-md ${isH ? 'border-orange-300' : 'border-indigo-300'}`}>
                             <div className="absolute top-1 left-2 text-[10px] sm:text-xs font-black px-1.5 py-0.5 rounded text-indigo-600 bg-indigo-50">{slot.label}</div>
-                            {!isH && <button onClick={(e) => handleRemoveSlot(id, slot.id, e)} className="absolute top-1 right-1 text-red-400 hover:text-red-600 font-black text-xs bg-white rounded-full w-5 h-5 flex items-center justify-center shadow border border-red-100">✕</button>}
+                            {!isH && <button aria-label={`${sData.mixLot} 배정 제거`} onClick={(e) => handleRemoveSlot(id, slot.id, e)} className="absolute top-1 right-1 text-red-400 hover:text-red-600 font-black text-xs bg-white rounded-full w-5 h-5 flex items-center justify-center shadow border border-red-100">✕</button>}
                             
                             <div className="w-full flex flex-col items-center mt-3">
-                              <div className="text-[10px] font-mono text-slate-500 mb-0.5 bg-slate-100 px-1 rounded truncate max-w-full">{sData.mixLot.slice(-6)}</div>
+                              <div className="text-[10px] font-mono text-slate-500 mb-0.5 bg-slate-100 px-1 rounded truncate max-w-full">{compact ? sData.mixLot : sData.mixLot.slice(-6)}</div>
                               <div className="font-black text-slate-800 text-sm sm:text-base mt-1 leading-tight">{getProductLabel(sData.type)} {sData.height}T</div>
                               <div className="text-xs font-bold text-indigo-600 mt-1 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">{sData.qty}개</div>
                             </div>
@@ -3747,13 +3763,14 @@ for (const wId of Object.keys(grouped)) {
                       })}
                     </div>
 
+                    {compact && hasData && !isH && getLabLoadQty(f.slotData) < LAB_FURNACE_CAPACITY && <button onClick={() => handleSlotClick(id, null)} className="mt-3 rounded-lg border-2 border-dashed border-indigo-300 bg-indigo-50 p-3 font-bold text-indigo-700">선택 제품 추가 · 잔여 {LAB_FURNACE_CAPACITY - getLabLoadQty(f.slotData)}개</button>}
                     <div className="mt-4 pt-4 border-t-2 border-dashed border-slate-200">
-                      <div className="flex gap-3 mb-4">
-                        <div className="w-1/2">
+                      <div className={`${compact ? "grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-1" : "flex"} gap-3 mb-4`}>
+                        <div className={compact ? "w-full min-w-0" : "w-1/2"}>
                           <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center justify-between">목표 가동 온도 <span className="text-[8px] text-orange-500 border border-orange-200 bg-orange-50 px-1 rounded">목표:{masterSettings?.TARGET_TEMPERATURE?.[`furnace${id}`] || "1050"}</span></label>
                           <SyncInput type="number" value={f.temp} onChange={(val) => handleFurnaceInfo(id, 'temp', val)} disabled={isH} className="w-full border-2 border-slate-200 bg-slate-50 text-slate-800 font-black text-center p-2.5 rounded-xl focus:border-indigo-400 outline-none disabled:opacity-60" />
                         </div>
-                        <div className="w-1/2">
+                        <div className={compact ? "w-full min-w-0" : "w-1/2"}>
                           <label className="block text-xs font-bold text-slate-500 mb-1">담당 작업자</label>
                           <SyncInput type="text" placeholder="성명" value={f.operator} onChange={(val) => handleFurnaceInfo(id, 'operator', val)} disabled={isH} className="w-full border-2 border-slate-200 p-2.5 rounded-xl text-center font-bold text-slate-800 focus:border-indigo-400 outline-none disabled:opacity-60" />
                         </div>
@@ -3978,6 +3995,13 @@ function Step5_5Shrinkage({ wipList, ctx }) {
           if (localChanged) {
             draft.slotData[slotId].measurements = cloneDeep(localMeasurements);
           }
+          if (String(fid) === "lab") {
+            const baseSkip = Boolean(editBase.slotData?.[slotId]?.skipMeasurement);
+            const localSkip = Boolean(localDraft.slotData?.[slotId]?.skipMeasurement);
+            const liveSkip = Boolean(live.slotData?.[slotId]?.skipMeasurement);
+            if (localSkip !== baseSkip && liveSkip !== baseSkip && localSkip !== liveSkip) throw new Error("미측정 선택이 다른 화면에서도 변경되었습니다.");
+            if (localSkip !== baseSkip) draft.slotData[slotId].skipMeasurement = localSkip;
+          }
         }
       }
 
@@ -3997,10 +4021,10 @@ function Step5_5Shrinkage({ wipList, ctx }) {
             reason: !wip ? "연결된 WIP 없음 (이관·분할·삭제 여부 확인)" : getCurrentProcessLabel(wip.currentStep) });
         }
       }
-      if (override.step === 2 && Object.values(draft.slotData).some(slot =>
+      if (override.step === 2 && Object.values(draft.slotData).filter(slot => !isUnmeasuredSlot(fid, slot)).some(slot =>
         !(slot.measurements || []).length || slot.measurements.some(m =>
-          !String(m.position || "").trim() || !Number.isFinite(Number(m.preArea)) || Number(m.preArea) <= 0))) {
-        throw new Error("모든 시편의 위치와 양수인 소결 전 면적을 입력하세요.");
+          (String(fid) !== "lab" && !String(m.position || "").trim()) || !Number.isFinite(Number(m.preArea)) || Number(m.preArea) <= 0))) {
+        throw new Error(String(fid) === "lab" ? "측정할 시편의 양수인 소결 전 면적을 입력하세요." : "모든 시편의 위치와 양수인 소결 전 면적을 입력하세요.");
       }
       saved = {
         ...draft,
@@ -4152,7 +4176,7 @@ function Step5_5Shrinkage({ wipList, ctx }) {
       const fid = positions[0]?.furnaceId ?? positions[0]?.fid;
       const validSlots = new Set(getFurnaceSlots(fid).map(slot => slot.id));
       if (!positions.length || !HEAT_FURNACE_IDS.map(String).includes(String(fid)) ||
-          positions.some(p => String(p.furnaceId ?? p.fid) !== String(fid) || !validSlots.has(p.slotId) || !(Number(p.qty) > 0)) ||
+          positions.some(p => String(p.furnaceId ?? p.fid) !== String(fid) || (String(fid) === "lab" ? !isLabSlotId(p.slotId) : !validSlots.has(p.slotId)) || !(Number(p.qty) > 0)) ||
           new Set(positions.map(p => p.slotId)).size !== positions.length ||
           positions.reduce((n,p) => n + Number(p.qty),0) !== Number(w.qty)) {
         throw new Error("열처리 위치 또는 수량이 불완전합니다. 이 로트의 열처리 기록과 실물 배치를 먼저 확인해야 합니다.");
@@ -4188,7 +4212,7 @@ function Step5_5Shrinkage({ wipList, ctx }) {
       return (targetSlot.measurements || []).map(
         (m, idx) =>
           `${getFurnaceLabel(fid)}/${slotLabel}/시편${idx + 1}` +
-          `/위치:${m.position || "-"}` +
+          (String(fid) === "lab" ? "" : `/위치:${m.position || "-"}`) +
           `/소결전:${m.preArea || "-"}` +
           `/소결후:${m.postArea || "-"}` +
           `/수축률:${m.calcShrink || "-"}%`
@@ -4253,11 +4277,11 @@ function Step5_5Shrinkage({ wipList, ctx }) {
    const d = shrinkDesksRef.current[fid] || {};
     if (Object.keys(d.slotData || {}).length === 0) return;
 
-    const hasIncompleteMeasurement = Object.values(d.slotData).some(
+    const hasIncompleteMeasurement = Object.values(d.slotData).filter(s => !isUnmeasuredSlot(fid, s)).some(
   s =>
     !(s.measurements || []).length || s.measurements.some(
       m =>
-        !String(m.position || "").trim() ||
+        (String(fid) !== "lab" && !String(m.position || "").trim()) ||
         !(Number(m.preArea) > 0) || !Number.isFinite(Number(m.preArea))
     )
 );
@@ -4265,7 +4289,7 @@ function Step5_5Shrinkage({ wipList, ctx }) {
 if (hasIncompleteMeasurement) {
   return setAlertModal({
     isOpen: true,
-    message: "모든 시편의 '위치'와 '소결 전 면적'을 입력해주세요.",
+    message: String(fid) === "lab" ? "측정할 시편의 소결 전 면적을 입력해주세요." : "모든 시편의 '위치'와 '소결 전 면적'을 입력해주세요.",
     type: "warning"
   });
 }
@@ -4329,9 +4353,9 @@ if (hasIncompleteMeasurement) {
         return setAlertModal({ isOpen: true, message: "담당자 성명을 입력해주세요.", type: "warning" });
       }
 
-      const hasEmptyPostArea = Object.values(d.slotData || {}).some(s => !(s.measurements || []).length || s.measurements.some(m => !m.position || !(Number(m.preArea) > Number(m.postArea)) || !(Number(m.postArea) > 0) || !Number.isFinite(Number(m.preArea)) || !Number.isFinite(Number(m.postArea))));
+      const hasEmptyPostArea = Object.values(d.slotData || {}).filter(s => !isUnmeasuredSlot(fid, s)).some(s => !(s.measurements || []).length || s.measurements.some(m => (String(fid) !== "lab" && !m.position) || !(Number(m.preArea) > Number(m.postArea)) || !(Number(m.postArea) > 0) || !Number.isFinite(Number(m.preArea)) || !Number.isFinite(Number(m.postArea))));
       if (hasEmptyPostArea) {
-        return setAlertModal({ isOpen: true, message: "모든 시편의 위치와 양수 면적을 입력하세요. 소결 후 면적은 소결 전보다 작아야 합니다.", type: "warning" });
+        return setAlertModal({ isOpen: true, message: String(fid) === "lab" ? "측정할 시편의 양수 면적을 입력하세요. 소결 후 면적은 소결 전보다 작아야 합니다." : "모든 시편의 위치와 양수 면적을 입력하세요. 소결 후 면적은 소결 전보다 작아야 합니다.", type: "warning" });
       }
 
       let newSlotData = cloneDeep(d.slotData);
@@ -4340,8 +4364,8 @@ if (hasIncompleteMeasurement) {
       Object.entries(newSlotData).forEach(([sId, data]) => {
         if (!wipGroups[data.wipId]) wipGroups[data.wipId] = [];
         const shrinkVal = parseFloat(data.slotAvgShrink); 
-        if (!isNaN(shrinkVal)) {
-          wipGroups[data.wipId].push({ sId, shrinkVal, mixLot: data.mixLot, type: data.type, height: data.height, qty: data.qty });
+        if (isUnmeasuredSlot(fid, data) || !isNaN(shrinkVal)) {
+          wipGroups[data.wipId].push({ sId, unmeasured: isUnmeasuredSlot(fid, data), shrinkVal, mixLot: data.mixLot, type: data.type, height: data.height, qty: data.qty });
         }
       });
 
@@ -4352,6 +4376,10 @@ if (hasIncompleteMeasurement) {
 
       Object.entries(wipGroups).forEach(([wipId, validSlots]) => {
         if (validSlots.length > 0) {
+          if (validSlots.every(slot => slot.unmeasured)) {
+            lotsToMerge.push({ wipId, finalShrink: null, slots: validSlots });
+            return;
+          }
           validSlots.sort((a, b) => a.shrinkVal - b.shrinkVal);
           
           const minVal = validSlots[0].shrinkVal;
@@ -4441,8 +4469,12 @@ if (hasIncompleteMeasurement) {
         // ==========================================
         // 2. [WRITE] 기존 WIP를 제거하고 확정된 WIP를 새로 만듭니다.
         // ==========================================
+        for (const m of mergedLots) {
+          if (m.finalShrink === null && (String(fid) !== "lab" || !m.slots.every(slot => isUnmeasuredSlot(fid, d.slotData[slot.sId])))) throw new Error("미측정 선택을 확인하세요.");
+        }
+        if (String(fid) === "lab") validateLabSlots(d.slotData);
         for (const wId of allWipIds) {
-          if (wipSnaps[wId]) transaction.delete(wipSnaps[wId].ref);
+          if (wipSnaps[wId] && !mergedLots.some(m => m.wipId === wId && m.finalShrink === null)) transaction.delete(wipSnaps[wId].ref);
         }
 
         // ------------------------------------------
@@ -4453,7 +4485,8 @@ if (hasIncompleteMeasurement) {
           if (!snap) return;
 
           const orig = snap.data();
-          const newId =
+          const unmeasured = m.finalShrink === null;
+          const newId = unmeasured ? m.wipId :
             Date.now().toString() + Math.random().toString(36).substr(2, 5);
           const slotKeysStr = m.slots
             .map((s) => `${getFurnaceLabel(fid)} ${getFurnaceSlotLabel(s.sId)}`)
@@ -4463,9 +4496,9 @@ if (hasIncompleteMeasurement) {
             0
           );
 
-          const recordDetails =
-            `[${curTime}] [수축률확정] 위치(${slotKeysStr}) | ` +
-            `수축률:${m.finalShrink}% | 담당:${d.operator}`;
+          const recordDetails = unmeasured
+            ? `[${curTime}] [수축률 미측정] 실험로 · ${orig.mixLot} · 측정 생략 후 검수 이관 | 담당:${d.operator}`
+            : `[${curTime}] [수축률확정] 위치(${slotKeysStr}) | 수축률:${m.finalShrink}% | 담당:${d.operator}`;
 
           const newWip = {
             ...orig,
@@ -4473,7 +4506,8 @@ if (hasIncompleteMeasurement) {
             qty: totalQty,
             currentStep: "step6",
             shrinkageRate: m.finalShrink,
-            shrinkageStatus: "measured",
+            shrinkageStatus: unmeasured ? "not_measured" : "measured",
+            shrinkageHistory: [...(orig.shrinkageHistory || []), { status: unmeasured ? "not_measured" : "measured", furnaceId: fid, completedAt: curTime, batchId: d.batchId, operator: d.operator, shrinkageRate: m.finalShrink, previousShrinkageRate: orig.shrinkageRate ?? null }],
             details: `${orig.details || ""}
 ${recordDetails}`,
           };
@@ -4491,7 +4525,7 @@ nextProcessLogs.push({
   wip: newWip,
   operator: d.operator,
   measurements:
-    `평균수축률:${m.finalShrink}% | ${specimenMeasurements}`,
+    unmeasured ? "수축률 미측정" : `평균수축률:${m.finalShrink}% | ${specimenMeasurements}`,
   details: d.memo || "-",
 });
         });
@@ -4573,7 +4607,7 @@ nextProcessLogs.push({
         const { queue: archivedQueue, ...archivedBatch } = d;
         transaction.set(getDocRef("shrinkArchives", d.batchId), {
           ...archivedBatch, furnaceId: fid, completedAt: curTime, kind: "completed",
-          results: nextProcessLogs.map(log => ({ wipId: log.wip.id, mixLot: log.wip.mixLot, qty: log.wip.qty, shrinkageRate: log.wip.shrinkageRate }))
+          results: nextProcessLogs.map(log => ({ wipId: log.wip.id, mixLot: log.wip.mixLot, qty: log.wip.qty, shrinkageRate: log.wip.shrinkageRate, shrinkageStatus: log.wip.shrinkageStatus }))
         });
         currentDesks[fid] = waiting.length ? { ...waiting.shift(), queue: waiting } : emptyDesk();
         transaction.set(shrinkRef, currentDesks);
@@ -4653,8 +4687,8 @@ nextProcessLogs.push({
         <div className="mb-4 flex flex-wrap gap-2">{pendingWip.filter(w => !Object.values(shrinkDesks).some(d => [d, ...(d.queue || [])].some(b => Object.values(b.slotData || {}).some(s => s.wipId === w.id)))).map(w => <button disabled={busy || !loaded || lotSplitModal.isOpen} key={w.id} onClick={() => recoverOrphan(w.id)} className="border rounded p-2 bg-white text-sm">{w.mixLot} 누락 작업 등록 (면적 재입력)</button>)}</div>
         <fieldset disabled={busy || !loaded || lotSplitModal.isOpen} className="grid grid-cols-1 gap-8">
           {HEAT_FURNACE_IDS.map(id => {
-            const slots = getFurnaceSlots(id);
             const d = shrinkDesks[id] || { step: 0, slotData: {} };
+            const slots = getFurnaceSlots(id, d.slotData);
             const hasData = Object.keys(d.slotData).length > 0;
             const isStep1 = d.step === 1; // 소결 전
             const isStep2 = d.step === 2; // 소결 후
@@ -4723,7 +4757,7 @@ nextProcessLogs.push({
                       const titleBg = isStep1 ? 'bg-indigo-50 text-indigo-700' : 'bg-orange-50 text-orange-700';
 
                       return (
-                        <div key={slot.id} className={`relative border-2 rounded-xl p-3 flex flex-col justify-start bg-white shadow-sm transition-all ${slotBorder}`}>
+                        <div data-testid={`measurement-${sData.wipId}`} key={slot.id} className={`relative border-2 rounded-xl p-3 flex flex-col justify-start bg-white shadow-sm transition-all ${slotBorder}`}>
                           
                          <div className="flex justify-between items-center mb-3">
   <div className="flex items-center gap-2">
@@ -4746,10 +4780,11 @@ nextProcessLogs.push({
                             <div className="font-black text-slate-800 text-lg">{getProductLabel(sData.type)} {sData.height}T</div>
                           </div>
 
-                          <div className="flex flex-col gap-2 w-full mt-auto">
+                          {id === "lab" && <label className="flex items-center gap-2 text-sm font-bold text-amber-800 mb-3"><input aria-label={`${sData.mixLot} 수축률 미측정`} type="checkbox" checked={Boolean(sData.skipMeasurement)} onChange={e => updateDesk(id, { ...d, slotData: { ...d.slotData, [slot.id]: { ...sData, skipMeasurement: e.target.checked } } })} />이 로트는 수축률 미측정</label>}
+                          {!isUnmeasuredSlot(id, sData) && <div className="flex flex-col gap-2 w-full mt-auto">
                             {/* 헤더 부분 */}
-                            <div className="grid grid-cols-[110px_minmax(0,1fr)_minmax(0,1fr)_70px] gap-2 text-[10px] font-bold text-slate-500 text-center mb-1">
-  <div>시편 위치</div>
+                            <div className={`grid ${id === "lab" ? "grid-cols-[minmax(0,1fr)_minmax(0,1fr)_70px]" : "grid-cols-[110px_minmax(0,1fr)_minmax(0,1fr)_70px]"} gap-2 text-[10px] font-bold text-slate-500 text-center mb-1`}>
+  {id !== "lab" && <div>시편 위치</div>}
   <div>소결 전 면적</div>
   <div>소결 후 면적</div>
   <div>수축률</div>
@@ -4757,7 +4792,7 @@ nextProcessLogs.push({
                     {sData.measurements.map((m, idx) => (
   <div
     key={idx}
-    className="relative grid grid-cols-[110px_minmax(0,1fr)_minmax(0,1fr)_70px] items-center gap-2 w-full animate-fade-in"
+    className={`relative grid ${id === "lab" ? "grid-cols-[minmax(0,1fr)_minmax(0,1fr)_70px]" : "grid-cols-[110px_minmax(0,1fr)_minmax(0,1fr)_70px]"} items-center gap-2 w-full animate-fade-in`}
   >
     {isStep1 && sData.measurements.length > 1 && (
       <button
@@ -4770,7 +4805,7 @@ nextProcessLogs.push({
 
     {isStep1 ? (
       <>
-        <select
+        {id !== "lab" && <select
           value={m.position || ""}
           onChange={(e) =>
             handleAreaInput(
@@ -4789,7 +4824,7 @@ nextProcessLogs.push({
           <option value="왼쪽">왼쪽</option>
           <option value="오른쪽">오른쪽</option>
           <option value="가운데">가운데</option>
-        </select>
+        </select>}
 
         <ShrinkInput
           type="number"
@@ -4817,7 +4852,7 @@ nextProcessLogs.push({
       </>
     ) : (
       <>
-        <select
+        {id !== "lab" && <select
           value={m.position || ""}
           disabled
           className="w-full min-w-0 border border-slate-200 rounded p-1.5 text-[11px] font-black text-slate-600 bg-slate-100"
@@ -4828,7 +4863,7 @@ nextProcessLogs.push({
           <option value="왼쪽">왼쪽</option>
           <option value="오른쪽">오른쪽</option>
           <option value="가운데">가운데</option>
-        </select>
+        </select>}
 
         <div className="w-full min-w-0 bg-slate-100 border border-slate-200 rounded p-1.5 text-center text-[11px] font-bold text-slate-500">
           {m.preArea}
@@ -4858,7 +4893,7 @@ nextProcessLogs.push({
   </div>
 ))}
                             {isStep1 && sData.measurements.length < 5 && <button onClick={() => addMeasurement(id, slot.id)} className="w-full border border-dashed border-slate-300 rounded py-1.5 text-[10px] font-bold text-slate-500 hover:bg-slate-100 transition-colors mt-1">+ 측정 추가</button>}
-                          </div>
+                          </div>}
                         </div>
                       );
                     })}
@@ -5171,6 +5206,9 @@ function Step8Packaging({ wipList, orderList, ctx }) {
 
   const [formData, setFormData] = useState({});
   const [printedStatus, setPrintedStatus] = useState({});
+  const printingRef = useRef(new Set());
+  const [printing, setPrinting] = useState({});
+  const [labelPreview, setLabelPreview] = useState(null);
 
   const handleDataChange = (id, field, val) =>
     setFormData((prev) => ({
@@ -5212,7 +5250,7 @@ function Step8Packaging({ wipList, orderList, ctx }) {
 
     if (
       !data.operator ||
-      !wip?.shrinkageRate
+      getPrintableShrinkage(wip) === null
     ) {
       return ctx.showToast(
         "작업자 성명 입력 혹은 열처리 단계 수축률 데이터가 필요합니다.",
@@ -5221,11 +5259,11 @@ function Step8Packaging({ wipList, orderList, ctx }) {
     }
 
     const defectQty =
-      parseInt(data.defects) || 0;
+      Number(data.defects || 0);
 
     if (
-      defectQty < 0 ||
-      defectQty > Number(wip.qty)
+      !Number.isInteger(defectQty) || !Number.isInteger(Number(wip.qty)) ||
+      defectQty < 0 || defectQty >= Number(wip.qty)
     ) {
       return ctx.showToast(
         "불량 수량을 확인해주세요.",
@@ -5298,7 +5336,7 @@ function Step8Packaging({ wipList, orderList, ctx }) {
           const liveQty =
             Number(live.qty) || 0;
 
-          if (defectQty > liveQty) {
+          if (!Number.isInteger(liveQty) || defectQty >= liveQty || getPrintableShrinkage(live) === null) {
             throw new Error(
               `현재 최신 수량은 ${liveQty}EA입니다. 불량 수량을 다시 확인해주세요.`
             );
@@ -5341,7 +5379,10 @@ if (
   !Number.isFinite(printedQty) ||
   printedQty !== finalQty ||
   printedDefectQty !== defectQty ||
-  printedPackLot !== completedPackLot
+  printedPackLot !== completedPackLot ||
+  String(live.labelPrintedShrinkage ?? "") !== String(live.shrinkageRate ?? "") ||
+  Boolean(live.labelPrintedExperimental) !== Boolean(live.isExperimental) ||
+  (live.shrinkageStatus === "not_measured" && live.labelPrintedShrinkageStatus !== "not_measured")
 ) {
   throw new Error(
     "라벨 출력 후 최종수량, 불량수량 또는 LOT가 변경되었습니다. 현재 조건으로 라벨을 재출력한 뒤 포장완료를 눌러주세요."
@@ -5381,7 +5422,7 @@ const curTime = getKST();
                 `포장LOT:${completedPackLot} | ` +
                 `생산LOT:${live.mixLot} | ` +
                 `담당:${data.operator} ` +
-                `[수축률: ${live.shrinkageRate}]` +
+                `[수축률: ${getPrintableShrinkage(live)}]` +
                 `${defectStr}` +
                 `${
                   data.specialNote
@@ -5411,7 +5452,7 @@ const curTime = getKST();
           defectReason:
             data.defectReason || "-",
           measurements:
-            `S.F:${wip.shrinkageRate}`,
+            `수축률:${getPrintableShrinkage(wip)}`,
           details:
             `생산LOT:${wip.mixLot} / ` +
             `포장LOT:${completedPackLot}` +
@@ -5437,83 +5478,20 @@ const curTime = getKST();
   // 라벨 출력
   // 저장되어 있는 packLot만 사용
   // ==========================================
-  const handlePrintLabel =
-    async (wipId) => {
-      const wip = wipList.find(
-        (w) => w.id === wipId
-      );
-
-      if (!wip?.shrinkageRate) {
-        return ctx.showToast(
-          "열처리 단계 수축률 데이터가 없습니다.",
-          "error"
-        );
-      }
-
-      const data =
-        formData[wipId] || {};
-
-      const defectQty =
-        parseInt(data.defects) || 0;
-
-      if (
-        defectQty < 0 ||
-        defectQty > Number(wip.qty)
-      ) {
-        return ctx.showToast(
-          "불량 수량을 확인해주세요.",
-          "error"
-        );
-      }
-
-      const finalQty =
-        Math.max(
-          0,
-          Number(wip.qty) - defectQty
-        );
-
-      const finalLot =
-  getPackagingLot(wip) ||
-  await ensurePackagingLot(wipId);
-
-     const now = getKST();
-
-// ======================================
-// 제품 SKU
-// 예:
-// 345 BL3 / 25T → Z345BL325
-// 234 BL3 / 25T → Z234BL325
-// ======================================
-const productSeries =
-  getProductSeries(wip.type);
-
-const productShade =
-  getProductShade(wip.type);
-
-const productSKU =
-  getProductSKU(
-    wip.type,
-    wip.height
-  );
-      
-const productDisplayName =
-  `Z ${productSeries} ${productShade} ${wip.height}`;
-
-const productRef =
-  `${productSKU}D98`;
-
-const productRefDisplay =
-  `Z ${productSeries} ${productShade} ${wip.height} D98`;
-      
-// 기존 productName 필드도 SKU와 동일하게 사용
-const productName = productSKU;
-
-const sizeDisplay =
-  `Φ98 x ${wip.height}mm`;
-
-// ======================================
-// 실제 제조일 = 최종 열처리 완료일
-// ======================================
+  const handlePrintLabel = async wipId => {
+    if (printingRef.current.has(wipId)) return;
+    printingRef.current.add(wipId);
+    setPrinting(prev => ({ ...prev, [wipId]: true }));
+    try {
+      const wip = wipList.find(w => w.id === wipId);
+      const shrinkage = getPrintableShrinkage(wip);
+      if (!wip || shrinkage === null) throw new Error("수축률 데이터가 필요합니다. 미측정으로 확정된 실험용은 미측정 라벨을 사용할 수 있습니다.");
+      const data = formData[wipId] || {};
+      const defectQty = Number(data.defects || 0);
+      const finalQty = Number(wip.qty) - defectQty;
+      if (!Number.isInteger(defectQty) || defectQty < 0 || !Number.isInteger(finalQty) || finalQty <= 0) throw new Error("불량 수량을 확인해주세요. 정상 제품이 1개 이상 있어야 라벨을 출력할 수 있습니다.");
+      const finalLot = getPackagingLot(wip) || await ensurePackagingLot(wipId);
+      const now = getKST();
 const heatHistory =
   Array.isArray(wip.heatTreatmentHistory)
     ? wip.heatTreatmentHistory
@@ -5544,147 +5522,54 @@ if (!manufacturedAt) {
 const manufacturedDate =
   manufacturedAt.split(" ")[0];
 
-      const s =
-        Number(wip.shrinkageRate);
 
-      const calculatedScaleFactor =
-        (
-          1 /
-          (1 - s / 100)
-        ).toFixed(4);
-
-      try {
-        // ======================================
-        // 라벨 출력 전 packLot을 Firestore에 먼저 고정
-        // ======================================
-        await setDoc(
-          getDocRef(
-            "wipList",
-            wip.id
-          ),
-          {
-            packLot: finalLot,
-
-            packLotCreatedAt:
-              wip.packLotCreatedAt ||
-              now,
-          },
-          { merge: true }
-        );
-
-        const database =
-          getFirestore();
-
-        // ======================================
-        // BarTender 출력 Queue
-        // ======================================
-        await addDoc(
-          collection(
-            database,
-            "print-queue"
-          ),
-         {
-  // 제품 식별
-  sku: productSKU,
-  displayName: productDisplayName,
-  productName: productName,
-  ref: productRef,
-  refDisplay: productRefDisplay,
-  series: productSeries,
-  color: productShade,
-  height: wip.height,
-
-  // 실물 제품에 찍히는 LOT
-  lotNumber: finalLot,
-
-  // 추적용 생산 LOT
-  sourceLot: wip.mixLot,
-
-  // 실제 제조일 = 열처리 완료일
-  mfgDate: manufacturedDate,
-
-  // 제품 규격
-  size: sizeDisplay,
-
-  // 수축률 / 확대율
-  shrinkage: wip.shrinkageRate,
-  scaleFactor: calculatedScaleFactor,
-
-  // 실제 출력할 라벨 수량
-  quantity: finalQty,
-
-  // 개별 제품 포장수량
-  unitQty: 1,
-
-  // 고정 GTIN
-  gtin: "08600015381754",
-
-  status: "pending",
-
-  createdAt:
-    serverTimestamp(),
-});
-        // 출력 이력 저장
-        try {
-          await setDoc(
-            getDocRef(
-              "wipList",
-              wip.id
-            ),
-           {
-  labelPrintedAt: now,
-
-  // 라벨 출력 당시 확정값 저장
-  labelPrintedQty: finalQty,
-
-  labelPrintedDefectQty:
-    defectQty,
-
-  labelPrintedPackLot:
-    finalLot,
-
-  labelPrintedShrinkage:
-    wip.shrinkageRate,
-
-  labelPrintCount:
-    (
-      Number(
-        wip.labelPrintCount
-      ) || 0
-    ) + 1,
-},
-            { merge: true }
-          );
-        } catch (saveErr) {
-          console.warn(
-            "라벨 출력 이력 저장 실패:",
-            saveErr
-          );
+      const experimental = wip.isExperimental === true;
+      const scaleFactor = shrinkage === "미측정" ? "미측정" : (1 / (1 - Number(shrinkage) / 100)).toFixed(4);
+      const productSeries = getProductSeries(wip.type);
+      const productShade = getProductShade(wip.type);
+      const productSKU = getProductSKU(wip.type, wip.height);
+      const payload = {
+        sku: productSKU, displayName: `${experimental ? "[TEST] " : ""}Z ${productSeries} ${productShade} ${wip.height}`,
+        productName: productSKU, ref: `${productSKU}D98`, refDisplay: `Z ${productSeries} ${productShade} ${wip.height} D98`,
+        series: productSeries, color: productShade, height: wip.height,
+        lotNumber: finalLot, sourceLot: wip.mixLot, mfgDate: manufacturedDate, size: `Φ98 x ${wip.height}mm`,
+        shrinkage, scaleFactor, quantity: finalQty, unitQty: 1,
+        isExperimental: experimental, labelType: experimental ? "experimental" : "production",
+        purpose: experimental ? "실험용 / TEST" : "일반 생산", shrinkageStatus: wip.shrinkageStatus || "measured",
+        gtin: "08600015381754", status: "pending", createdAt: serverTimestamp()
+      };
+      const database = getFirestore();
+      const queueRef = doc(database, "print-queue", `print-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      await runTransaction(database, async tx => {
+        const wipRef = getDocRef("wipList", wipId);
+        const snap = await tx.get(wipRef);
+        if (!snap.exists()) throw new Error("라벨 대상 로트가 없습니다.");
+        const live = snap.data();
+        if (live.currentStep !== "step8" || getPackagingLot(live) !== finalLot ||
+            ["qty", "type", "height", "shrinkageRate", "shrinkageStatus", "isExperimental"].some(key => String(live[key] ?? "") !== String(wip[key] ?? ""))) {
+          throw new Error("출력 전에 로트 수량 또는 제품 조건이 변경되었습니다. 최신 상태를 확인하세요.");
         }
-
-        ctx.showToast(
-          `라벨 출력 명령 전송 완료 — ${finalLot} 🖨️`,
-          "success"
-        );
-
-        setPrintedStatus(
-          (prev) => ({
-            ...prev,
-            [wipId]: true,
-          })
-        );
-      } catch (err) {
-        console.error(
-          "전송 에러:",
-          err
-        );
-
-        ctx.showToast(
-          `전송 실패: ${err.message}`,
-          "error"
-        );
-      }
-    };
+        // Queue and print record commit together; a retry never adds an extra job.
+        tx.set(queueRef, payload);
+        tx.update(wipRef, {
+          labelPrintedAt: now, labelPrintedQty: finalQty, labelPrintedDefectQty: defectQty, labelPrintedPackLot: finalLot,
+          labelPrintedShrinkage: live.shrinkageRate ?? null, labelPrintedShrinkageStatus: live.shrinkageStatus || "measured",
+          labelPrintedExperimental: experimental, labelPrintJobId: queueRef.id,
+          labelPrintCount: (Number(live.labelPrintCount) || 0) + 1,
+          labelPrintHistory: [...(live.labelPrintHistory || []), {jobId:queueRef.id,quantity:finalQty,defectQty,requestedAt:now,isExperimental:experimental,shrinkage}],
+          details: `${live.details || ""}\n[${now}] [라벨출력 요청] ${experimental ? "실험용 / TEST | " : ""}${finalQty}장 · 제품 1개당 1장 | 포장LOT:${finalLot} | 수축률:${shrinkage}`
+        });
+      });
+      setPrintedStatus(prev => ({ ...prev, [wipId]: true }));
+      setLabelPreview(payload);
+      ctx.showToast(`라벨 ${finalQty}장 출력 요청 완료 — ${finalLot}`, "success");
+    } catch (err) {
+      ctx.showToast(`전송 실패: ${err.message}`, "error");
+    } finally {
+      printingRef.current.delete(wipId);
+      setPrinting(prev => ({ ...prev, [wipId]: false }));
+    }
+  };
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
@@ -5698,6 +5583,17 @@ const manufacturedDate =
         않습니다.
       </p>
 
+      {labelPreview && <div data-testid="label-preview" className="mb-6 rounded-xl border-2 border-indigo-200 bg-slate-50 p-4">
+        <div className="flex justify-between items-center mb-3"><strong>출력 요청 라벨 {labelPreview.quantity}장 · 제품 1개당 1장</strong><button onClick={() => setLabelPreview(null)} className="border rounded px-3 py-1 bg-white">미리보기 닫기</button></div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-h-96 overflow-y-auto">
+          {Array.from({length:labelPreview.quantity},(_,index) => <div data-testid="label-copy" key={index} className="border-2 border-slate-400 rounded-lg bg-white p-3 text-sm">
+            {labelPreview.isExperimental && <div className="font-black text-amber-800 text-lg">실험용 / TEST</div>}
+            <div className="font-bold">{labelPreview.displayName}</div><div>LOT: {labelPreview.lotNumber}</div><div className="text-xs">생산 LOT: {labelPreview.sourceLot}</div>
+            <div>제조일: {labelPreview.mfgDate}</div><div>수축률: {labelPreview.shrinkage === "미측정" ? "미측정" : `${labelPreview.shrinkage}%`} · 확대율: {labelPreview.scaleFactor}</div>
+            <div className="font-bold mt-2">수량 1개 · {index+1} / {labelPreview.quantity}장</div>
+          </div>)}
+        </div>
+      </div>}
       <div className="overflow-x-auto">
         <table className="w-full text-sm text-left">
           <thead className="text-xs text-slate-500 uppercase bg-slate-50 border-y border-slate-200">
@@ -5751,9 +5647,7 @@ const manufacturedDate =
                   {};
 
                 const defectQty =
-                  parseInt(
-                    data.defects
-                  ) || 0;
+                  Number(data.defects || 0);
 
                 const finalQty =
                   Math.max(
@@ -5779,6 +5673,7 @@ const manufacturedDate =
                 return (
                   <tr
                     key={wip.id}
+                    data-testid={`package-${wip.id}`}
                     className="border-b border-slate-100 hover:bg-slate-50 transition-colors"
                   >
                     <td className="px-4 py-4">
@@ -5795,6 +5690,7 @@ const manufacturedDate =
                         <span className="text-[9px] text-indigo-400 font-bold mt-1">
                           포장/완제품 LOT
                         </span>
+                        {wip.isExperimental && <span className="mt-1 text-xs font-black text-amber-800">실험용 / TEST</span>}
                       </div>
                     </td>
 
@@ -5916,6 +5812,7 @@ const manufacturedDate =
                     <td className="px-4 py-4">
                       <div className="flex flex-col space-y-2">
                         <button
+                          disabled={Boolean(printing[wip.id]) || !Number.isInteger(finalQty) || finalQty <= 0}
                           onClick={() =>
                             handlePrintLabel(
                               wip.id
@@ -5930,8 +5827,8 @@ const manufacturedDate =
                           <Printer className="w-3 h-3 mr-1" />
 
                           {isPrinted
-                            ? "재출력"
-                            : "라벨출력"}
+                            ? `재출력 ${finalQty}장`
+                            : `라벨출력 ${finalQty}장`}
                         </button>
 
                         <button
@@ -6050,6 +5947,11 @@ transaction.set(
   {
     id: hid,
     sourceWipId: wip.id,
+    isExperimental: live.isExperimental === true,
+    includeShrinkageSpecimen: includesShrinkageSpecimen(live),
+    productionPurpose: live.productionPurpose || (live.isExperimental ? "실험용 / TEST" : "일반 생산"),
+    shrinkageRate: live.shrinkageRate ?? null,
+    shrinkageStatus: live.shrinkageStatus || "measured",
     stockBeforeQty: liveQty,
     remainingQty: liveQty - safeQty,
 
@@ -6219,12 +6121,18 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
   const [editingId, setEditingId] = useState(null);
   const [editData, setEditData] = useState({});
 
+  const isExperimentalRecord = item => item.isExperimental === true || (item.isExperimental == null && orderList.some(order => order.id === item.orderId && order.isExperimental));
+  const trackingSpecimenText = item => {
+    const included = item.includeShrinkageSpecimen ?? orderList.find(order => order.id === item.orderId)?.includeShrinkageSpecimen;
+    return included === true ? "시편 포함" : included === false ? "시편 미포함" : "시편 여부 미기록";
+  };
+  const purposeText = item => isExperimentalRecord(item) ? "실험용 테스트 TEST" : "일반 생산";
   const handleSearch = () => {
     if (!searchLot) return;
     setHasSearched(true);
     const searchTerms = searchLot.trim().toUpperCase().split(/\s+/);
     const isMatch = item => searchTerms.every(term =>
-      `${item.lot || ""} ${item.packLot || ""} ${item.mixLot || ""} ${item.originalLot || ""} ${item.productionLot || ""} ${item.sourceLot || ""} ${getProductLabel(item.type)} ${item.height || ""}T ${item.destination || ""} ${item.operator || ""} ${item.details || ""}`.toUpperCase().includes(term));
+      `${item.lot || ""} ${item.packLot || ""} ${item.mixLot || ""} ${item.originalLot || ""} ${item.productionLot || ""} ${item.sourceLot || ""} ${getProductLabel(item.type)} ${item.height || ""}T ${item.destination || ""} ${item.operator || ""} ${item.details || ""} ${purposeText(item)}`.toUpperCase().includes(term));
 
     const shippedMatches = shippingHistory.filter((h) => isMatch(h, true));
     const wipMatches = wipList.filter((w) => isMatch(w, false));
@@ -6241,12 +6149,12 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
     const terms = searchLot.trim().toUpperCase().split(/\s+/).filter(Boolean);
     if (!terms.length) { setResults([]); return; }
     const matches = item => terms.every(term =>
-      `${item.lot || ""} ${item.packLot || ""} ${item.mixLot || ""} ${item.originalLot || ""} ${item.productionLot || ""} ${item.sourceLot || ""} ${getProductLabel(item.type)} ${item.height || ""}T ${item.destination || ""} ${item.operator || ""} ${item.details || ""}`.toUpperCase().includes(term));
+      `${item.lot || ""} ${item.packLot || ""} ${item.mixLot || ""} ${item.originalLot || ""} ${item.productionLot || ""} ${item.sourceLot || ""} ${getProductLabel(item.type)} ${item.height || ""}T ${item.destination || ""} ${item.operator || ""} ${item.details || ""} ${purposeText(item)}`.toUpperCase().includes(term));
     setResults([
       ...shippingHistory.filter(matches).map(data => ({ type: "shipped", data, collection: "shippingHistory" })),
       ...wipList.filter(matches).map(data => ({ type: "wip", data, collection: "wipList" }))
     ]);
-  }, [wipList, shippingHistory, hasSearched, searchLot, editingId]);
+  }, [wipList, shippingHistory, orderList, hasSearched, searchLot, editingId]);
 
   const startEdit = (res) => { setEditData({ ...res.data }); setEditingId(res.data.id); };
 
@@ -6316,6 +6224,7 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
  result.data.mixLot}</span>
                     <div className="mt-3 text-base font-black text-indigo-700">현재 공정: {result.type === "shipped" ? "출고 완료" : getCurrentProcessLabel(result.data.currentStep)}</div>
                     <LotLink item={result.data} />
+                    {isExperimentalRecord(result.data) && <div data-testid="experimental-badge" className="mt-2 inline-block rounded-lg bg-amber-100 border border-amber-300 text-amber-900 px-3 py-1 font-black">실험용 / TEST · {trackingSpecimenText(result.data)}{result.data.shrinkageStatus === "not_measured" ? " · 수축률 미측정" : ""}</div>}
                   </div>
                   <div className="text-left md:text-right flex flex-col items-start md:items-end">
                     <div className="font-black text-xl text-indigo-700">{getProductLabel(result.data.type)} {result.data.height}T</div>

@@ -232,6 +232,21 @@ test('lab refuses starting an oversized load even if saved data bypassed the for
   assert.match(h.alerts.at(-1).message, /최대 10개/);
 });
 
+for (const [name, slotData] of [
+  ['aggregate capacity', { SINGLE: {wipId:'w1',qty:6}, LAB_w2: {wipId:'w2',qty:5} }],
+  ['duplicate lot', { SINGLE: {wipId:'w1',qty:2}, LAB_w1: {wipId:'w1',qty:3} }],
+]) test(`lab rejects invalid multi-lot ${name} without modifying histories`, async () => {
+  for (const isHeating of [false, true]) {
+    const h = setup({fid:'lab',live:{...baseFurnace(),isHeating,slotData}});
+    const before = h.data();
+    await h.complete();
+    assert.equal(h.commits(),0);
+    assert.match(h.alerts.at(-1).message,/최대 10개/);
+    assert.deepEqual(h.data(),before);
+    assert.equal(h.logs.length,0);
+  }
+});
+
 test('powder plans use ordinary allowances for included specimens and product-only powder otherwise', () => {
   const context = vm.createContext({});
   vm.runInContext(stateCode + '\nthis.powder = getPowderWeightKg; this.orderPowder = getOrderPowderWeightKg;', context);
