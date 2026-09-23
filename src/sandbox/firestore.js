@@ -12,9 +12,12 @@ const seed = () => ({
     lab: { isHeating: false, temp: '1050', operator: '', memo: '', slotData: {} },
   },
   [ROOT + 'equipment/shrinkDesks']: {},
+  ...Object.fromEntries(['4Y-W', '4Y-W-S', '4Y-Y', '5E-P', '4Y-G'].map(type => [ROOT + `inventory/demo-${type}`, {
+    id: `demo-${type}`, type, lot: `TEST-POWDER-${type}`, weight: 100, status: '사용중', date: '2026-09-23'
+  }])),
   [ROOT + 'wipList/demo-lab']: {
     id: 'demo-lab', mixLot: 'TEST-LAB-001', originalLot: 'TEST-LAB-001', type: '3Y-W', height: 20,
-    qty: 6, currentStep: 'step5', details: '[테스트] 실험로 배정용 샘플 6개',
+    qty: 6, isExperimental: true, includeShrinkageSpecimen: false, specimenPowderG: 0, currentStep: 'step5', details: '[테스트] 실험로 배정용 샘플 6개',
     heatTreatmentHistory: [],
   },
   [ROOT + 'wipList/demo-production']: {
