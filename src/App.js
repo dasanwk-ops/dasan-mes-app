@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
-import { initializeApp } from "firebase/app";
-import { getAuth, onAuthStateChanged, signInAnonymously } from "firebase/auth";
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, runTransaction, serverTimestamp, addDoc } from "firebase/firestore";
+import { SANDBOX_MODE, resetSandbox, sandboxFetch as fetch } from "./sandbox/firestore";
+import { initializeApp } from "./sandbox/firestore";
+import { getAuth, onAuthStateChanged, signInAnonymously } from "./sandbox/firestore";
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, runTransaction, serverTimestamp, addDoc } from "./sandbox/firestore";
 import { LayoutDashboard, Package, Beaker, BoxSelect, Cylinder, Flame, Microscope, Wind, Printer, Plus, ArrowRight, CheckCircle2, AlertCircle, ShoppingCart, Calculator, History, X, Layers, Split, Edit2, Trash2, Save, Play, Thermometer, Droplets, Archive, Truck, Search, Database, RefreshCcw, Boxes, Lock, Settings } from "lucide-react";
 
 // ==========================================
@@ -598,15 +599,7 @@ details:
 };
 
 // --- [Firebase Initialization] ---
-const firebaseConfig = {
-  apiKey: process.env.REACT_APP_FIREBASE_API_KEY || "AIzaSyDxHU5KH8Wdq6Ct73S-gUOvK2YqD7J23kI",
-  authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN || "dasanind-mes.firebaseapp.com",
-  projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID || "dasanind-mes",
-  storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET || "dasanind-mes.firebasestorage.app",
-  messagingSenderId: "782401133060",
-  appId: "1:782401133060:web:e6997bdb37fad09dd1f351",
-};
-const app = initializeApp(firebaseConfig);
+const app = initializeApp({ sandbox: true });
 const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = typeof __app_id !== "undefined" ? __app_id : "dasan-mes-app";
@@ -831,15 +824,15 @@ const SyncInput = ({ value, onChange, ...props }) => {
 export default function DasanMES() {
   const MASTER_PIN = "7777";
   const PROCESS_PIN = "15938";
-  const [isUnlocked, setIsUnlocked] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [isUnlocked, setIsUnlocked] = useState(SANDBOX_MODE);
+  const [isAdmin, setIsAdmin] = useState(SANDBOX_MODE);
   const [pinInput, setPinInput] = useState("");
 
   const urlParams =
   new URLSearchParams(window.location.search);
 
 const requestedStep =
-  urlParams.get("step") || "dashboard";
+  urlParams.get("step") || "step5";
 
 // 실제 존재하는 화면
 const VALID_STEP_IDS = [
@@ -1076,13 +1069,17 @@ if (
       )}
 
       <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="bg-amber-100 border-b border-amber-300 px-4 py-3 text-amber-950 text-sm flex flex-wrap items-center justify-between gap-2">
+          <div><strong>실험로 테스트 버전</strong><span className="ml-2">샘플 데이터만 사용 · 운영 재고 / 시트 / 라벨 전송 없음</span></div>
+          <button className="border border-amber-400 bg-white rounded-lg px-3 py-1 font-bold" onClick={() => { if (window.confirm("이 탭의 테스트 데이터를 처음 샘플 상태로 되돌릴까요?")) resetSandbox(); }}>샘플 초기화</button>
+        </div>
         <header className="bg-white border-b border-slate-200 px-8 py-5 flex justify-between items-center shadow-sm z-10">
           <div className="flex items-center">
             <h1 className="text-2xl font-bold text-slate-800">{PROCESS_STEPS.find((s) => s.id === activeStep)?.name}</h1>
             {!isAdmin && <span className="ml-4 bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-xs font-black border border-orange-200">현장 전용 모드</span>}
           </div>
           <div className="text-sm text-slate-600 bg-slate-100 px-3 py-1.5 rounded-full flex items-center font-bold">
-            <span className="w-2 h-2 rounded-full bg-green-500 mr-2 animate-pulse"></span> 클라우드 실시간 동기화
+            <span className="w-2 h-2 rounded-full bg-green-500 mr-2 animate-pulse"></span> 테스트 데이터 · 이 탭에 저장
           </div>
         </header>
         <main className="flex-1 overflow-y-auto bg-slate-50 p-8">
