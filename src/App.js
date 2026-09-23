@@ -219,7 +219,7 @@ wipFinished.forEach((w) => {
     height: w.height,
     qty: Number(w.qty) || 0,
     details: w.details || "",
-    shrinkageRate: w.shrinkageRate || "-",
+    shrinkageRate: w.shrinkageStatus === "not_measured" ? "미측정" : w.shrinkageRate || "-",
   };
 });
 
@@ -781,6 +781,29 @@ const PROCESS_STEPS = [
 ];
 
 const HEAT_FURNACE_IDS = [1, 2, "lab"];
+const LAB_FURNACE_CAPACITY = 10;
+const includesShrinkageSpecimen = item => !item.isExperimental || item.includeShrinkageSpecimen === true;
+// Experimental specimen powder is entered in grams per released production lot.
+// Ordinary orders (including legacy records) retain the existing allowance.
+const getPowderWeightKg = (item, qty = item.qty) => {
+  const count = Number(qty);
+  if (!Number.isFinite(count) || count <= 0) return 0;
+  const productKg = Number(item.singleWeight || 0) * count / 1000;
+  if (!item.isExperimental) return productKg * 1.01 + 0.2;
+  return productKg + (includesShrinkageSpecimen(item) ? Number(item.specimenPowderG || 0) / 1000 : 0);
+};
+const getOrderPowderWeightKg = (item, qty = item.qty) => getPowderWeightKg(item, qty) +
+  (item.isExperimental && includesShrinkageSpecimen(item)
+    ? Math.max(0, Math.ceil(Number(qty) / LAB_FURNACE_CAPACITY) - 1) * Number(item.specimenPowderG || 0) / 1000 : 0);
+const getExperimentalLabel = item => item.isExperimental
+  ? `실험용 · 시편 ${includesShrinkageSpecimen(item) ? `포함 (${item.specimenPowderG}g/투입)` : "미포함"}` : "";
+const validateLabSlots = slotData => {
+  const slots = Object.entries(slotData || {});
+  if (slots.some(([id, slot]) => id !== "SINGLE" || !Number.isInteger(Number(slot.qty)) || Number(slot.qty) < 1) ||
+      slots.reduce((sum, [, slot]) => sum + Number(slot.qty), 0) > LAB_FURNACE_CAPACITY) {
+    throw new Error(`실험로는 단일 공간에 최대 ${LAB_FURNACE_CAPACITY}개까지 배정할 수 있습니다.`);
+  }
+};
 const STANDARD_FURNACE_SLOTS = [
     { id: "L6", label: "좌측 6층" }, { id: "R6", label: "우측 6층" },
     { id: "L5", label: "좌측 5층" }, { id: "R5", label: "우측 5층" },
@@ -1095,9 +1118,8 @@ if (
 // ==========================================
 function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, shippingHistory, furnaces, setActiveStep, ctx, masterSettings }) {
   const stockForecast = React.useMemo(() => {
-    const getBOM = (color, singleWeight, qty) => {
-      const baseKg = (Number(singleWeight) * Number(qty)) / 1000;
-      const totalKg = baseKg * 1.01 + 0.2;
+    const getBOM = (color, singleWeight, qty, options, isOrder = false) => {
+      const totalKg = (isOrder ? getOrderPowderWeightKg : getPowderWeightKg)({ ...options, singleWeight }, qty);
       const ratios = getProductRatios(masterSettings, color);
       const req = {};
       for (const [mat, ratio] of Object.entries(ratios)) {
@@ -1111,13 +1133,13 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
         if (o.status === "취소") return sum;
         const { remainingQty } = getOrderProgress(o, wipList, shippingHistory);
         if (remainingQty <= 0) return sum;
-        const bom = getBOM(o.color, o.singleWeight, remainingQty);
+        const bom = getBOM(o.color, o.singleWeight, remainingQty, o, true);
         return sum + (bom[type] || 0);
       }, 0);
      const reqFromPendingLots = (wipList || [])
   .filter((w) => ["step1", "step2"].includes(w.currentStep))
   .reduce((sum, w) => {
-    const bom = getBOM(w.type, w.singleWeight || 628, w.qty);
+    const bom = getBOM(w.type, w.singleWeight || 628, w.qty, w);
     return sum + (bom[type] || 0);
   }, 0);
       const totalRequired = reqFromOrders + reqFromPendingLots;
@@ -1292,12 +1314,7 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
             safeQty !== liveQty &&
             ["step1", "step2"].includes(liveStep)
           ) {
-            const totalWeight =
-              safeQty > 0
-                ? ((Number(live.singleWeight || 0) * safeQty) / 1000) *
-                    1.01 +
-                  0.2
-                : 0;
+            const totalWeight = getPowderWeightKg(live, safeQty);
             updateData.weight = totalWeight.toFixed(3);
           }
 
@@ -1973,7 +1990,7 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
                       )}
                     </td>
                     <td className="px-4 py-3 text-center font-bold text-indigo-600">
-                      {isEditing ? <input type="number" step="0.01" value={editData.shrinkageRate || ""} onChange={(e) => setEditData({ ...editData, shrinkageRate: e.target.value })} className="border p-1 w-16 text-center rounded bg-orange-50 font-black" /> : wip.shrinkageRate || "0.00"}
+                      {isEditing ? <input type="number" step="0.01" value={editData.shrinkageRate || ""} onChange={(e) => setEditData({ ...editData, shrinkageRate: e.target.value })} className="border p-1 w-16 text-center rounded bg-orange-50 font-black" /> : wip.shrinkageStatus === "not_measured" ? "미측정" : wip.shrinkageRate || "-"}
                     </td>
                     <td className="px-4 py-3">
                       {isEditing ? (
@@ -2019,14 +2036,13 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
 // Step 0: Order Management 
 // ==========================================
 function Step0OrderManagement({ orderList, wipList, shippingHistory, masterSettings, ctx }) {
-  const [newOrder, setNewOrder] = useState({ date: getKST().split(" ")[0], color: "345 BL3", height: "25", singleWeight: masterSettings.WEIGHT_BY_HEIGHT["25"] || 628, qty: 100 });
+  const [newOrder, setNewOrder] = useState({ date: getKST().split(" ")[0], color: "345 BL3", height: "25", singleWeight: masterSettings.WEIGHT_BY_HEIGHT["25"] || 628, qty: 100, isExperimental: false, includeShrinkageSpecimen: false, specimenPowderG: "" });
   const [editingId, setEditingId] = useState(null);
   const [editData, setEditData] = useState({});
   const [releaseQtyMap, setReleaseQtyMap] = useState({});
 
-  const calcBOM = (color, singleWeight, qty) => {
-    const baseKg = (singleWeight * parseInt(qty)) / 1000;
-    const totalKg = baseKg * 1.01 + 0.2;
+  const calcBOM = (color, singleWeight, qty, options) => {
+    const totalKg = getOrderPowderWeightKg({ ...options, singleWeight }, qty);
     const ratios = getProductRatios(masterSettings, color);
     const reqBOM = {};
     for (const [mat, ratio] of Object.entries(ratios)) { if (ratio > 0) reqBOM[mat] = totalKg * ratio; }
@@ -2035,24 +2051,34 @@ function Step0OrderManagement({ orderList, wipList, shippingHistory, masterSetti
 
   const handleAdd = async (e) => {
     e.preventDefault();
-    if (!newOrder.qty || newOrder.qty <= 0) return;
+    if (!Number.isInteger(Number(newOrder.qty)) || Number(newOrder.qty) <= 0) return ctx.showToast("수량은 양의 정수로 입력해주세요.", "error");
+    if (newOrder.isExperimental && newOrder.includeShrinkageSpecimen &&
+        (!Number.isInteger(Number(newOrder.specimenPowderG)) || Number(newOrder.specimenPowderG) <= 0)) {
+      return ctx.showToast("시편에 사용할 추가 분말량을 1g 단위의 양수로 입력해주세요.", "error");
+    }
     const sWeight = Number(newOrder.singleWeight) || masterSettings.WEIGHT_BY_HEIGHT[newOrder.height];
-    const reqBOM = calcBOM(newOrder.color, sWeight, newOrder.qty);
+    const reqBOM = calcBOM(newOrder.color, sWeight, newOrder.qty, newOrder);
     const newItem = {
       id: Date.now().toString(), orderNo: `ORD-${newOrder.date.replace(/-/g, "").slice(2)}-${Math.floor(Math.random() * 1000)}`,
       orderDate: newOrder.date, productCode: `HR-${getProductShade(newOrder.color)}${newOrder.height}`, color: normalizeProductType(newOrder.color), height: newOrder.height,
-      singleWeight: sWeight, qty: parseInt(newOrder.qty), releasedQty: 0, reqBOM, status: "대기중", createdAt: serverTimestamp(),
+      singleWeight: sWeight, qty: Number(newOrder.qty), releasedQty: 0, reqBOM, status: "대기중", createdAt: serverTimestamp(),
+      isExperimental: newOrder.isExperimental,
+      includeShrinkageSpecimen: includesShrinkageSpecimen(newOrder),
+      specimenPowderG: newOrder.isExperimental && newOrder.includeShrinkageSpecimen ? Number(newOrder.specimenPowderG) : 0,
     };
     try { await setDoc(getDocRef("orderList", newItem.id), newItem); ctx.showToast("생산 지시가 등록되었습니다.", "success"); } catch (err) { ctx.showToast("등록 실패", "error"); }
   };
 
   const handleReleaseToWIP = async (order) => {
-    const inputQty = parseInt(releaseQtyMap[order.id]);
+    const inputQty = Number(releaseQtyMap[order.id]);
     const progress = getOrderProgress(order, wipList, shippingHistory);
     const remaining = progress.remainingQty;
 
-    if (!inputQty || inputQty <= 0) {
+    if (!Number.isInteger(inputQty) || inputQty <= 0) {
       return ctx.showToast("투입할 수량을 입력해주세요.");
+    }
+    if (order.isExperimental && inputQty > LAB_FURNACE_CAPACITY) {
+      return ctx.showToast(`실험용은 1회 투입을 ${LAB_FURNACE_CAPACITY}개 이하로 나누어주세요.`, "error");
     }
     if (inputQty > remaining) {
       return ctx.showToast(
@@ -2079,6 +2105,10 @@ function Step0OrderManagement({ orderList, wipList, shippingHistory, masterSetti
             type: normalizeProductType(order.color),
             height: order.height,
             singleWeight: order.singleWeight,
+            isExperimental: order.isExperimental === true,
+            includeShrinkageSpecimen: includesShrinkageSpecimen(order),
+            specimenPowderG: order.isExperimental && includesShrinkageSpecimen(order) ? Number(order.specimenPowderG || 0) : 0,
+            productionPurpose: getExperimentalLabel(order) || "일반 생산",
             qty: inputQty,
             currentStep: "step1",
             details: `[${getKST()}] 지시분할투입 (원본:${order.orderNo})`,
@@ -2137,7 +2167,7 @@ function Step0OrderManagement({ orderList, wipList, shippingHistory, masterSetti
     return getOrderProgress(o, wipList, shippingHistory).remainingQty > 0;
   });
 
-  const pbBOM = calcBOM(newOrder.color, newOrder.singleWeight || masterSettings.WEIGHT_BY_HEIGHT[newOrder.height], newOrder.qty || 0);
+  const pbBOM = calcBOM(newOrder.color, newOrder.singleWeight || masterSettings.WEIGHT_BY_HEIGHT[newOrder.height], newOrder.qty || 0, newOrder);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -2172,8 +2202,20 @@ function Step0OrderManagement({ orderList, wipList, shippingHistory, masterSetti
             <div><label className="block text-sm font-medium mb-1">단중 (g)</label><input type="number" required min="1" className="w-full border rounded-md p-2 font-bold text-indigo-700 bg-indigo-50" value={newOrder.singleWeight || ""} onChange={(e) => setNewOrder({ ...newOrder, singleWeight: e.target.value })} /></div>
             <div><label className="block text-sm font-medium mb-1">수량 (EA)</label><input type="number" required min="1" className="w-full border rounded-md p-2" value={newOrder.qty} onChange={(e) => setNewOrder({ ...newOrder, qty: e.target.value })} /></div>
           </div>
-          <div className="p-4 bg-indigo-50 rounded-lg border mt-4">
+          <div className="p-4 rounded-lg border border-amber-200 bg-amber-50 space-y-3">
+            <label className="flex items-center gap-2 font-bold"><input aria-label="실험용 생산" type="checkbox" checked={newOrder.isExperimental} onChange={e => setNewOrder({ ...newOrder, isExperimental: e.target.checked })} />실험용 생산</label>
+            {newOrder.isExperimental && <>
+              <p className="text-xs text-amber-900">실험로는 최대 10개입니다. 공정 투입을 10개 이하로 나누어주세요.</p>
+              <label className="flex items-center gap-2 text-sm font-bold"><input aria-label="수축률 시편 포함" type="checkbox" checked={newOrder.includeShrinkageSpecimen} onChange={e => setNewOrder({ ...newOrder, includeShrinkageSpecimen: e.target.checked })} />수축률 시편 포함</label>
+              {newOrder.includeShrinkageSpecimen ? <label className="block text-sm">시편 추가 분말 (g, 공정 투입 1회당)
+                <input aria-label="시편 추가 분말" type="number" min="1" step="1" required value={newOrder.specimenPowderG} onChange={e => setNewOrder({ ...newOrder, specimenPowderG: e.target.value })} className="w-full border rounded p-2 mt-1" placeholder="투입 1회에 필요한 총 시편 분말량" />
+              </label> : <p className="text-xs text-amber-900">제품 분말만 투입합니다. 시편 분말과 일반 생산 가산분은 추가하지 않습니다.</p>}
+            </>}
+          </div>
+          <div className="p-4 bg-indigo-50 rounded-lg border mt-4" data-testid="order-bom">
             <div className="text-xs font-semibold mb-2">예상 소재 소요량 (BOM)</div>
+            {newOrder.isExperimental && newOrder.includeShrinkageSpecimen && <p className="text-xs mb-2">더 작게 나누어 투입하면 시편 분말이 매회 추가됩니다.</p>}
+            {newOrder.isExperimental && <p className="text-xs mb-2">제품 {((Number(newOrder.singleWeight) * Number(newOrder.qty)) / 1000).toFixed(3)}kg{newOrder.includeShrinkageSpecimen ? ` + 시편 ${(Number(newOrder.specimenPowderG || 0) * Math.ceil(Number(newOrder.qty) / LAB_FURNACE_CAPACITY) / 1000).toFixed(3)}kg (10개 이하로 나누어 투입 기준)` : " · 시편 없음"}</p>}
             <div className="flex flex-wrap gap-2">
               {Object.entries(pbBOM).map(([mat, kg]) => (
                 <div key={mat} className="flex justify-between px-3 py-2 bg-white rounded border flex-1"><span className="font-bold text-xs">{mat}</span><span className="font-black text-indigo-700">{kg.toFixed(3)}kg</span></div>
@@ -2199,7 +2241,7 @@ function Step0OrderManagement({ orderList, wipList, shippingHistory, masterSetti
                 const percent = progress.percent;
                 return (
                   <tr key={order.id} className="border-b hover:bg-slate-50 transition-colors">
-                    <td className="px-4 py-4"><div className="text-[10px] text-slate-400 font-mono mb-1">{order.orderNo}</div><div className="font-black text-slate-800 text-base">{getProductLabel(order.color)} {order.height}T</div></td>
+                    <td className="px-4 py-4"><div className="text-[10px] text-slate-400 font-mono mb-1">{order.orderNo}</div><div className="font-black text-slate-800 text-base">{getProductLabel(order.color)} {order.height}T</div>{order.isExperimental && <div className="text-xs font-bold text-amber-700 mt-1">{getExperimentalLabel(order)}</div>}</td>
                     <td className="px-4 py-4"><div className="font-bold text-slate-700">{order.qty} EA</div><div className="text-xs font-black text-orange-600">잔량: {remaining} EA</div></td>
                     <td className="px-4 py-4 min-w-[120px]">
                       <div className="flex items-center gap-2"><div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-indigo-500 transition-all" style={{ width: `${percent}%` }}></div></div><span className="text-[10px] font-black text-slate-500">{percent}%</span></div>
@@ -2265,9 +2307,8 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
     );
   };
 
-  const calcPartialBOM = (color, singleWeight, qty) => {
-    const baseKg = (Number(singleWeight) * Number(qty)) / 1000;
-    const totalKg = baseKg * 1.01 + 0.2;
+  const calcPartialBOM = (color, singleWeight, qty, options) => {
+    const totalKg = getPowderWeightKg({ ...options, singleWeight }, qty);
     const ratios = getProductRatios(masterSettings, color);
     const reqBOM = {};
     for (const [mat, ratio] of Object.entries(ratios)) { if (ratio > 0) reqBOM[mat] = totalKg * ratio; }
@@ -2347,7 +2388,7 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
   const handleOutboundLot = async (lot) => {
     const op = operators[lot.id];
     if (!op) return ctx.showToast("작업자 성명을 입력해주세요.", "error");
-    const neededBOM = calcPartialBOM(lot.type, lot.singleWeight, lot.qty);
+    const neededBOM = calcPartialBOM(lot.type, lot.singleWeight, lot.qty, lot);
     const totalW = Object.values(neededBOM).reduce((a, b) => a + b, 0);
 
     try {
@@ -2355,7 +2396,7 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
         ...lot,
         weight: totalW.toFixed(3),
         currentStep: "step2",
-        details: `${lot.details || ""}\n[${getKST()}] [소재창고] 배합 대기로 이관 (담당:${op})`
+        details: `${lot.details || ""}\n[${getKST()}] [소재창고] 배합 대기로 이관 (담당:${op})${lot.isExperimental ? ` | ${getExperimentalLabel(lot)} | 총 분말:${totalW.toFixed(3)}kg` : ""}`
       });
       ctx.showToast(`로트 ${lot.mixLot} 배합 공정으로 이관 완료`, "success");
       logProcessToGoogleSheet("step1", lot, op, { details: "배합 공정 이관 완료" });
@@ -2427,12 +2468,12 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
           <tbody className="divide-y divide-slate-100">
             {pendingLots.length === 0 && <tr><td colSpan="5" className="text-center py-20 text-slate-400 font-medium italic">대기 중인 로트가 없습니다.</td></tr>}
             {pendingLots.map((lot) => {
-              const neededBOM = calcPartialBOM(lot.type, lot.singleWeight, lot.qty);
+              const neededBOM = calcPartialBOM(lot.type, lot.singleWeight, lot.qty, lot);
               const totalBOMWeight = Object.values(neededBOM).reduce((a, b) => a + b, 0);
               return (
                 <tr key={lot.id} className="hover:bg-slate-50 transition-colors">
                   <td className="px-6 py-4 font-mono font-bold text-indigo-600">{lot.mixLot}</td>
-                  <td className="px-6 py-4 font-black">{getProductLabel(lot.type)} {lot.height}T</td>
+                  <td className="px-6 py-4 font-black">{getProductLabel(lot.type)} {lot.height}T{lot.isExperimental && <div className="text-xs text-amber-700 mt-1">{getExperimentalLabel(lot)}</div>}</td>
                   <td className="px-4 py-4 font-black text-blue-600 text-center text-lg">{lot.qty} EA</td>
                   <td className="px-6 py-4">
                     <div className="flex flex-wrap gap-1.5 items-center">
@@ -2571,7 +2612,9 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
 
   // 실제 생산 가능 수량 (EA) 및 부족 수량
   const actualQty = origTotalWeight > 0
-    ? Math.min(activeJob?.qty || 0, Math.floor(((activeJob?.qty || 0) * actualMixedTotalKg) / origTotalWeight))
+    ? Math.min(activeJob?.qty || 0, activeJob?.isExperimental
+      ? Math.max(0, Math.floor((actualMixedTotalKg * 1000 - (includesShrinkageSpecimen(activeJob) ? Number(activeJob.specimenPowderG || 0) : 0) + 1e-7) / Number(activeJob.singleWeight)))
+      : Math.floor(((activeJob?.qty || 0) * actualMixedTotalKg) / origTotalWeight))
     : 0;
   const shortageQty = activeJob ? Math.max(0, activeJob.qty - actualQty) : 0;
 
@@ -2892,6 +2935,7 @@ const usedLotInfoStr = activeMaterials
           </div>
 
           <div className="p-8">
+            {activeJob.isExperimental && <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm font-bold text-amber-900">{getExperimentalLabel(activeJob)} · 제품 분말 + 선택한 시편 분말만 배합</div>}
             <div className="flex justify-between mb-8 pb-6 border-b gap-6">
               <div>
                 <div className="text-sm font-bold text-slate-500 mb-1">작업 대상 제품</div>
@@ -3053,7 +3097,7 @@ function Step3FirstMolding({ wipList, masterSettings, ctx }) {
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
       <h3 className="text-lg font-bold mb-2">1차 성형 (프레스 건식성형)</h3>
-      <p className="text-sm text-slate-500 mb-6">성형 압력 및 특이사항 입력 필수. 수축률 측정용 시편 (7T) 포함 성형.</p>
+      <p className="text-sm text-slate-500 mb-6">성형 압력 및 특이사항 입력 필수. 발주에서 지정한 수축률 시편 포함 여부를 확인하고 성형하세요.</p>
       <div className="space-y-6">
         {pendingWip.length === 0 && <div className="text-center py-12 text-slate-400 border-2 border-dashed border-slate-100 rounded-xl">대기 중인 반제품이 없습니다.</div>}
         {pendingWip.map((wip) => {
@@ -3075,7 +3119,7 @@ function Step3FirstMolding({ wipList, masterSettings, ctx }) {
                   </div>
                 </div>
                 <div className="flex items-center space-x-3 w-full xl:w-auto">
-                  <label className="flex items-center space-x-2 text-sm font-bold text-slate-700 bg-white px-3 py-2 rounded-lg border border-slate-200 shadow-sm cursor-pointer whitespace-nowrap"><input type="checkbox" className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4" defaultChecked /><span>수축률 시편 포함</span></label>
+                  <label className="flex items-center space-x-2 text-sm font-bold text-slate-700 bg-white px-3 py-2 rounded-lg border border-slate-200 shadow-sm cursor-pointer whitespace-nowrap"><input type="checkbox" className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4" checked={includesShrinkageSpecimen(wip)} readOnly /><span>{includesShrinkageSpecimen(wip) ? "수축률 시편 포함" : "실험용 · 시편 미포함"}</span></label>
                   <div className="relative flex-1 xl:flex-none">
                     <input type="text" placeholder="작업자 성명" value={d.operator || ""} onChange={(e) => handleDataChange(wip.id, "operator", e.target.value)} className={`border rounded-lg p-2 text-sm w-full xl:w-32 text-center font-bold shadow-sm focus:ring-2 outline-none ${d.error ? "border-red-400 bg-red-50 focus:ring-red-200" : "border-slate-300 focus:border-indigo-500 focus:ring-indigo-200"}`} />
                   </div>
@@ -3292,6 +3336,28 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
   };
 
   const updateSlotData = async (fid, newSlotData) => {
+    if (String(fid) === "lab") {
+      validateLabSlots(newSlotData);
+      await runTransaction(getFirestore(), async tx => {
+        const ref = getDocRef("equipment", "furnaces");
+        const snap = await tx.get(ref);
+        const live = snap.exists() ? snap.data() : {};
+        if (live.lab?.isHeating || getFurnaceComparisonKey(fid, live.lab) !== getFurnaceComparisonKey(fid, furnaces.lab)) {
+          throw new Error("실험로 배정이 변경되었습니다. 최신 상태를 확인하세요.");
+        }
+        for (const slot of Object.values(newSlotData)) {
+          const w = await tx.get(getDocRef("wipList", slot.wipId));
+          const allocatedElsewhere = Object.entries(live).filter(([id]) => id !== "lab")
+            .flatMap(([, f]) => Object.values(f.slotData || {})).filter(s => s.wipId === slot.wipId)
+            .reduce((sum, s) => sum + Number(s.qty), 0);
+          if (!w.exists() || w.data().currentStep !== "step5" || Number(w.data().qty) !== Number(slot.qty) || allocatedElsewhere > 0) {
+            throw new Error("실험로에는 10개 이하의 로트 전체를 배정하세요. 로트 수량 또는 다른 전기로 배정을 확인하세요.");
+          }
+        }
+        tx.set(ref, { ...live, lab: { ...DEFAULT_FURNACES.lab, ...live.lab, slotData: newSlotData } });
+      });
+      return;
+    }
     const newFurnaces = cloneDeep(furnaces);
     newFurnaces[fid].slotData = newSlotData;
     await setDoc(getDocRef("equipment", "furnaces"), newFurnaces);
@@ -3311,13 +3377,18 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
       return;
     }
     
-    const defaultQty = String(fid) === "lab" ? remain : Math.min(28, remain);
-    setPromptData({ isOpen: true, message: `[${getFurnaceLabel(fid)} · ${getFurnaceSlotLabel(slotId)}] 배정할 수량을 입력하세요. (최대 ${remain}개 가능)`, max: remain, val: defaultQty.toString(), fid: fid, slotId: slotId });
+    if (String(fid) === "lab" && Number(wipList.find(w => w.id === selectedWipId)?.qty) > LAB_FURNACE_CAPACITY) {
+      setAlertModal({ isOpen: true, message: "실험로는 최대 10개입니다. 10개 이하로 분할된 로트를 선택하세요.", type: "warning" });
+      return;
+    }
+    const maxQty = String(fid) === "lab" ? Math.min(LAB_FURNACE_CAPACITY, remain) : remain;
+    const defaultQty = String(fid) === "lab" ? maxQty : Math.min(28, remain);
+    setPromptData({ isOpen: true, message: `[${getFurnaceLabel(fid)} · ${getFurnaceSlotLabel(slotId)}] 배정할 수량을 입력하세요. (최대 ${maxQty}개 가능)`, max: maxQty, val: defaultQty.toString(), fid: fid, slotId: slotId });
   };
 
   const confirmPrompt = async () => {
-    const qty = parseInt(promptData.val);
-    if (isNaN(qty) || qty <= 0 || qty > promptData.max) {
+    const qty = Number(promptData.val);
+    if (!Number.isInteger(qty) || qty <= 0 || qty > promptData.max) {
       setAlertModal({ isOpen: true, message: `수량은 1에서 ${promptData.max} 사이로 입력해주세요.`, type: "warning" });
       return;
     }
@@ -3329,7 +3400,8 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
         wipId: selectedWipId, mixLot: w.mixLot, type: w.type, height: w.height, qty: qty
     }};
 
-    await updateSlotData(fid, newSlotData);
+    try { await updateSlotData(fid, newSlotData); }
+    catch (e) { setAlertModal({ isOpen: true, message: e.message, type: "error" }); return; }
     setPromptData({ isOpen: false, message: "", max: 0, val: "", fid: null, slotId: null });
   };
 
@@ -3338,10 +3410,23 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
     const f = furnaces[fid] || {};
     const newData = { ...f.slotData };
     delete newData[slotId];
-    await updateSlotData(fid, newData);
+    try { await updateSlotData(fid, newData); }
+    catch (e) { setAlertModal({ isOpen: true, message: e.message, type: "error" }); }
   };
 
   const handleFurnaceInfo = async (fid, field, val) => {
+    if (String(fid) === "lab") {
+      try {
+        await runTransaction(getFirestore(), async tx => {
+          const ref = getDocRef("equipment", "furnaces");
+          const snap = await tx.get(ref);
+          const live = snap.exists() ? snap.data() : {};
+          if (getFurnaceComparisonKey(fid, live.lab) !== getFurnaceComparisonKey(fid, furnaces.lab)) throw new Error("실험로 상태가 변경되었습니다. 최신 작업을 확인하세요.");
+          tx.set(ref, { ...live, lab: { ...DEFAULT_FURNACES.lab, ...live.lab, [field]: val } });
+        });
+      } catch (e) { setAlertModal({ isOpen: true, message: e.message, type: "error" }); }
+      return;
+    }
     const newFurnaces = cloneDeep(furnaces);
     if (!newFurnaces[fid]) return;
     newFurnaces[fid][field] = val;
@@ -3351,7 +3436,10 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
   const toggleHeating = async (fid) => {
     const f = furnaces[fid] || {};
     const db = getFirestore();
-    
+    if (String(fid) === "lab") {
+      try { validateLabSlots(f.slotData); }
+      catch (e) { setAlertModal({ isOpen: true, message: e.message, type: "error" }); return; }
+    }
     if (!f.isHeating) {
       if (Object.keys(f.slotData || {}).length === 0) {
          setAlertModal({ isOpen: true, message: "전기로가 비어있습니다. 제품을 배정해주세요.", type: "warning" });
@@ -3361,6 +3449,24 @@ function Step5HeatTreatment({ wipList, furnaces, masterSettings, ctx }) {
         setAlertModal({ isOpen: true, message: "담당 작업자 이름을 입력해주세요.", type: "warning" });
         return;
       }
+     if (String(fid) === "lab") {
+       try {
+         await runTransaction(db, async tx => {
+           const ref = getDocRef("equipment", "furnaces");
+           const snap = await tx.get(ref);
+           const live = snap.exists() ? snap.data() : {};
+           if (live.lab?.isHeating || getFurnaceComparisonKey(fid, live.lab) !== getFurnaceComparisonKey(fid, f)) throw new Error("실험로 배정이 변경되었습니다. 최신 상태를 확인하세요.");
+           validateLabSlots(live.lab.slotData);
+           for (const slot of Object.values(live.lab.slotData || {})) {
+             const w = await tx.get(getDocRef("wipList", slot.wipId));
+             if (!w.exists() || w.data().currentStep !== "step5" || Number(w.data().qty) !== Number(slot.qty)) throw new Error("로트 수량 또는 공정이 변경되었습니다. 배정을 확인하세요.");
+           }
+           tx.set(ref, { ...live, lab: { ...live.lab, isHeating: true, startedAt: getKST() } });
+         });
+         ctx.showToast("열처리 가동이 시작되었습니다.", "success");
+       } catch (e) { setAlertModal({ isOpen: true, message: e.message, type: "error" }); }
+       return;
+     }
      const newFurnaces = cloneDeep(furnaces);
 
 newFurnaces[fid].isHeating = true;
@@ -3411,6 +3517,7 @@ const liveFurnace = furnaceSnap.exists() ? furnaceSnap.data()[fid] : null;
 if (!liveFurnace?.isHeating || getFurnaceComparisonKey(fid, liveFurnace) !== getFurnaceComparisonKey(fid, f)) {
   throw new Error("전기로 데이터가 변경되었거나 이미 이관되었습니다. 새로고침 후 확인하세요.");
 }
+if (String(fid) === "lab") validateLabSlots(liveFurnace.slotData);
 for (const wId of Object.keys(grouped)) {
   if (!wipSnaps[wId]?.exists() || wipSnaps[wId].data().currentStep !== "step5") {
     throw new Error("열처리 WIP 상태가 다릅니다. 중복 이관 또는 분할 배정을 확인하세요.");
@@ -3616,6 +3723,7 @@ for (const wId of Object.keys(grouped)) {
               return (
                 <div key={id} data-testid={`furnace-${id}`} className={`flex flex-col border-4 rounded-2xl overflow-hidden transition-all duration-300 ${cardStyle}`}>
                   <div className={`${compact ? "p-3 text-lg" : "p-4 text-xl"} text-center font-black flex justify-center items-center ${headerStyle}`}>{headerText}</div>
+                  {compact && <div className="text-center text-xs font-bold bg-amber-50 text-amber-900 p-2">단일 공간 · 최대 10개</div>}
                   <div className={compact ? "flex flex-col p-3" : "flex flex-col flex-grow p-4 sm:p-5"}>
                     {!isH && <div className="text-center font-bold mb-4 text-sm py-2.5 rounded-lg border shadow-sm text-indigo-800 bg-indigo-50 border-indigo-200">빈칸을 클릭하여 제품을 배정하세요.</div>}
                     
@@ -3697,6 +3805,7 @@ for (const wId of Object.keys(grouped)) {
                       <div className="text-xs text-slate-500 font-mono mb-1 bg-slate-100 inline-block px-2 py-0.5 rounded">{wip.mixLot}</div>
                       <div className="font-black text-slate-800 text-lg mt-1">{getProductLabel(wip.type)} <span className="text-slate-500">{wip.height}T</span></div>
                       <div className="text-sm font-bold text-indigo-600 mt-2">잔여 수량: {remain}개</div>
+                      {wip.isExperimental && <div className="text-xs font-bold text-amber-700 mt-1">{getExperimentalLabel(wip)}</div>}
                     </div>
                   );
                 })}
@@ -3928,6 +4037,69 @@ function Step5_5Shrinkage({ wipList, ctx }) {
     try { await action(); }
     catch (e) { setAlertModal({ isOpen: true, message: e.message, type: "error" }); }
     finally { busyRef.current = false; setBusy(false); }
+  };
+  const skipMeasurements = fid => {
+    if (String(fid) !== "lab") return;
+    const draft = cloneDeep(shrinkDesksRef.current[fid] || emptyDesk());
+    const base = cloneDeep(dirty.current[fid] ? draftBase.current[fid] : draft);
+    ctx.showConfirm("수축률을 미측정으로 기록하고 검수로 이관하시겠습니까? 입력한 면적은 작업 이력에 보관하며 수축률 결과로 확정하지 않습니다.", () => guarded(async () => {
+      const completedAt = getKST();
+      const archiveId = draft.batchId || `unmeasured-lab-${Date.now()}`;
+      let logs = [];
+      await runTransaction(getFirestore(), async tx => {
+        const ref = getDocRef("equipment", "shrinkDesks");
+        const snap = await tx.get(ref);
+        const all = snap.exists() ? snap.data() : {};
+        const live = all[fid];
+        if (!live || ![1, 2].includes(live.step) || deskVersion(live) !== deskVersion(base)) {
+          throw new Error("측정 작업이 변경되었거나 이미 이관되었습니다. 최신 작업을 확인하세요.");
+        }
+        validateLabSlots(live.slotData);
+        const slots = Object.values(live.slotData || {});
+        if (!slots.length) throw new Error("미측정으로 이관할 로트가 없습니다.");
+        const wips = [];
+        for (const wipId of new Set(slots.map(slot => slot.wipId))) {
+          const wipRef = getDocRef("wipList", wipId);
+          const wipSnap = await tx.get(wipRef);
+          if (!wipSnap.exists() || wipSnap.data().currentStep !== "step5_shrink") throw new Error("이미 이관되었거나 존재하지 않는 로트입니다.");
+          const wip = wipSnap.data();
+          const qty = slots.filter(slot => slot.wipId === wipId).reduce((sum, slot) => sum + Number(slot.qty), 0);
+          if (qty !== Number(wip.qty)) throw new Error("로트 수량과 실험로 측정 수량이 다릅니다.");
+          for (const [otherFid, desk] of Object.entries(all)) {
+            const batches = [...(desk.queue || []), ...(String(otherFid) !== String(fid) ? [desk] : [])];
+            if (batches.some(b => Object.values(b.slotData || {}).some(slot => slot.wipId === wipId))) throw new Error("같은 WIP가 다른 측정 작업에도 있습니다. 배정을 확인하세요.");
+          }
+          wips.push({ ref: wipRef, wip });
+        }
+        const nextLogs = [];
+        // Update the same WIP; preserve identifiers, quantity and every existing history entry.
+        for (const { ref: wipRef, wip } of wips) {
+          const record = { status: "not_measured", furnaceId: "lab", batchId: archiveId, completedAt,
+            operator: draft.operator || live.operator || "미입력", previousShrinkageRate: wip.shrinkageRate ?? null,
+            reason: "실험로 수축률 측정 생략" };
+          const patch = { currentStep: "step6", shrinkageRate: null, shrinkageStatus: "not_measured",
+            shrinkageHistory: [...(wip.shrinkageHistory || []), record],
+            details: `${wip.details || ""}\n[${completedAt}] [수축률 미측정] 실험로 · 측정 생략 후 검수 이관 | 담당:${record.operator}` };
+          tx.update(wipRef, patch);
+          nextLogs.push({ ...wip, ...patch });
+        }
+        const { queue: ignoredQueue, ...archive } = draft;
+        tx.set(getDocRef("shrinkArchives", archiveId), { ...archive, furnaceId: "lab", kind: "completed-unmeasured", completedAt,
+          results: nextLogs.map(w => ({ wipId: w.id, mixLot: w.mixLot, qty: w.qty, shrinkageRate: null, shrinkageStatus: "not_measured" })) });
+        const waiting = [...(live.queue || [])];
+        tx.set(ref, { ...all, [fid]: waiting.length ? { ...waiting.shift(), queue: waiting } : emptyDesk() });
+        logs = nextLogs;
+      });
+      dirty.current[fid] = false;
+      delete draftBase.current[fid];
+      // A pending listener may have retained a dirty draft while the transaction committed.
+      shrinkDesksRef.current = { ...shrinkDesksRef.current, [fid]: { ...emptyDesk(), ...serverDesks.current[fid] } };
+      setShrinkDesks(shrinkDesksRef.current);
+      setSaveMessage("미측정으로 기록하고 검수로 이관했습니다.");
+      ctx.showToast("수축률 미측정 · 검수 이관 완료", "success");
+      await Promise.all(logs.map(w => logProcessToGoogleSheet("step5_shrink", w, draft.operator || "미입력",
+        { equipment: "실험로", measurements: "수축률 미측정", details: "측정 생략 후 검수 이관" })));
+    }));
   };
   const selectBatch = (fid, batchId) => guarded(async () => {
     if (dirty.current[fid]) await saveDesk(fid);
@@ -4306,6 +4478,7 @@ if (hasIncompleteMeasurement) {
             qty: totalQty,
             currentStep: "step6",
             shrinkageRate: m.finalShrink,
+            shrinkageStatus: "measured",
             details: `${orig.details || ""}
 ${recordDetails}`,
           };
@@ -4372,6 +4545,7 @@ nextProcessLogs.push({
               qty: totalQty,
               currentStep: "step6",
               shrinkageRate: gAvg,
+              shrinkageStatus: "measured",
               details: `${orig.details || ""}
 ${recordDetails}`,
             };
@@ -4528,6 +4702,10 @@ nextProcessLogs.push({
                   <div>저장시각: {d.savedAt || "미확인"} · {dirty.current[id] ? "미저장 변경 있음" : "저장된 데이터"}</div>
                 </div>
                 <div className="flex flex-col flex-grow p-4 sm:p-5">
+                  {hasData && id === "lab" && <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3">
+                    <p className="text-sm text-amber-900 mb-2">실험로는 측정값 없이 검수로 이관할 수 있습니다. 수축률은 ‘미측정’으로 기록합니다.</p>
+                    <button onClick={() => skipMeasurements(id)} className="w-full rounded-lg bg-amber-700 text-white font-bold p-3">수축률 미측정으로 검수 이관</button>
+                  </div>}
                   {hasData && <div className={`text-center font-bold mb-4 text-sm py-2.5 rounded-lg border shadow-sm ${isStep1 ? 'text-indigo-800 bg-indigo-50 border-indigo-200' : 'text-orange-800 bg-orange-50 border-orange-200'}`}>{phaseMessage}</div>}
                   
                   {/* 12칸 그리드 (기존 레이아웃 복원 & 불량 칸 제거) */}
@@ -4834,6 +5012,7 @@ function Step6Inspection({ wipList, ctx }) {
                     <td className="p-4">
                       <div className="text-[10px] font-mono font-bold text-indigo-600 mb-1">{wip.mixLot}</div>
                       <div className="font-black text-slate-800">{getProductLabel(wip.type)} {wip.height}T</div>
+                      {wip.shrinkageStatus === "not_measured" && <div className="text-xs font-bold text-amber-700 mt-1">실험로 · 수축률 미측정</div>}
                     </td>
                     <td className="p-4 font-black text-blue-600 text-lg">{wip.qty}</td>
                     <td className="p-4">
@@ -5641,14 +5820,11 @@ const manufacturedDate =
                       <div className="flex flex-col items-center bg-blue-50 px-4 py-1.5 rounded-lg border border-blue-100 shadow-sm min-w-[100px]">
                         <div className="text-[10px] font-bold text-slate-500 mb-0.5">
                           수축률:{" "}
-                          {
-                            wip.shrinkageRate
-                          }
-                          %
+                          {wip.shrinkageStatus === "not_measured" ? "미측정" : wip.shrinkageRate ? `${wip.shrinkageRate}%` : "-"}
                         </div>
 
                         <div className="text-lg font-black text-blue-700">
-                          {(
+                          {wip.shrinkageRate ? (
                             1 /
                             (
                               1 -
@@ -5657,7 +5833,7 @@ const manufacturedDate =
                               ) /
                                 100
                             )
-                          ).toFixed(4)}
+                          ).toFixed(4) : "-"}
                         </div>
                       </div>
                     </td>

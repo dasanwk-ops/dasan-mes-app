@@ -212,3 +212,32 @@ test('lab assignments are deducted from the waiting quantity', () => {
   vm.runInContext(stateCode + code + '; this.remaining = getRemainingQty("w1");',context);
   assert.equal(context.remaining, 2);
 });
+
+for (const qty of [11, 0, 1.5]) {
+  test(`lab rejects invalid capacity ${qty} before completion without changing any history`, async () => {
+    const live = { ...baseFurnace(), slotData: { SINGLE: { wipId: 'w1', qty } } };
+    const h = setup({ fid: 'lab', live });
+    const before = h.data();
+    await h.complete();
+    assert.match(h.alerts.at(-1).message, /최대 10개/);
+    assert.deepEqual(h.data(), before);
+    assert.equal(h.logs.length, 0);
+  });
+}
+
+test('lab refuses starting an oversized load even if saved data bypassed the form', async () => {
+  const h = setup({ fid: 'lab', live: { ...baseFurnace(), isHeating: false, slotData: { SINGLE: { wipId: 'w1', qty: 11 } } } });
+  await h.complete();
+  assert.equal(h.commits(), 0);
+  assert.match(h.alerts.at(-1).message, /최대 10개/);
+});
+
+test('powder plans distinguish product-only, specimen powder, legacy allowance and release batches', () => {
+  const context = vm.createContext({});
+  vm.runInContext(stateCode + '\nthis.powder = getPowderWeightKg; this.orderPowder = getOrderPowderWeightKg;', context);
+  assert.equal(context.powder({ singleWeight: 628, qty: 10, isExperimental: true, includeShrinkageSpecimen: false, specimenPowderG: 200 }), 6.28);
+  assert.equal(context.powder({ singleWeight: 628, qty: 10, isExperimental: true, includeShrinkageSpecimen: true, specimenPowderG: 200 }), 6.48);
+  assert.ok(Math.abs(context.powder({ singleWeight: 628, qty: 10 }) - 6.5428) < 1e-9);
+  assert.equal(context.powder({ singleWeight: 628, qty: 0, isExperimental: true, includeShrinkageSpecimen: true, specimenPowderG: 200 }), 0);
+  assert.ok(Math.abs(context.orderPowder({ singleWeight: 628, qty: 20, isExperimental: true, includeShrinkageSpecimen: true, specimenPowderG: 200 }) - 12.96) < 1e-9);
+});
