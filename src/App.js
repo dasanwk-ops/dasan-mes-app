@@ -794,6 +794,16 @@ const DEFAULT_FURNACES = {
   4: { isHeating: false },
 };
 
+const getFurnaceComparisonKey = (fid, furnace) => {
+  // 화면 구독과 같은 기본값을 적용하고 Firestore 맵의 키 순서 차이를 제거합니다.
+  // 슬롯, 수량, 시작시간 등 실제 값의 변경은 그대로 감지합니다.
+  const canonical = value => Array.isArray(value) ? value.map(canonical)
+    : value && typeof value === "object"
+      ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]))
+      : value;
+  return JSON.stringify(canonical({ ...DEFAULT_FURNACES[fid], ...furnace }));
+};
+
 const DEFAULT_DRYING_ROOM = { cartItems: [], temp: "60", humidity: "20", isDrying: false, operator: "", completionData: {}, dryingWipIds: [] };
 
 const SyncInput = ({ value, onChange, ...props }) => {
@@ -3400,7 +3410,7 @@ await setDoc(
 // 전기로 / 위치 / 수량 / 온도 / 작업자 이력 저장
 // ==========================================
 const liveFurnace = furnaceSnap.exists() ? furnaceSnap.data()[fid] : null;
-if (!liveFurnace?.isHeating || JSON.stringify(liveFurnace) !== JSON.stringify(f)) {
+if (!liveFurnace?.isHeating || getFurnaceComparisonKey(fid, liveFurnace) !== getFurnaceComparisonKey(fid, f)) {
   throw new Error("전기로 데이터가 변경되었거나 이미 이관되었습니다. 새로고침 후 확인하세요.");
 }
 for (const wId of Object.keys(grouped)) {
