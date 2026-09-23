@@ -232,12 +232,26 @@ test('lab refuses starting an oversized load even if saved data bypassed the for
   assert.match(h.alerts.at(-1).message, /최대 10개/);
 });
 
-test('powder plans distinguish product-only, specimen powder, legacy allowance and release batches', () => {
+test('powder plans use ordinary allowances for included specimens and product-only powder otherwise', () => {
   const context = vm.createContext({});
   vm.runInContext(stateCode + '\nthis.powder = getPowderWeightKg; this.orderPowder = getOrderPowderWeightKg;', context);
   assert.equal(context.powder({ singleWeight: 628, qty: 10, isExperimental: true, includeShrinkageSpecimen: false, specimenPowderG: 200 }), 6.28);
-  assert.equal(context.powder({ singleWeight: 628, qty: 10, isExperimental: true, includeShrinkageSpecimen: true, specimenPowderG: 200 }), 6.48);
+  assert.ok(Math.abs(context.powder({ singleWeight: 628, qty: 10, isExperimental: true, includeShrinkageSpecimen: true, specimenPowderG: 200 }) - 6.5428) < 1e-9);
   assert.ok(Math.abs(context.powder({ singleWeight: 628, qty: 10 }) - 6.5428) < 1e-9);
   assert.equal(context.powder({ singleWeight: 628, qty: 0, isExperimental: true, includeShrinkageSpecimen: true, specimenPowderG: 200 }), 0);
-  assert.ok(Math.abs(context.orderPowder({ singleWeight: 628, qty: 20, isExperimental: true, includeShrinkageSpecimen: true, specimenPowderG: 200 }) - 12.96) < 1e-9);
+  assert.ok(Math.abs(context.orderPowder({ singleWeight: 628, qty: 20, isExperimental: true, includeShrinkageSpecimen: true, specimenPowderG: 200 }) - 12.8856) < 1e-9);
+});
+
+
+test('specimen-included experiments match ordinary powder for all quantities and ignore obsolete custom amounts', () => {
+  const context = vm.createContext({});
+  vm.runInContext(stateCode + '\nthis.powder = getPowderWeightKg; this.orderPowder = getOrderPowderWeightKg;', context);
+  for (const qty of [0, 1, 4, 10, 20]) for (const singleWeight of [502, 628, 650]) {
+    const normal = {qty,singleWeight};
+    const experimental = {...normal,isExperimental:true,includeShrinkageSpecimen:true,specimenPowderG:999};
+    assert.equal(context.powder(experimental),context.powder(normal));
+    assert.equal(context.orderPowder(experimental),context.orderPowder(normal));
+    assert.equal(context.powder({...experimental,includeShrinkageSpecimen:false}),singleWeight*qty/1000);
+  }
+  assert.ok(Math.abs(context.powder({qty:4,singleWeight:650,isExperimental:true,includeShrinkageSpecimen:true}) - 2.826) < 1e-9);
 });

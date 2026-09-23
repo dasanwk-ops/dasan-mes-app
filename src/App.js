@@ -783,20 +783,19 @@ const PROCESS_STEPS = [
 const HEAT_FURNACE_IDS = [1, 2, "lab"];
 const LAB_FURNACE_CAPACITY = 10;
 const includesShrinkageSpecimen = item => !item.isExperimental || item.includeShrinkageSpecimen === true;
-// Experimental specimen powder is entered in grams per released production lot.
-// Ordinary orders (including legacy records) retain the existing allowance.
+// Specimen-included experimental lots use exactly the ordinary production formula.
+// Only experimental lots without specimens omit the 1% and 200g allowance.
 const getPowderWeightKg = (item, qty = item.qty) => {
   const count = Number(qty);
   if (!Number.isFinite(count) || count <= 0) return 0;
   const productKg = Number(item.singleWeight || 0) * count / 1000;
-  if (!item.isExperimental) return productKg * 1.01 + 0.2;
-  return productKg + (includesShrinkageSpecimen(item) ? Number(item.specimenPowderG || 0) / 1000 : 0);
+  return includesShrinkageSpecimen(item) ? productKg * 1.01 + 0.2 : productKg;
 };
-const getOrderPowderWeightKg = (item, qty = item.qty) => getPowderWeightKg(item, qty) +
-  (item.isExperimental && includesShrinkageSpecimen(item)
-    ? Math.max(0, Math.ceil(Number(qty) / LAB_FURNACE_CAPACITY) - 1) * Number(item.specimenPowderG || 0) / 1000 : 0);
+// Order BOM uses the same per-release basis as ordinary orders. Each actual release
+// is recalculated in the warehouse; smaller releases each receive their own allowance.
+const getOrderPowderWeightKg = (item, qty = item.qty) => getPowderWeightKg(item, qty);
 const getExperimentalLabel = item => item.isExperimental
-  ? `실험용 · 시편 ${includesShrinkageSpecimen(item) ? `포함 (${item.specimenPowderG}g/투입)` : "미포함"}` : "";
+  ? `실험용 · 시편 ${includesShrinkageSpecimen(item) ? "포함 (일반 생산과 동일)" : "미포함"}` : "";
 const validateLabSlots = slotData => {
   const slots = Object.entries(slotData || {});
   if (slots.some(([id, slot]) => id !== "SINGLE" || !Number.isInteger(Number(slot.qty)) || Number(slot.qty) < 1) ||
@@ -2036,7 +2035,7 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
 // Step 0: Order Management 
 // ==========================================
 function Step0OrderManagement({ orderList, wipList, shippingHistory, masterSettings, ctx }) {
-  const [newOrder, setNewOrder] = useState({ date: getKST().split(" ")[0], color: "345 BL3", height: "25", singleWeight: masterSettings.WEIGHT_BY_HEIGHT["25"] || 628, qty: 100, isExperimental: false, includeShrinkageSpecimen: false, specimenPowderG: "" });
+  const [newOrder, setNewOrder] = useState({ date: getKST().split(" ")[0], color: "345 BL3", height: "25", singleWeight: masterSettings.WEIGHT_BY_HEIGHT["25"] || 628, qty: 100, isExperimental: false, includeShrinkageSpecimen: false });
   const [editingId, setEditingId] = useState(null);
   const [editData, setEditData] = useState({});
   const [releaseQtyMap, setReleaseQtyMap] = useState({});
@@ -2052,10 +2051,6 @@ function Step0OrderManagement({ orderList, wipList, shippingHistory, masterSetti
   const handleAdd = async (e) => {
     e.preventDefault();
     if (!Number.isInteger(Number(newOrder.qty)) || Number(newOrder.qty) <= 0) return ctx.showToast("수량은 양의 정수로 입력해주세요.", "error");
-    if (newOrder.isExperimental && newOrder.includeShrinkageSpecimen &&
-        (!Number.isInteger(Number(newOrder.specimenPowderG)) || Number(newOrder.specimenPowderG) <= 0)) {
-      return ctx.showToast("시편에 사용할 추가 분말량을 1g 단위의 양수로 입력해주세요.", "error");
-    }
     const sWeight = Number(newOrder.singleWeight) || masterSettings.WEIGHT_BY_HEIGHT[newOrder.height];
     const reqBOM = calcBOM(newOrder.color, sWeight, newOrder.qty, newOrder);
     const newItem = {
@@ -2064,7 +2059,7 @@ function Step0OrderManagement({ orderList, wipList, shippingHistory, masterSetti
       singleWeight: sWeight, qty: Number(newOrder.qty), releasedQty: 0, reqBOM, status: "대기중", createdAt: serverTimestamp(),
       isExperimental: newOrder.isExperimental,
       includeShrinkageSpecimen: includesShrinkageSpecimen(newOrder),
-      specimenPowderG: newOrder.isExperimental && newOrder.includeShrinkageSpecimen ? Number(newOrder.specimenPowderG) : 0,
+      specimenPowderG: includesShrinkageSpecimen(newOrder) ? 200 : 0,
     };
     try { await setDoc(getDocRef("orderList", newItem.id), newItem); ctx.showToast("생산 지시가 등록되었습니다.", "success"); } catch (err) { ctx.showToast("등록 실패", "error"); }
   };
@@ -2107,7 +2102,7 @@ function Step0OrderManagement({ orderList, wipList, shippingHistory, masterSetti
             singleWeight: order.singleWeight,
             isExperimental: order.isExperimental === true,
             includeShrinkageSpecimen: includesShrinkageSpecimen(order),
-            specimenPowderG: order.isExperimental && includesShrinkageSpecimen(order) ? Number(order.specimenPowderG || 0) : 0,
+            specimenPowderG: includesShrinkageSpecimen(order) ? 200 : 0,
             productionPurpose: getExperimentalLabel(order) || "일반 생산",
             qty: inputQty,
             currentStep: "step1",
@@ -2207,15 +2202,15 @@ function Step0OrderManagement({ orderList, wipList, shippingHistory, masterSetti
             {newOrder.isExperimental && <>
               <p className="text-xs text-amber-900">실험로는 최대 10개입니다. 공정 투입을 10개 이하로 나누어주세요.</p>
               <label className="flex items-center gap-2 text-sm font-bold"><input aria-label="수축률 시편 포함" type="checkbox" checked={newOrder.includeShrinkageSpecimen} onChange={e => setNewOrder({ ...newOrder, includeShrinkageSpecimen: e.target.checked })} />수축률 시편 포함</label>
-              {newOrder.includeShrinkageSpecimen ? <label className="block text-sm">시편 추가 분말 (g, 공정 투입 1회당)
-                <input aria-label="시편 추가 분말" type="number" min="1" step="1" required value={newOrder.specimenPowderG} onChange={e => setNewOrder({ ...newOrder, specimenPowderG: e.target.value })} className="w-full border rounded p-2 mt-1" placeholder="투입 1회에 필요한 총 시편 분말량" />
-              </label> : <p className="text-xs text-amber-900">제품 분말만 투입합니다. 시편 분말과 일반 생산 가산분은 추가하지 않습니다.</p>}
+              <p className="text-xs text-amber-900">{newOrder.includeShrinkageSpecimen
+                ? "일반 생산과 동일하게 제품 분말 × 1.01 + 0.200kg으로 계산합니다."
+                : "제품 분말만 투입합니다. 시편 분말과 일반 생산 가산분은 추가하지 않습니다."}</p>
             </>}
           </div>
           <div className="p-4 bg-indigo-50 rounded-lg border mt-4" data-testid="order-bom">
             <div className="text-xs font-semibold mb-2">예상 소재 소요량 (BOM)</div>
-            {newOrder.isExperimental && newOrder.includeShrinkageSpecimen && <p className="text-xs mb-2">더 작게 나누어 투입하면 시편 분말이 매회 추가됩니다.</p>}
-            {newOrder.isExperimental && <p className="text-xs mb-2">제품 {((Number(newOrder.singleWeight) * Number(newOrder.qty)) / 1000).toFixed(3)}kg{newOrder.includeShrinkageSpecimen ? ` + 시편 ${(Number(newOrder.specimenPowderG || 0) * Math.ceil(Number(newOrder.qty) / LAB_FURNACE_CAPACITY) / 1000).toFixed(3)}kg (10개 이하로 나누어 투입 기준)` : " · 시편 없음"}</p>}
+            {newOrder.isExperimental && newOrder.includeShrinkageSpecimen && <p className="text-xs mb-2">투입 1회 기준입니다. 나누어 투입하면 각 투입 수량으로 다시 계산합니다.</p>}
+            {newOrder.isExperimental && <p className="text-xs mb-2">제품 {((Number(newOrder.singleWeight) * Number(newOrder.qty)) / 1000).toFixed(3)}kg{newOrder.includeShrinkageSpecimen ? " × 1.01 + 0.200kg · 일반 생산과 동일" : " · 시편 없음"}</p>}
             <div className="flex flex-wrap gap-2">
               {Object.entries(pbBOM).map(([mat, kg]) => (
                 <div key={mat} className="flex justify-between px-3 py-2 bg-white rounded border flex-1"><span className="font-bold text-xs">{mat}</span><span className="font-black text-indigo-700">{kg.toFixed(3)}kg</span></div>
@@ -2613,7 +2608,7 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
   // 실제 생산 가능 수량 (EA) 및 부족 수량
   const actualQty = origTotalWeight > 0
     ? Math.min(activeJob?.qty || 0, activeJob?.isExperimental
-      ? Math.max(0, Math.floor((actualMixedTotalKg * 1000 - (includesShrinkageSpecimen(activeJob) ? Number(activeJob.specimenPowderG || 0) : 0) + 1e-7) / Number(activeJob.singleWeight)))
+      ? Math.max(0, Math.floor((actualMixedTotalKg * 1000 - (includesShrinkageSpecimen(activeJob) ? 200 : 0) + 1e-7) / (Number(activeJob.singleWeight) * (includesShrinkageSpecimen(activeJob) ? 1.01 : 1))))
       : Math.floor(((activeJob?.qty || 0) * actualMixedTotalKg) / origTotalWeight))
     : 0;
   const shortageQty = activeJob ? Math.max(0, activeJob.qty - actualQty) : 0;
@@ -2935,7 +2930,7 @@ const usedLotInfoStr = activeMaterials
           </div>
 
           <div className="p-8">
-            {activeJob.isExperimental && <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm font-bold text-amber-900">{getExperimentalLabel(activeJob)} · 제품 분말 + 선택한 시편 분말만 배합</div>}
+            {activeJob.isExperimental && <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm font-bold text-amber-900">{getExperimentalLabel(activeJob)} · {includesShrinkageSpecimen(activeJob) ? "일반 생산과 동일한 가산 적용" : "제품 분말만 배합"}</div>}
             <div className="flex justify-between mb-8 pb-6 border-b gap-6">
               <div>
                 <div className="text-sm font-bold text-slate-500 mb-1">작업 대상 제품</div>
