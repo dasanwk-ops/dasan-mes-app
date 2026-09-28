@@ -5121,17 +5121,20 @@ function Step6Inspection({ wipList, ctx }) {
 
     if (id === "__inspection-preview__") {
       return ctx.showToast(
-        `테스트 샘플 5EA 입력 확인 완료 · 외경:${data.preMachiningOuterDia || "미입력"}mm / 높이:${data.preMachiningHeight || "미입력"}mm · 실제 데이터에는 저장하지 않았습니다.`,
+        `테스트 샘플 5EA 입력 확인 완료 · 가공 전 외경:${data.preMachiningOuterDia || "미입력"}mm / 높이:${data.preMachiningHeight || "미입력"}mm · 가공 후 내경:${data.innerDia || "미입력"}mm / 외경:${data.outerDia || "미입력"}mm / 턱:${data.stepH || "미입력"}mm / 높이:${data.prodH || "미입력"}mm · 실제 데이터에는 저장하지 않았습니다.`,
         "success"
       );
     }
     const measuredAt = getKST();
     const preMachiningOuterDia = String(data.preMachiningOuterDia || "").trim();
     const preMachiningHeight = String(data.preMachiningHeight || "").trim();
-    const dimensionText =
+    const preDimensionText =
       preMachiningOuterDia || preMachiningHeight
         ? `가공 전 외경:${preMachiningOuterDia || "미입력"}mm | 가공 전 높이:${preMachiningHeight || "미입력"}mm`
         : "가공 전 치수:미입력";
+    const postDimensionText =
+      `가공 후 내경:${data.innerDia || 0} | 외경:${data.outerDia || 0} | 턱:${data.stepH || 0} | 높이:${data.prodH || 0}`;
+    const dimensionText = `${preDimensionText} | ${postDimensionText}`;
 
     try {
       const w = wipList.find((i) => i.id === id);
@@ -5142,6 +5145,14 @@ function Step6Inspection({ wipList, ctx }) {
         preMachiningDimensions: {
           outerDia: preMachiningOuterDia,
           height: preMachiningHeight,
+          measuredAt,
+          operator: data.operator,
+        },
+        postMachiningDimensions: {
+          innerDia: String(data.innerDia || "").trim(),
+          outerDia: String(data.outerDia || "").trim(),
+          stepH: String(data.stepH || "").trim(),
+          height: String(data.prodH || "").trim(),
           measuredAt,
           operator: data.operator,
         },
@@ -5165,6 +5176,7 @@ function Step6Inspection({ wipList, ctx }) {
               <th className="p-4 font-bold border-b w-40 whitespace-nowrap">로트 / 제품명</th>
               <th className="p-4 font-bold border-b w-20 whitespace-nowrap">현재수량</th>
               <th className="p-4 font-bold border-b text-center w-56 whitespace-nowrap">가공 전 치수 (외경 / 높이)</th>
+              <th className="p-4 font-bold border-b text-center w-64 whitespace-nowrap">가공 후 치수 (내경 / 외경 / 턱 / 높이)</th>
               <th className="p-4 font-bold border-b w-32 whitespace-nowrap">불량 관리</th>
               <th className="p-4 font-bold border-b w-28 whitespace-nowrap">담당자</th>
               <th className="p-4 font-bold border-b min-w-[150px]">메모</th>
@@ -5173,7 +5185,7 @@ function Step6Inspection({ wipList, ctx }) {
           </thead>
           <tbody className="divide-y divide-slate-100">
             {pendingWip.length === 0 ? (
-              <tr><td colSpan="7" className="text-center py-20 text-slate-400 font-medium">현재 검수 대기 중인 물량이 없습니다.</td></tr>
+              <tr><td colSpan="8" className="text-center py-20 text-slate-400 font-medium">현재 검수 대기 중인 물량이 없습니다.</td></tr>
             ) : (
               pendingWip.map((wip) => {
                 const data = formData[wip.id] || {};
@@ -5214,6 +5226,14 @@ function Step6Inspection({ wipList, ctx }) {
                         </label>
                       </div>
                       <div className="mt-1 text-[9px] text-slate-400 text-center">테스트 중 · 미입력 가능</div>
+                    </td>
+                    <td className="p-4">
+                      <div className="grid grid-cols-2 gap-1.5 w-52 mx-auto">
+                        <div className="relative"><span className="absolute left-1 top-0.5 text-[8px] text-slate-400 font-bold">내</span><input type="text" value={data.innerDia || ""} onChange={(e) => handleDataChange(wip.id, "innerDia", e.target.value)} className="w-full pl-4 pr-1 py-1 text-[11px] font-bold border rounded bg-white" placeholder="0.0" /></div>
+                        <div className="relative"><span className="absolute left-1 top-0.5 text-[8px] text-slate-400 font-bold">외</span><input type="text" value={data.outerDia || ""} onChange={(e) => handleDataChange(wip.id, "outerDia", e.target.value)} className="w-full pl-4 pr-1 py-1 text-[11px] font-bold border rounded bg-white" placeholder="0.0" /></div>
+                        <div className="relative"><span className="absolute left-1 top-0.5 text-[8px] text-slate-400 font-bold">턱</span><input type="text" value={data.stepH || ""} onChange={(e) => handleDataChange(wip.id, "stepH", e.target.value)} className="w-full pl-4 pr-1 py-1 text-[11px] font-bold border rounded bg-white" placeholder="0.0" /></div>
+                        <div className="relative"><span className="absolute left-1 top-0.5 text-[8px] text-slate-400 font-bold">높</span><input type="text" value={data.prodH || ""} onChange={(e) => handleDataChange(wip.id, "prodH", e.target.value)} className="w-full pl-4 pr-1 py-1 text-[11px] font-bold border rounded bg-white" placeholder="0.0" /></div>
+                      </div>
                     </td>
                     <td className="p-4">
                       <div className="flex flex-col gap-1 w-28">
