@@ -5069,15 +5069,30 @@ function Step6Inspection({ wipList, ctx }) {
 
     const defectQty = parseInt(data.defects) || 0;
     const defectStr = defectQty > 0 ? ` [불량 ${defectQty}개: ${data.defectReason || "사유미상"}]` : "";
+    const measuredAt = getKST();
+    const preMachiningOuterDia = String(data.preMachiningOuterDia || "").trim();
+    const preMachiningHeight = String(data.preMachiningHeight || "").trim();
+    const dimensionText =
+      preMachiningOuterDia || preMachiningHeight
+        ? `가공 전 외경:${preMachiningOuterDia || "미입력"}mm | 가공 전 높이:${preMachiningHeight || "미입력"}mm`
+        : "가공 전 치수:미입력";
 
     try {
       const w = wipList.find((i) => i.id === id);
       await setDoc(getDocRef("wipList", id), {
-        ...w, qty: Math.max(0, w.qty - defectQty), currentStep: "step7",
-        details: `${w.details || ""}\n[${getKST()}] [검수] 내경:${data.innerDia || 0} | 외경:${data.outerDia || 0} | 턱:${data.stepH || 0} | 제품:${data.prodH || 0} | 담당:${data.operator}${defectStr}`,
+        ...w,
+        qty: Math.max(0, w.qty - defectQty),
+        currentStep: "step7",
+        preMachiningDimensions: {
+          outerDia: preMachiningOuterDia,
+          height: preMachiningHeight,
+          measuredAt,
+          operator: data.operator,
+        },
+        details: `${w.details || ""}\n[${measuredAt}] [검수/가공] ${dimensionText} | 담당:${data.operator}${defectStr}`,
       });
       ctx.showToast("검수 완료", "success");
-      logProcessToGoogleSheet("step6", { ...w, qty: w.qty - defectQty }, data.operator, { defects: defectQty, defectReason: data.defectReason || "-", measurements: `내경:${data.innerDia}, 외경:${data.outerDia}, 턱:${data.stepH}, 제품:${data.prodH}`, details: data.memo || "검수완료" });
+      logProcessToGoogleSheet("step6", { ...w, qty: w.qty - defectQty }, data.operator, { defects: defectQty, defectReason: data.defectReason || "-", measurements: dimensionText, details: data.memo || "검수완료" });
     } catch (err) { ctx.showToast("오류 발생", "error"); }
   };
 
@@ -5093,7 +5108,7 @@ function Step6Inspection({ wipList, ctx }) {
            <tr className="text-[11px] uppercase tracking-wider text-slate-500 bg-slate-50/50">
               <th className="p-4 font-bold border-b w-40 whitespace-nowrap">로트 / 제품명</th>
               <th className="p-4 font-bold border-b w-20 whitespace-nowrap">현재수량</th>
-              <th className="p-4 font-bold border-b text-center w-56 whitespace-nowrap">치수 측정 (내/외/턱/높)</th>
+              <th className="p-4 font-bold border-b text-center w-56 whitespace-nowrap">가공 전 치수 (외경 / 높이)</th>
               <th className="p-4 font-bold border-b w-32 whitespace-nowrap">불량 관리</th>
               <th className="p-4 font-bold border-b w-28 whitespace-nowrap">담당자</th>
               <th className="p-4 font-bold border-b min-w-[150px]">메모</th>
@@ -5115,12 +5130,33 @@ function Step6Inspection({ wipList, ctx }) {
                     </td>
                     <td className="p-4 font-black text-blue-600 text-lg">{wip.qty}</td>
                     <td className="p-4">
-                      <div className="grid grid-cols-2 gap-1.5 w-40 mx-auto">
-                        <div className="relative"><span className="absolute left-1 top-0.5 text-[8px] text-slate-400 font-bold">내</span><input type="text" value={data.innerDia || ""} onChange={(e) => handleDataChange(wip.id, "innerDia", e.target.value)} className="w-full pl-4 pr-1 py-1 text-[11px] font-bold border rounded bg-white" placeholder="0.0" /></div>
-                        <div className="relative"><span className="absolute left-1 top-0.5 text-[8px] text-slate-400 font-bold">외</span><input type="text" value={data.outerDia || ""} onChange={(e) => handleDataChange(wip.id, "outerDia", e.target.value)} className="w-full pl-4 pr-1 py-1 text-[11px] font-bold border rounded bg-white" placeholder="0.0" /></div>
-                        <div className="relative"><span className="absolute left-1 top-0.5 text-[8px] text-slate-400 font-bold">턱</span><input type="text" value={data.stepH || ""} onChange={(e) => handleDataChange(wip.id, "stepH", e.target.value)} className="w-full pl-4 pr-1 py-1 text-[11px] font-bold border rounded bg-white" placeholder="0.0" /></div>
-                        <div className="relative"><span className="absolute left-1 top-0.5 text-[8px] text-slate-400 font-bold">높</span><input type="text" value={data.prodH || ""} onChange={(e) => handleDataChange(wip.id, "prodH", e.target.value)} className="w-full pl-4 pr-1 py-1 text-[11px] font-bold border rounded bg-white" placeholder="0.0" /></div>
+                      <div className="grid grid-cols-2 gap-2 w-48 mx-auto">
+                        <label className="flex flex-col gap-1 text-[9px] font-bold text-slate-500">
+                          <span>외경 (mm)</span>
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            step="0.01"
+                            value={data.preMachiningOuterDia || ""}
+                            onChange={(e) => handleDataChange(wip.id, "preMachiningOuterDia", e.target.value)}
+                            className="w-full px-2 py-1.5 text-xs font-black text-center border rounded bg-white focus:border-indigo-400 outline-none"
+                            placeholder="입력"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1 text-[9px] font-bold text-slate-500">
+                          <span>높이 (mm)</span>
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            step="0.01"
+                            value={data.preMachiningHeight || ""}
+                            onChange={(e) => handleDataChange(wip.id, "preMachiningHeight", e.target.value)}
+                            className="w-full px-2 py-1.5 text-xs font-black text-center border rounded bg-white focus:border-indigo-400 outline-none"
+                            placeholder="입력"
+                          />
+                        </label>
                       </div>
+                      <div className="mt-1 text-[9px] text-slate-400 text-center">테스트 중 · 미입력 가능</div>
                     </td>
                     <td className="p-4">
                       <div className="flex flex-col gap-1 w-28">
