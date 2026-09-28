@@ -69,6 +69,15 @@ const getSeriesPressure = (settings, productType, stepKey) => {
   );
 };
 
+const getSeriesTemperature = (settings, productType, furnaceKey) => {
+  const series = getSeriesKey(productType);
+  return (
+    settings?.TARGET_TEMPERATURE_BY_SERIES?.[series]?.[furnaceKey] ??
+    settings?.TARGET_TEMPERATURE?.[furnaceKey] ??
+    "1050"
+  );
+};
+
 // ==========================================
 // SKU 자동 생성
 // 예: "345 BL3", 25 → Z345BL325
@@ -737,6 +746,10 @@ const DEFAULT_MASTER_SETTINGS = {
     "234": { step3: "72", step4A: "250", step4B: "250" },
   },
   TARGET_TEMPERATURE: { furnace1: "1050", furnace2: "1050", furnacelab: "1050" },
+  TARGET_TEMPERATURE_BY_SERIES: {
+    "345": { furnace1: "1050", furnace2: "1050", furnacelab: "1050" },
+    "234": { furnace1: "1050", furnace2: "1050", furnacelab: "1050" },
+  },
   SAFETY_THRESHOLD: { "4Y-W": "50", "4Y-W-S": "50", "4Y-Y": "50", "5E-P": "50", "4Y-G": "50" }
 };
 
@@ -796,6 +809,16 @@ const mergeMasterSettings = (loaded = {}) => {
   merged.TARGET_TEMPERATURE = {
     ...DEFAULT_MASTER_SETTINGS.TARGET_TEMPERATURE,
     ...(loaded.TARGET_TEMPERATURE || {}),
+  };
+  merged.TARGET_TEMPERATURE_BY_SERIES = {
+    "345": {
+      ...merged.TARGET_TEMPERATURE,
+      ...(loaded.TARGET_TEMPERATURE_BY_SERIES?.["345"] || {}),
+    },
+    "234": {
+      ...merged.TARGET_TEMPERATURE,
+      ...(loaded.TARGET_TEMPERATURE_BY_SERIES?.["234"] || {}),
+    },
   };
   merged.SAFETY_THRESHOLD = {
     ...DEFAULT_MASTER_SETTINGS.SAFETY_THRESHOLD,
@@ -3795,6 +3818,20 @@ for (const wId of Object.keys(grouped)) {
               const slots = getFurnaceSlots(id, f.slotData);
               const isH = f.isHeating;
               const hasData = Object.keys(f.slotData || {}).length > 0;
+              const furnaceKey = `furnace${id}`;
+              const loadedSeries = [...new Set(
+                Object.values(f.slotData || {}).map(s => getSeriesKey(s?.type))
+              )];
+              const loadedTargets = loadedSeries.map(series =>
+                getSeriesTemperature(masterSettings, `${series} BL3`, furnaceKey)
+              );
+              const uniqueTargets = [...new Set(loadedTargets.map(String))];
+              const targetTemperatureText =
+                loadedSeries.length === 0
+                  ? `345:${getSeriesTemperature(masterSettings, "345 BL3", furnaceKey)} / 234:${getSeriesTemperature(masterSettings, "234 BL3", furnaceKey)}`
+                  : uniqueTargets.length === 1
+                    ? `${loadedSeries.join("/")} · ${uniqueTargets[0]}`
+                    : `조건 확인 · ${loadedSeries.map((series, idx) => `${series}:${loadedTargets[idx]}`).join(" / ")}`;
               
               let cardStyle = isH ? "border-orange-500 shadow-orange-200 shadow-xl bg-orange-50/30" : "border-slate-300 bg-white shadow-md"; 
               let headerStyle = isH ? "bg-orange-500 text-white animate-pulse" : "bg-slate-500 text-white"; 
@@ -3836,7 +3873,7 @@ for (const wId of Object.keys(grouped)) {
                     <div className="mt-4 pt-4 border-t-2 border-dashed border-slate-200">
                       <div className={`${compact ? "grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-1" : "flex"} gap-3 mb-4`}>
                         <div className={compact ? "w-full min-w-0" : "w-1/2"}>
-                          <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center justify-between">목표 가동 온도 <span className="text-[8px] text-orange-500 border border-orange-200 bg-orange-50 px-1 rounded">목표:{masterSettings?.TARGET_TEMPERATURE?.[`furnace${id}`] || "1050"}</span></label>
+                          <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center justify-between">목표 가동 온도 <span className="text-[8px] text-orange-500 border border-orange-200 bg-orange-50 px-1 rounded">목표:{targetTemperatureText}</span></label>
                           <SyncInput type="number" value={f.temp} onChange={(val) => handleFurnaceInfo(id, 'temp', val)} disabled={isH} className="w-full border-2 border-slate-200 bg-slate-50 text-slate-800 font-black text-center p-2.5 rounded-xl focus:border-indigo-400 outline-none disabled:opacity-60" />
                         </div>
                         <div className={compact ? "w-full min-w-0" : "w-1/2"}>
@@ -5059,7 +5096,19 @@ nextProcessLogs.push({
 // Step 6: Inspection & Machining
 // ==========================================
 function Step6Inspection({ wipList, ctx }) {
-  const pendingWip = wipList.filter((w) => w.currentStep === "step6");
+  const inspectionPreviewWip = {
+    id: "__inspection-preview__",
+    mixLot: "TEST-INSPECTION-001",
+    type: "234 BL3",
+    height: "25",
+    qty: 5,
+    currentStep: "step6",
+    isPreviewSample: true,
+  };
+  const pendingWip = [
+    inspectionPreviewWip,
+    ...wipList.filter((w) => w.currentStep === "step6"),
+  ];
   const [formData, setFormData] = useState({});
   const handleDataChange = (id, field, val) => setFormData((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), [field]: val } }));
 
@@ -5069,6 +5118,13 @@ function Step6Inspection({ wipList, ctx }) {
 
     const defectQty = parseInt(data.defects) || 0;
     const defectStr = defectQty > 0 ? ` [불량 ${defectQty}개: ${data.defectReason || "사유미상"}]` : "";
+
+    if (id === "__inspection-preview__") {
+      return ctx.showToast(
+        `테스트 샘플 5EA 입력 확인 완료 · 외경:${data.preMachiningOuterDia || "미입력"}mm / 높이:${data.preMachiningHeight || "미입력"}mm · 실제 데이터에는 저장하지 않았습니다.`,
+        "success"
+      );
+    }
     const measuredAt = getKST();
     const preMachiningOuterDia = String(data.preMachiningOuterDia || "").trim();
     const preMachiningHeight = String(data.preMachiningHeight || "").trim();
@@ -5126,6 +5182,7 @@ function Step6Inspection({ wipList, ctx }) {
                     <td className="p-4">
                       <div className="text-[10px] font-mono font-bold text-indigo-600 mb-1">{wip.mixLot}</div>
                       <div className="font-black text-slate-800">{getProductLabel(wip.type)} {wip.height}T</div>
+                      {wip.isPreviewSample && <div className="text-[10px] font-black text-emerald-700 mt-1">테스트 샘플 5EA · 실제 데이터 저장 안 됨</div>}
                       {wip.shrinkageStatus === "not_measured" && <div className="text-xs font-bold text-amber-700 mt-1">실험로 · 수축률 미측정</div>}
                     </td>
                     <td className="p-4 font-black text-blue-600 text-lg">{wip.qty}</td>
@@ -6417,10 +6474,17 @@ function Step10Settings({ masterSettings, ctx }) {
       newSettings.TARGET_PRESSURE_BY_SERIES[series][stepKey] = value;
       setSettings(newSettings);
   };
-  const handleTemperatureChange = (furnaceKey, value) => {
+  const handleSeriesTemperatureChange = (series, furnaceKey, value) => {
       const newSettings = cloneDeep(settings);
-      if (!newSettings.TARGET_TEMPERATURE) newSettings.TARGET_TEMPERATURE = { furnace1: "1050", furnace2: "1050" };
-      newSettings.TARGET_TEMPERATURE[furnaceKey] = value;
+      if (!newSettings.TARGET_TEMPERATURE_BY_SERIES) newSettings.TARGET_TEMPERATURE_BY_SERIES = {};
+      if (!newSettings.TARGET_TEMPERATURE_BY_SERIES[series]) {
+        newSettings.TARGET_TEMPERATURE_BY_SERIES[series] = {
+          furnace1: "1050",
+          furnace2: "1050",
+          furnacelab: "1050",
+        };
+      }
+      newSettings.TARGET_TEMPERATURE_BY_SERIES[series][furnaceKey] = value;
       setSettings(newSettings);
   };
   const handleSafetyThresholdChange = (type, value) => {
@@ -6492,11 +6556,29 @@ function Step10Settings({ masterSettings, ctx }) {
                   </div>
 
                   <div className="bg-white rounded-xl shadow-sm border p-6">
-                      <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">전기로 목표 온도 가이드</h3>
-                      <div className="space-y-3">
-                          <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border"><span className="font-black text-orange-700 w-28 flex items-center"><Flame className="w-4 h-4 mr-1"/> 1호기 온도</span><div className="relative"><input type="text" value={settings.TARGET_TEMPERATURE?.furnace1 || ""} onChange={(e) => handleTemperatureChange("furnace1", e.target.value)} className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-orange-500 outline-none pr-10" /><span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">°C</span></div></div>
-                          <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border"><span className="font-black text-orange-700 w-28 flex items-center"><Flame className="w-4 h-4 mr-1"/> 2호기 온도</span><div className="relative"><input type="text" value={settings.TARGET_TEMPERATURE?.furnace2 || ""} onChange={(e) => handleTemperatureChange("furnace2", e.target.value)} className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-orange-500 outline-none pr-10" /><span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">°C</span></div></div>
-                          <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border"><span className="font-black text-orange-700 w-28 flex items-center"><Flame className="w-4 h-4 mr-1"/> 실험로 온도</span><div className="relative"><input type="text" value={settings.TARGET_TEMPERATURE?.furnacelab || ""} onChange={(e) => handleTemperatureChange("furnacelab", e.target.value)} className="border-2 border-slate-300 rounded-md p-2 w-32 text-right font-bold focus:border-orange-500 outline-none pr-10" /><span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">°C</span></div></div>
+                      <h3 className="text-lg font-bold mb-4 text-slate-800 border-b pb-2">제품군별 전기로 목표 온도</h3>
+                      <p className="text-xs text-slate-500 mb-4">345 / 234 조건을 따로 관리합니다. 현재는 두 제품군 모두 기존 1050°C로 시작합니다.</p>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {["345", "234"].map(series => (
+                          <div key={series} className="border rounded-xl p-4 bg-slate-50">
+                            <div className="font-black text-orange-700 mb-3">{series} 생산조건</div>
+                            <div className="space-y-3">
+                              {[
+                                ["furnace1", "1호기"],
+                                ["furnace2", "2호기"],
+                                ["furnacelab", "실험로"],
+                              ].map(([furnaceKey, label]) => (
+                                <div key={furnaceKey} className="flex justify-between items-center bg-white p-3 rounded-lg border">
+                                  <span className="font-black text-orange-700 flex items-center"><Flame className="w-4 h-4 mr-1"/> {label}</span>
+                                  <div className="relative">
+                                    <input type="text" value={settings.TARGET_TEMPERATURE_BY_SERIES?.[series]?.[furnaceKey] || ""} onChange={(e) => handleSeriesTemperatureChange(series, furnaceKey, e.target.value)} className="border-2 border-slate-300 rounded-md p-2 w-28 text-right font-bold focus:border-orange-500 outline-none pr-10" />
+                                    <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">°C</span>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
                       </div>
                   </div>
 
