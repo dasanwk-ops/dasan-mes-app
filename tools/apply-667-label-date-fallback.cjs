@@ -1,5 +1,12 @@
 const fs = require("fs");
 
+// New source resolves this approved exception and other legacy dates centrally.
+// Keep the old patch available for older checkouts, without injecting duplicate logic.
+if (fs.readFileSync("src/App.js", "utf8").includes('from "./labelManufacturingDate"')) {
+  console.log("apply-667-label-date-fallback: handled by labelManufacturingDate");
+  process.exit(0);
+}
+
 function replaceOnce(path, oldText, newText, label) {
   let text = fs.readFileSync(path, "utf8");
   const first = text.indexOf(oldText);
