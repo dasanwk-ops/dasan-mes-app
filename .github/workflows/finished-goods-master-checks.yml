@@ -1,0 +1,35 @@
+name: Finished goods master checks
+on:
+  push:
+    branches: ["feat/finished-goods-master-20260929"]
+  pull_request:
+    paths:
+      - "src/**"
+      - "tools/**"
+      - "package.json"
+      - ".github/workflows/finished-goods-master-checks.yml"
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install existing app dependencies
+        run: npm install --no-audit --no-fund
+      - name: Finished goods logic and DOM smoke tests
+        run: npm run test:finished-goods
+      - name: Existing heat treatment regression
+        run: node tools/test-heat-completion.cjs
+      - name: Existing label regression
+        run: node tools/test-label-manufacturing-date.cjs
+      - name: Production build including guarded integration
+        run: CI=false npm run build
+      - name: Check integration again after build
+        run: node tools/test-finished-goods-master.cjs
