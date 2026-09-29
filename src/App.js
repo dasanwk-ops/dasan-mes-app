@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { getLabelManufacturingDate, confirmLabelManufacturingDate, manufacturingDateSourceLabel } from "./labelManufacturingDate";
 import { initializeApp } from "firebase/app";
 import { getAuth, onAuthStateChanged, signInAnonymously } from "firebase/auth";
 import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, runTransaction, serverTimestamp, addDoc } from "firebase/firestore";
@@ -5543,12 +5544,13 @@ if (
   printedQty !== finalQty ||
   printedDefectQty !== defectQty ||
   printedPackLot !== completedPackLot ||
+  (live.labelPrintedMfgDate && live.labelPrintedMfgDate !== getLabelManufacturingDate({...live,id:wipId}, getKST().slice(0,10))?.date) ||
   String(live.labelPrintedShrinkage ?? "") !== String(live.shrinkageRate ?? "") ||
   Boolean(live.labelPrintedExperimental) !== Boolean(live.isExperimental) ||
   (live.shrinkageStatus === "not_measured" && live.labelPrintedShrinkageStatus !== "not_measured")
 ) {
   throw new Error(
-    "라벨 출력 후 최종수량, 불량수량 또는 LOT가 변경되었습니다. 현재 조건으로 라벨을 재출력한 뒤 포장완료를 눌러주세요."
+    "라벨 출력 후 최종수량, 불량수량, LOT 또는 제조일이 변경되었습니다. 현재 조건으로 라벨을 재출력한 뒤 포장완료를 눌러주세요."
   );
 }
 
@@ -5655,36 +5657,11 @@ const curTime = getKST();
       if (!Number.isInteger(defectQty) || defectQty < 0 || !Number.isInteger(finalQty) || finalQty <= 0) throw new Error("불량 수량을 확인해주세요. 정상 제품이 1개 이상 있어야 라벨을 출력할 수 있습니다.");
       const finalLot = getPackagingLot(wip) || await ensurePackagingLot(wipId);
       const now = getKST();
-const heatHistory =
-  Array.isArray(wip.heatTreatmentHistory)
-    ? wip.heatTreatmentHistory
-    : [];
-
-const completedHeatRecords =
-  heatHistory.filter(
-    (h) => h && h.completedAt
-  );
-
-const lastHeatRecord =
-  completedHeatRecords.length > 0
-    ? completedHeatRecords[
-        completedHeatRecords.length - 1
-      ]
-    : null;
-
-const manufacturedAt =
-  lastHeatRecord?.completedAt || "";
-
-if (!manufacturedAt) {
-  return ctx.showToast(
-    "열처리 완료일을 찾을 수 없어 라벨을 출력할 수 없습니다.",
-    "error"
-  );
-}
-
-const manufacturedDate =
-  manufacturedAt.split(" ")[0];
-
+      const today = now.slice(0, 10);
+      let dateInfo = getLabelManufacturingDate(wip, today);
+      const dateConfirmation = dateInfo ? null : confirmLabelManufacturingDate(data, now);
+      if (dateConfirmation) dateInfo = {date:dateConfirmation.date,source:"confirmed"};
+      const manufacturedDate = dateInfo.date;
 
       const experimental = wip.isExperimental === true;
       const scaleFactor = shrinkage === "미측정" ? "미측정" : (1 / (1 - Number(shrinkage) / 100)).toFixed(4);
@@ -5695,7 +5672,7 @@ const manufacturedDate =
         sku: productSKU, displayName: `${experimental ? "[TEST] " : ""}Z ${productSeries} ${productShade} ${wip.height}`,
         productName: productSKU, ref: `${productSKU}D98`, refDisplay: `Z ${productSeries} ${productShade} ${wip.height} D98`,
         series: productSeries, color: productShade, height: wip.height,
-        lotNumber: finalLot, sourceLot: wip.mixLot, mfgDate: manufacturedDate, size: `Φ98 x ${wip.height}mm`,
+        lotNumber: finalLot, sourceLot: wip.mixLot, mfgDate: manufacturedDate, mfgDateSource: dateInfo.source, size: `Φ98 x ${wip.height}mm`,
         shrinkage, scaleFactor, quantity: finalQty, unitQty: 1,
         isExperimental: experimental, labelType: experimental ? "experimental" : "production",
         purpose: experimental ? "실험용 / TEST" : "일반 생산", shrinkageStatus: wip.shrinkageStatus || "measured",
@@ -5712,15 +5689,23 @@ const manufacturedDate =
             ["qty", "type", "height", "shrinkageRate", "shrinkageStatus", "isExperimental"].some(key => String(live[key] ?? "") !== String(wip[key] ?? ""))) {
           throw new Error("출력 전에 로트 수량 또는 제품 조건이 변경되었습니다. 최신 상태를 확인하세요.");
         }
+        const liveDate = getLabelManufacturingDate({...live,id:wipId}, today);
+        if (dateConfirmation ? liveDate !== null : liveDate?.date !== dateInfo.date || liveDate?.source !== dateInfo.source) {
+          throw new Error("출력 전에 제조일 기록이 변경되었습니다. 최신 제조일을 확인한 뒤 다시 출력해주세요.");
+        }
+        const confirmationNote = dateConfirmation
+          ? `\n[${now}] [라벨 제조일 확인] ${dateConfirmation.date} | 근거:${dateConfirmation.reason} | 담당:${dateConfirmation.confirmedBy}` : "";
         // Queue and print record commit together; a retry never adds an extra job.
         tx.set(queueRef, payload);
         tx.update(wipRef, {
           labelPrintedAt: now, labelPrintedQty: finalQty, labelPrintedDefectQty: defectQty, labelPrintedPackLot: finalLot,
           labelPrintedShrinkage: live.shrinkageRate ?? null, labelPrintedShrinkageStatus: live.shrinkageStatus || "measured",
           labelPrintedExperimental: experimental, labelPrintJobId: queueRef.id,
+          labelPrintedMfgDate: manufacturedDate, labelPrintedMfgDateSource: dateInfo.source,
+          ...(dateConfirmation ? {labelManufacturingDateConfirmation:dateConfirmation} : {}),
           labelPrintCount: (Number(live.labelPrintCount) || 0) + 1,
-          labelPrintHistory: [...(live.labelPrintHistory || []), {jobId:queueRef.id,quantity:finalQty,defectQty,requestedAt:now,isExperimental:experimental,shrinkage}],
-          details: `${live.details || ""}\n[${now}] [라벨출력 요청] ${experimental ? "실험용 / TEST | " : ""}${finalQty}장 · 제품 1개당 1장 | 포장LOT:${finalLot} | 수축률:${shrinkage}`
+          labelPrintHistory: [...(live.labelPrintHistory || []), {jobId:queueRef.id,quantity:finalQty,defectQty,requestedAt:now,isExperimental:experimental,shrinkage,mfgDate:manufacturedDate,mfgDateSource:dateInfo.source}],
+          details: `${live.details || ""}${confirmationNote}\n[${now}] [라벨출력 요청] ${experimental ? "실험용 / TEST | " : ""}${finalQty}장 · 제품 1개당 1장 | 포장LOT:${finalLot} | 수축률:${shrinkage} | 제조일:${manufacturedDate} (${manufacturingDateSourceLabel(dateInfo.source)})`
         });
       });
       setPrintedStatus(prev => ({ ...prev, [wipId]: true }));
@@ -5833,6 +5818,7 @@ const manufacturedDate =
                     wip.labelPrintedAt
                   );
 
+                const labelDate = getLabelManufacturingDate(wip, getKST().slice(0,10));
                 return (
                   <tr
                     key={wip.id}
@@ -5854,6 +5840,13 @@ const manufacturedDate =
                           포장/완제품 LOT
                         </span>
                         {wip.isExperimental && <span className="mt-1 text-xs font-black text-amber-800">실험용 / TEST</span>}
+                        {labelDate ? <div className="mt-2 text-xs text-slate-600">제조일: {labelDate.date}<br /><span className="text-[10px]">{manufacturingDateSourceLabel(labelDate.source)}</span></div> :
+                          <div className="mt-2 rounded-lg border border-amber-300 bg-amber-50 p-2 space-y-2 max-w-xs">
+                            <p className="text-xs font-bold text-amber-900">열처리 기록이 없어 실제 완료일 확인이 필요합니다.</p>
+                            <label className="block text-xs">라벨 제조일<input aria-label={`${packLot} 라벨 제조일`} type="date" max={getKST().slice(0,10)} value={data.labelMfgDate || ""} onChange={e=>handleDataChange(wip.id,"labelMfgDate",e.target.value)} className="mt-1 block w-full border rounded p-1.5 bg-white" /></label>
+                            <input aria-label={`${packLot} 제조일 확인 근거`} type="text" placeholder="확인 근거 (작업일지 등)" value={data.labelMfgReason || ""} onChange={e=>handleDataChange(wip.id,"labelMfgReason",e.target.value)} className="w-full border rounded p-1.5 text-xs bg-white" />
+                            <p className="text-[10px] text-amber-900">담당 작업자 입력 후 출력하면 확인 이력이 함께 저장됩니다.</p>
+                          </div>}
                       </div>
                     </td>
 
