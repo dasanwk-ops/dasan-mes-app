@@ -20,7 +20,8 @@
     "build": "node tools/apply-main-remainder-close.cjs && node tools/apply-order-state-reconcile.cjs && node tools/apply-667-label-date-fallback.cjs && node tools/apply-finished-goods-master.cjs && react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
-    "test:finished-goods": "node tools/test-finished-goods-master.cjs && node tools/test-finished-goods-ui.cjs"
+    "test:finished-goods": "node tools/test-finished-goods-master.cjs && node tools/test-finished-goods-ui.cjs",
+    "test:packaging-lot": "node tools/test-packaging-lot.cjs && node tools/test-label-manufacturing-date.cjs"
   },
   "browserslist": {
     "production": [

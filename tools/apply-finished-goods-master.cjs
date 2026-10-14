@@ -6,7 +6,11 @@ const path = require("node:path");
 function applyFinishedGoodsMaster(source) {
   const marker = "{/* finished-goods-master:v1 */}";
   if (source.includes(marker)) {
-    if (!source.includes('import FinishedGoodsMaster from "./FinishedGoodsMaster";') ||
+    // Windows resolves extensionless imports case-insensitively and otherwise
+    // selects finishedGoodsMaster.js instead of the React component.
+    source = source.replace('import FinishedGoodsMaster from "./FinishedGoodsMaster";',
+      'import FinishedGoodsMaster from "./FinishedGoodsMaster.jsx";');
+    if (!source.includes('import FinishedGoodsMaster from "./FinishedGoodsMaster.jsx";') ||
         !source.includes("actorUid={user?.uid}")) {
       throw new Error("Incomplete finished goods master integration; refusing partial patch.");
     }
@@ -17,7 +21,7 @@ function applyFinishedGoodsMaster(source) {
     source = source.replace(from, to);
   };
   once('import React, { useState, useEffect, useRef } from "react";',
-    'import React, { useState, useEffect, useRef } from "react";\nimport FinishedGoodsMaster from "./FinishedGoodsMaster";');
+    'import React, { useState, useEffect, useRef } from "react";\nimport FinishedGoodsMaster from "./FinishedGoodsMaster.jsx";');
   once('const props = { inventory, wipList, orderList, inventoryHistory, shippingHistory, furnaces, dryingRoom, masterSettings, setActiveStep, ctx };',
     'const props = { inventory, wipList, orderList, inventoryHistory, shippingHistory, furnaces, dryingRoom, masterSettings, setActiveStep, ctx, isAdmin, user };');
   once('function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, shippingHistory, furnaces, setActiveStep, ctx, masterSettings }) {',
