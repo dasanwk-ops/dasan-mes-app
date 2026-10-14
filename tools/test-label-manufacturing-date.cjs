@@ -5,6 +5,7 @@ const path=require('node:path');
 const vm=require('node:vm');
 const root=path.join(__dirname,'..');
 const helper=fs.readFileSync(path.join(root,'src/labelManufacturingDate.js'),'utf8').replaceAll('export const ','const ');
+const lotHelper=fs.readFileSync(path.join(root,'src/packagingLot.js'),'utf8').replaceAll('export const ','const ');
 const source=fs.readFileSync(path.join(root,'src/App.js'),'utf8');
 const begin=source.indexOf('  const handlePrintLabel =',source.indexOf('function Step8Packaging('));
 const end=source.indexOf('\n  return (',begin);
@@ -26,12 +27,13 @@ function setup({wip=base(),live=wip,form={},failCommit=false}={}){
   doc:(_db,col,id)=>({path:col+'/'+id,id}),getDocRef:(col,id)=>({path:col+'/'+id,id}),
   runTransaction:async(_db,fn)=>{
    const writes=[];
-   await fn({get:async ref=>{assert.equal(writes.length,0);return {exists:()=>true,data:()=>clone(record)};},set:(ref,data)=>writes.push({kind:'set',ref,data:clone(data)}),update:(ref,data)=>writes.push({kind:'update',ref,data:clone(data)})});
+   const result=await fn({get:async ref=>{assert.equal(writes.length,0);return {exists:()=>true,data:()=>clone(record)};},set:(ref,data)=>writes.push({kind:'set',ref,data:clone(data)}),update:(ref,data)=>writes.push({kind:'update',ref,data:clone(data)})});
    if(failCommit)throw Error('Simulated queue commit rejection');
    for(const write of writes){if(write.kind==='set')jobs.push(write.data);else record={...record,...write.data};}commits++;
+   return result;
   }
  });
- vm.runInContext(helper+helpers+handler+';this.print=handlePrintLabel;',c);
+ vm.runInContext(helper+lotHelper+helpers+handler+';this.print=handlePrintLabel;',c);
  return {print:()=>c.print(wip.id),jobs,toasts,before,record:()=>clone(record),commits:()=>commits};
 }
 

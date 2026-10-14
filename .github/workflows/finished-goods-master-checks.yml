@@ -28,7 +28,7 @@ jobs:
       - name: Existing heat treatment regression
         run: node tools/test-heat-completion.cjs
       - name: Existing label regression
-        run: node tools/test-label-manufacturing-date.cjs
+        run: npm run test:packaging-lot
       - name: Production build including guarded integration
         run: CI=false npm run build
       - name: Check integration again after build

@@ -182,7 +182,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log("PASS " + n
       assert.equal(extract(updated), extract(original));
     }
     assert.equal(updated.split("<FinishedGoodsMaster").length, 2);
-    assert.equal(updated.split('import FinishedGoodsMaster from "./FinishedGoodsMaster";').length, 2);
+    assert.equal(updated.split('import FinishedGoodsMaster from "./FinishedGoodsMaster.jsx";').length, 2);
     assert.ok(updated.indexOf("<FinishedGoodsMaster") > updated.indexOf("activeWipList.map"));
   });
   await test("patch fails closed when a required source anchor changed", () => assert.throws(() => applyFinishedGoodsMaster("unrelated source")));

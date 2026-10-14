@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { getLabelManufacturingDate, confirmLabelManufacturingDate, manufacturingDateSourceLabel } from "./labelManufacturingDate";
+import { preparePackagingLot, assertPackagingLotMatchesLabel, splitPackagingIdentity } from "./packagingLot";
 import { initializeApp } from "firebase/app";
 import { getAuth, onAuthStateChanged, signInAnonymously } from "firebase/auth";
 import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, runTransaction, serverTimestamp, addDoc } from "firebase/firestore";
@@ -97,77 +98,8 @@ const getProductLabel = (value = "") => normalizeProductType(value);
 // mixLot  = 생산 LOT
 // packLot = 포장/완제품/출고 LOT
 // ==========================================
-// ==========================================
-// 포장 LOT 발급
-// 예: F260909-001, F260909-002 ...
-// Firestore Transaction으로 동시 발급 중복 방지
-// ==========================================
-const formatPackagingLot = (dateKey, seq) => {
-  return `F${dateKey}${String(seq).padStart(3, "0")}`;
-};
-
-const ensurePackagingLot = async (wipId) => {
-  const now = getKST();
-  const dateKey = getKSTDateOnly();
-
-  let assignedLot = "";
-
-  await runTransaction(db, async (transaction) => {
-    const wipRef = getDocRef("wipList", wipId);
-    const wipSnap = await transaction.get(wipRef);
-
-    if (!wipSnap.exists()) {
-      throw new Error("포장 LOT 발급 대상이 존재하지 않습니다.");
-    }
-
-    const live = wipSnap.data();
-
-    // 이미 발급된 LOT가 있으면 절대 새로 만들지 않음
-    const existingPackLot = String(
-      live.packLot || ""
-    ).trim();
-
-    if (existingPackLot) {
-      assignedLot = existingPackLot;
-      return;
-    }
-
-    // 날짜별 일련번호 카운터
-    const counterRef = getDocRef(
-      "systemCounters",
-      `packLot-${dateKey}`
-    );
-
-    const counterSnap =
-      await transaction.get(counterRef);
-
-    const lastSeq = counterSnap.exists()
-      ? Number(counterSnap.data().lastSeq) || 0
-      : 0;
-
-    const nextSeq = lastSeq + 1;
-
-    assignedLot =
-      formatPackagingLot(dateKey, nextSeq);
-
-    transaction.set(
-      counterRef,
-      {
-        dateKey,
-        lastSeq: nextSeq,
-        updatedAt: now,
-      },
-      { merge: true }
-    );
-
-    transaction.update(wipRef, {
-      packLot: assignedLot,
-      packLotCreatedAt: now,
-    });
-  });
-
-  return assignedLot;
-};
+// 포장/라벨 LOT는 제조일 확인 후 최초 출력 요청과 함께 원자적으로 발급합니다.
+// 예: 26101425TUS501. 이미 발급된 LOT는 재출력에서도 유지합니다.
 
 const getPackagingLot = (item) => {
   const explicitPackLot = String(item?.packLot || "").trim();
@@ -3312,7 +3244,7 @@ function Step4SecondMolding({ wipList, masterSettings, ctx }) {
           const defStrA = defA > 0 ? ` [불량 ${defA}개: ${d.defectReasonA || "사유미상"}]` : "";
           const idA = Date.now().toString() + "A";
           transaction.set(getDocRef("wipList", idA), {
-            ...currentData, id: idA, mixLot: `${currentData.mixLot}-A`, qty: qtyA, currentStep: "step5",
+            ...(qtyB > 0 ? splitPackagingIdentity(currentData) : currentData), id: idA, mixLot: `${currentData.mixLot}-A`, qty: qtyA, currentStep: "step5",
             details: `${currentData.details || ""}\n[${curTime}] [2차성형 A호기] 압력:${pressA} | 직경:${dAvgA}mm | 높이:${hAvgA}mm | 담당:${d.operator}${defStrA}${noteStr}`,
           });
         }
@@ -3320,7 +3252,7 @@ function Step4SecondMolding({ wipList, masterSettings, ctx }) {
           const defStrB = defB > 0 ? ` [불량 ${defB}개: ${d.defectReasonB || "사유미상"}]` : "";
           const idB = Date.now().toString() + "B";
           transaction.set(getDocRef("wipList", idB), {
-            ...currentData, id: idB, mixLot: `${currentData.mixLot}-B`, qty: qtyB, currentStep: "step5",
+            ...(qtyA > 0 ? splitPackagingIdentity(currentData) : currentData), id: idB, mixLot: `${currentData.mixLot}-B`, qty: qtyB, currentStep: "step5",
             details: `${currentData.details || ""}\n[${curTime}] [2차성형 B호기] 압력:${pressB} | 직경:${dAvgB}mm | 높이:${hAvgB}mm | 담당:${d.operator}${defStrB}${noteStr}`,
           });
         }
@@ -4675,7 +4607,7 @@ nextProcessLogs.push({
               `수축률:${gAvg}% | 분리됨(${gName}) | 담당:${d.operator}`;
 
             const newWip = {
-              ...orig,
+              ...(Object.keys(groupMap).length > 1 ? splitPackagingIdentity(orig) : orig),
               id: newId,
               mixLot: newMixLot,
               qty: totalQty,
@@ -5277,40 +5209,28 @@ function Step7Drying({ wipList, dryingRoom: room, ctx }) {
     const recordDetails = `[${getKST()}] [건조] 온도:${room?.temp || 60}°C | 습도:${room?.humidity || 20}% | 담당:${room?.operator || "미상"}${defStr}${memoStr}`;
 
   try {
-  const packLot =
-  w.packLot ||
-  await ensurePackagingLot(targetId);
-
-const packLotCreatedAt =
-  w.packLotCreatedAt ||
-  getKST();
-  await setDoc(
-    getDocRef("wipList", targetId),
-    {
-      ...w,
-
-      // 생산 LOT는 그대로 보존
-      mixLot: w.mixLot,
-
-      // 포장 LOT 최초 확정
-      packLot,
-      packLotCreatedAt,
-
+  // 제조일이 확인된 최초 라벨 출력 때 LOT를 발급합니다.
+  // 현재 문서의 기존 LOT/라벨 정보를 오래된 화면 값으로 덮어쓰지 않습니다.
+  await runTransaction(db, async transaction => {
+    const wipRef = getDocRef("wipList", targetId);
+    const snap = await transaction.get(wipRef);
+    if (!snap.exists()) throw new Error("건조 대상 로트가 없습니다.");
+    const live = snap.data();
+    if (live.currentStep !== "step7_drying" || Number(live.qty) !== Number(w.qty)) {
+      throw new Error("건조 대상의 공정 또는 수량이 변경되었습니다. 최신 상태를 확인해주세요.");
+    }
+    transaction.update(wipRef, {
       qty: remainQty,
       currentStep: "step8",
-
-      details:
-        `${w.details || ""}\n` +
-        `${recordDetails}\n` +
-        `[${packLotCreatedAt}] [포장LOT확정] ${packLot}`,
-    }
-  );
+      details: `${live.details || ""}\n${recordDetails}`,
+    });
+  });
       const newCompData = { ...(room?.completionData || {}) };
       delete newCompData[targetId];
       await setDoc(getDocRef("equipment", "dryingRoom"), { ...room, completionData: newCompData });
       ctx.showToast("건조 완료 및 포장 이관", "success");
       logProcessToGoogleSheet("step7", { ...w, qty: remainQty }, room?.operator, { defects: def, defectReason: cData.reason || "-", conditions: `온도:${room?.temp || 60}°C, 습도:${room?.humidity || 20}%`, details: cData.specialNote || "-" });
-    } catch (err) { ctx.showToast("오류 발생", "error"); }
+    } catch (err) { ctx.showToast(err?.message || "오류 발생", "error"); }
   };
 
   return (
@@ -5384,25 +5304,6 @@ function Step8Packaging({ wipList, orderList, ctx }) {
     }));
 
   // ==========================================
-  // 과거 버전에서 이미 Step8에 들어와 있으나
-  // packLot이 없는 WIP 자동 보정
-  // ==========================================
-  useEffect(() => {
-    const missingPackLots = pendingWip.filter(
-      (w) => !w.packLot
-    );
-
-   missingPackLots.forEach((w) => {
-  ensurePackagingLot(w.id).catch((err) =>
-    console.error(
-      "포장 LOT 자동 생성 실패:",
-      err
-    )
-  );
-});
-  }, [wipList]);
-
-  // ==========================================
   // 포장 완료
   // mixLot은 절대 변경하지 않음
   // ==========================================
@@ -5464,11 +5365,6 @@ function Step8Packaging({ wipList, orderList, ctx }) {
       );
 
    try {
-  if (!completedPackLot) {
-    completedPackLot =
-      await ensurePackagingLot(wipId);
-  }
-
   await runTransaction(
         db,
         async (transaction) => {
@@ -5507,8 +5403,9 @@ function Step8Packaging({ wipList, orderList, ctx }) {
           }
 
          completedPackLot =
-  getPackagingLot(live) ||
-  completedPackLot;
+  getPackagingLot(live);
+          if (!completedPackLot) throw new Error("확정된 라벨 LOT가 없습니다. 먼저 라벨을 출력해주세요.");
+          assertPackagingLotMatchesLabel(live, getLabelManufacturingDate({...live,id:wipId}, getKST().slice(0,10))?.date);
 
           finalQty =
   Math.max(
@@ -5544,6 +5441,7 @@ if (
   printedQty !== finalQty ||
   printedDefectQty !== defectQty ||
   printedPackLot !== completedPackLot ||
+  (live.labelPrintedProductSKU && live.labelPrintedProductSKU !== getProductSKU(live.type, live.height)) ||
   (live.labelPrintedMfgDate && live.labelPrintedMfgDate !== getLabelManufacturingDate({...live,id:wipId}, getKST().slice(0,10))?.date) ||
   String(live.labelPrintedShrinkage ?? "") !== String(live.shrinkageRate ?? "") ||
   Boolean(live.labelPrintedExperimental) !== Boolean(live.isExperimental) ||
@@ -5641,7 +5539,7 @@ const curTime = getKST();
 
   // ==========================================
   // 라벨 출력
-  // 저장되어 있는 packLot만 사용
+  // 최초 발급/출력 요청/출력 이력/일일 순번을 한 번에 저장
   // ==========================================
   const handlePrintLabel = async wipId => {
     if (printingRef.current.has(wipId)) return;
@@ -5655,7 +5553,7 @@ const curTime = getKST();
       const defectQty = Number(data.defects || 0);
       const finalQty = Number(wip.qty) - defectQty;
       if (!Number.isInteger(defectQty) || defectQty < 0 || !Number.isInteger(finalQty) || finalQty <= 0) throw new Error("불량 수량을 확인해주세요. 정상 제품이 1개 이상 있어야 라벨을 출력할 수 있습니다.");
-      const finalLot = getPackagingLot(wip) || await ensurePackagingLot(wipId);
+      const finalLot = getPackagingLot(wip);
       const now = getKST();
       const today = now.slice(0, 10);
       let dateInfo = getLabelManufacturingDate(wip, today);
@@ -5680,13 +5578,14 @@ const curTime = getKST();
       };
       const database = getFirestore();
       const queueRef = doc(database, "print-queue", `print-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-      await runTransaction(database, async tx => {
+      const queuedPayload = await runTransaction(database, async tx => {
         const wipRef = getDocRef("wipList", wipId);
         const snap = await tx.get(wipRef);
         if (!snap.exists()) throw new Error("라벨 대상 로트가 없습니다.");
         const live = snap.data();
         if (live.currentStep !== "step8" || getPackagingLot(live) !== finalLot ||
-            ["qty", "type", "height", "shrinkageRate", "shrinkageStatus", "isExperimental"].some(key => String(live[key] ?? "") !== String(wip[key] ?? ""))) {
+            String(live.labelPrintJobId || "") !== String(wip.labelPrintJobId || "") ||
+            ["qty", "type", "height", "mixLot", "shrinkageRate", "shrinkageStatus", "isExperimental"].some(key => String(live[key] ?? "") !== String(wip[key] ?? ""))) {
           throw new Error("출력 전에 로트 수량 또는 제품 조건이 변경되었습니다. 최신 상태를 확인하세요.");
         }
         const liveDate = getLabelManufacturingDate({...live,id:wipId}, today);
@@ -5695,22 +5594,29 @@ const curTime = getKST();
         }
         const confirmationNote = dateConfirmation
           ? `\n[${now}] [라벨 제조일 확인] ${dateConfirmation.date} | 근거:${dateConfirmation.reason} | 담당:${dateConfirmation.confirmedBy}` : "";
+        const assignment = await preparePackagingLot({ transaction: tx, getDocRef, wip: live, manufacturingDate: manufacturedDate, now });
+        const assignedLot = assignment.lot;
+        const requestPayload = { ...payload, lotNumber: assignedLot };
         // Queue and print record commit together; a retry never adds an extra job.
-        tx.set(queueRef, payload);
+        if (assignment.counter) tx.set(assignment.counter.ref, assignment.counter.data, { merge: true });
+        tx.set(queueRef, requestPayload);
         tx.update(wipRef, {
-          labelPrintedAt: now, labelPrintedQty: finalQty, labelPrintedDefectQty: defectQty, labelPrintedPackLot: finalLot,
+          ...assignment.wipUpdate,
+          labelPrintedAt: now, labelPrintedQty: finalQty, labelPrintedDefectQty: defectQty, labelPrintedPackLot: assignedLot,
+          labelPrintedProductSKU: productSKU,
           labelPrintedShrinkage: live.shrinkageRate ?? null, labelPrintedShrinkageStatus: live.shrinkageStatus || "measured",
           labelPrintedExperimental: experimental, labelPrintJobId: queueRef.id,
           labelPrintedMfgDate: manufacturedDate, labelPrintedMfgDateSource: dateInfo.source,
           ...(dateConfirmation ? {labelManufacturingDateConfirmation:dateConfirmation} : {}),
           labelPrintCount: (Number(live.labelPrintCount) || 0) + 1,
-          labelPrintHistory: [...(live.labelPrintHistory || []), {jobId:queueRef.id,quantity:finalQty,defectQty,requestedAt:now,isExperimental:experimental,shrinkage,mfgDate:manufacturedDate,mfgDateSource:dateInfo.source}],
-          details: `${live.details || ""}${confirmationNote}\n[${now}] [라벨출력 요청] ${experimental ? "실험용 / TEST | " : ""}${finalQty}장 · 제품 1개당 1장 | 포장LOT:${finalLot} | 수축률:${shrinkage} | 제조일:${manufacturedDate} (${manufacturingDateSourceLabel(dateInfo.source)})`
+          labelPrintHistory: [...(live.labelPrintHistory || []), {jobId:queueRef.id,quantity:finalQty,defectQty,requestedAt:now,isExperimental:experimental,shrinkage,lotNumber:assignedLot,sourceLot:live.mixLot,sku:productSKU,mfgDate:manufacturedDate,mfgDateSource:dateInfo.source}],
+          details: `${live.details || ""}${confirmationNote}${assignment.counter ? `\n[${now}] [포장LOT확정] ${assignedLot} | 제조일:${manufacturedDate}` : ""}\n[${now}] [라벨출력 요청] ${experimental ? "실험용 / TEST | " : ""}${finalQty}장 · 제품 1개당 1장 | 포장LOT:${assignedLot} | 수축률:${shrinkage} | 제조일:${manufacturedDate} (${manufacturingDateSourceLabel(dateInfo.source)})`
         });
+        return requestPayload;
       });
       setPrintedStatus(prev => ({ ...prev, [wipId]: true }));
-      setLabelPreview(payload);
-      ctx.showToast(`라벨 ${finalQty}장 출력 요청 완료 — ${finalLot}`, "success");
+      setLabelPreview(queuedPayload);
+      ctx.showToast(`라벨 ${finalQty}장 출력 요청 완료 — ${queuedPayload.lotNumber}`, "success");
     } catch (err) {
       ctx.showToast(`전송 실패: ${err.message}`, "error");
     } finally {
@@ -5726,9 +5632,9 @@ const curTime = getKST();
       </h3>
 
       <p className="text-sm text-slate-500 mb-6">
-        포장 LOT는 포장 공정 진입 시 최초 1회
-        생성되며, 완제품 및 출고까지 변경되지
-        않습니다.
+        새 포장·라벨 LOT는 제조일(열처리 완료일) + 높이 + US5 + 당일 순번으로,
+        제조일을 확인한 최초 라벨 출력 요청 때 확정됩니다.
+        높이와 관계없이 같은 제조일의 순번을 공유하며, 재출력·완제품·출고에서도 같은 번호를 사용합니다.
       </p>
 
       {labelPreview && <div data-testid="label-preview" className="mb-6 rounded-xl border-2 border-indigo-200 bg-slate-50 p-4">
@@ -5806,7 +5712,7 @@ const curTime = getKST();
 
                const packLot =
   getPackagingLot(wip) ||
-  "LOT 발급 중...";
+  "최초 출력 시 LOT 확정";
 
                 const isPrinted =
                   Boolean(
