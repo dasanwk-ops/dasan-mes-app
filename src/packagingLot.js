@@ -51,6 +51,13 @@ export const formatPackagingLot = (manufacturingDate, height, sequence) => {
   return `${packagingDateKey(manufacturingDate)}${packagingHeight(height)}US5${String(sequence).padStart(2, "0")}`;
 };
 
+// Human-readable disc label only. Keep the canonical LOT and barcode input intact.
+export const packagingLotLabelLines = lot => {
+  const value = String(lot ?? "");
+  const match = value.match(/^(\d{6})([1-9]\d*(?:\.\d+)?TUS5\d{2})$/);
+  return { lotNumberLine1: match ? match[1] : value, lotNumberLine2: match ? match[2] : "" };
+};
+
 export const assertPackagingLotMatchesLabel = (wip, manufacturingDate) => {
   const identity = inspectPackagingLotIdentity(wip);
   if (identity.conflict || (!identity.lot && identity.hasPriorIdentity)) {

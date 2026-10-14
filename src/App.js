@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { getLabelManufacturingDate, confirmLabelManufacturingDate, manufacturingDateSourceLabel } from "./labelManufacturingDate";
-import { preparePackagingLot, assertPackagingLotMatchesLabel, splitPackagingIdentity, inspectPackagingLotIdentity } from "./packagingLot";
+import { preparePackagingLot, assertPackagingLotMatchesLabel, splitPackagingIdentity, inspectPackagingLotIdentity, packagingLotLabelLines } from "./packagingLot";
 import { initializeApp } from "firebase/app";
 import { getAuth, onAuthStateChanged, signInAnonymously } from "firebase/auth";
 import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, runTransaction, serverTimestamp, addDoc } from "firebase/firestore";
@@ -5673,7 +5673,7 @@ const curTime = getKST();
           ? `\n[${now}] [라벨 제조일 확인] ${dateConfirmation.date} | 근거:${dateConfirmation.reason} | 담당:${dateConfirmation.confirmedBy}` : "";
         const assignment = await preparePackagingLot({ transaction: tx, getDocRef, wip: live, manufacturingDate: manufacturedDate, now });
         const assignedLot = assignment.lot;
-        const requestPayload = { ...payload, lotNumber: assignedLot };
+        const requestPayload = { ...payload, lotNumber: assignedLot, ...packagingLotLabelLines(assignedLot) };
         // Queue and print record commit together; a retry never adds an extra job.
         if (assignment.counter) tx.set(assignment.counter.ref, assignment.counter.data, { merge: true });
         tx.set(queueRef, requestPayload);
@@ -5719,7 +5719,12 @@ const curTime = getKST();
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-h-96 overflow-y-auto">
           {Array.from({length:labelPreview.quantity},(_,index) => <div data-testid="label-copy" key={index} className="border-2 border-slate-400 rounded-lg bg-white p-3 text-sm">
             {labelPreview.isExperimental && <div className="font-black text-amber-800 text-lg">실험용 / TEST</div>}
-            <div className="font-bold">{labelPreview.displayName}</div><div>LOT: {labelPreview.lotNumber}</div><div className="text-xs">생산 LOT: {labelPreview.sourceLot}</div>
+            <div className="font-bold">{labelPreview.displayName}</div>
+            <div className="flex items-start gap-2"><span>LOT:</span><span className="inline-flex flex-col text-center leading-tight font-mono whitespace-nowrap" title={labelPreview.lotNumber}>
+              <span>{labelPreview.lotNumberLine1 || labelPreview.lotNumber}</span>
+              {labelPreview.lotNumberLine2 && <span>{labelPreview.lotNumberLine2}</span>}
+            </span></div>
+            <div className="text-xs">생산 LOT: {labelPreview.sourceLot}</div>
             <div>제조일: {labelPreview.mfgDate}</div><div>수축률: {labelPreview.shrinkage === "미측정" ? "미측정" : `${labelPreview.shrinkage}%`} · 확대율: {labelPreview.scaleFactor}</div>
             <div className="font-bold mt-2">수량 1개 · {index+1} / {labelPreview.quantity}장</div>
           </div>)}

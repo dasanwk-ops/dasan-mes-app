@@ -77,9 +77,10 @@ function screen(db, id, { form = {}, now = "2026-10-16 10:00:00" } = {}) {
     getProductSKU: (value, height) => `Z${value.replace(/\s/g, "")}${height}`
   });
   vm.runInContext(lotHelper + dateHelper + existingHelpers + lotReaders + completeHandler + printHandler +
-    ";this.print = handlePrintLabel; this.complete = moveNext; this.split = splitPackagingIdentity; this.format = formatPackagingLot;", context);
+    ";this.print = handlePrintLabel; this.complete = moveNext; this.split = splitPackagingIdentity; this.format = formatPackagingLot; this.labelLines = packagingLotLabelLines;", context);
   return { print: () => context.print(id), complete: () => context.complete(id), toasts, previews,
-    split: wip => clone(context.split(wip)), format: (...args) => context.format(...args) };
+    split: wip => clone(context.split(wip)), format: (...args) => context.format(...args),
+    labelLines: lot => clone(context.labelLines(lot)) };
 }
 
 test("date/height validation and exact US5 format", () => {
@@ -90,13 +91,43 @@ test("date/height validation and exact US5 format", () => {
     ["2026-10-14", "25x", 1], ["2026-10-14", "25", 0], ["2026-10-14", "25", 100]]) assert.throws(() => h.format(...args));
 });
 
+test("two-line LOT display separates only the recognized new format without modifying the canonical number", () => {
+  const h = screen(database({ "wipList/A": fixture("A") }), "A");
+  for (const [lot, line1, line2] of [
+    ["26101425TUS501", "261014", "25TUS501"],
+    ["26101430TUS599", "261014", "30TUS599"],
+    ["26101512.5TUS503", "261015", "12.5TUS503"],
+    ["F260914018", "F260914018", ""],
+    ["MIX-261010-123-A", "MIX-261010-123-A", ""],
+    ["26101425TUS501-A", "26101425TUS501-A", ""],
+    ["unknown-lot", "unknown-lot", ""],
+    ["", "", ""]
+  ]) {
+    const lines = h.labelLines(lot);
+    assert.deepEqual(lines, { lotNumberLine1: line1, lotNumberLine2: line2 });
+    assert.equal(lines.lotNumberLine1 + lines.lotNumberLine2, lot);
+  }
+});
+
 test("manufacturing day drives shared numbering across heights, shades and later print dates", async () => {
   const db = database({ "wipList/A": fixture("A"), "wipList/B": { ...fixture("B", "30"), type: "234 A2" },
     "wipList/C": fixture("C", "25", "2026-10-15"), "wipList/D": fixture("D") });
-  for (const id of ["A", "B", "C", "D"]) await screen(db, id).print();
+  const previews = [];
+  for (const id of ["A", "B", "C", "D"]) {
+    const h = screen(db, id); await h.print(); previews.push(...h.previews);
+  }
   assert.deepEqual(["A", "B", "C", "D"].map(id => db.read(`wipList/${id}`).packLot),
     ["26101425TUS501", "26101430TUS502", "26101525TUS501", "26101425TUS503"]);
-  const job = db.entries("print-queue/")[0][1];
+  const jobs = db.entries("print-queue/").map(([, job]) => job);
+  assert.deepEqual(jobs.map(job => [job.lotNumberLine1, job.lotNumberLine2]),
+    [["261014", "25TUS501"], ["261014", "30TUS502"], ["261015", "25TUS501"], ["261014", "25TUS503"]]);
+  assert.deepEqual(previews.map(job => [job.lotNumberLine1, job.lotNumberLine2]),
+    jobs.map(job => [job.lotNumberLine1, job.lotNumberLine2]));
+  for (const job of jobs) {
+    assert.equal(job.lotNumberLine1 + job.lotNumberLine2, job.lotNumber);
+    assert.equal(/[\r\n]/.test(job.lotNumber), false);
+  }
+  const job = jobs[0];
   assert.equal(job.lotNumber, "26101425TUS501"); assert.equal(job.mfgDate, "2026-10-14");
   assert.equal(job.sourceLot, fixture("A").mixLot); assert.equal(job.quantity, 10); assert.equal(job.unitQty, 1);
   assert.equal(job.gtin, "08600015381754"); assert.equal(job.status, "pending");
@@ -109,6 +140,10 @@ test("concurrent operators receive unique consecutive numbers, including transac
   const numbers = items.map(w => db.read(`wipList/${w.id}`).packLotSequence).sort((a, b) => a - b);
   assert.deepEqual(numbers, [1, 2, 3, 4, 5, 6, 7, 8]); assert.ok(db.retries() > 0);
   assert.equal(db.entries("print-queue/").length, 8);
+  for (const [, job] of db.entries("print-queue/")) {
+    assert.equal(job.lotNumberLine1, "261014");
+    assert.equal(job.lotNumberLine1 + job.lotNumberLine2, job.lotNumber);
+  }
 });
 
 test("two screens printing the same lot concurrently create one job and consume one number", async () => {
@@ -126,6 +161,7 @@ test("reprinting preserves the assigned lot, counter and audit links", async () 
   await screen(db, "A", { now: "2026-10-17 10:00:00" }).print();
   const jobs = db.entries("print-queue/").map(([, value]) => value);
   assert.equal(jobs.length, 2); assert.ok(jobs.every(j => j.lotNumber === "26101425TUS501"));
+  assert.ok(jobs.every(j => j.lotNumberLine1 === "261014" && j.lotNumberLine2 === "25TUS501"));
   assert.equal(db.read("systemCounters/packLot-US5-261014").lastSeq, 1);
   assert.equal(db.read("wipList/A").labelPrintHistory[1].lotNumber, jobs[1].lotNumber);
 });
@@ -134,7 +170,10 @@ test("existing F lots print unchanged without creating a new counter", async () 
   const db = database({ "wipList/A": { ...fixture("A"), packLot: "F260914018" } });
   await screen(db, "A").print();
   assert.equal(db.read("wipList/A").packLot, "F260914018");
-  assert.equal(db.entries("print-queue/")[0][1].lotNumber, "F260914018");
+  const job = db.entries("print-queue/")[0][1];
+  assert.equal(job.lotNumber, "F260914018");
+  assert.equal(job.lotNumberLine1, "F260914018");
+  assert.equal(job.lotNumberLine2, "");
   assert.equal(db.entries("systemCounters/").length, 0);
 });
 
