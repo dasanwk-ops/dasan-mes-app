@@ -29,7 +29,9 @@ jobs:
         run: node tools/test-heat-completion.cjs
       - name: Existing label regression
         run: npm run test:packaging-lot
+      - name: Existing WIP transition and split safety
+        run: npm run test:wip-lot-safety
       - name: Production build including guarded integration
         run: CI=false npm run build
       - name: Check integration again after build
-        run: node tools/test-finished-goods-master.cjs
+        run: node tools/test-finished-goods-master.cjs && npm run test:packaging-lot && npm run test:wip-lot-safety

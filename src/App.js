@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { getLabelManufacturingDate, confirmLabelManufacturingDate, manufacturingDateSourceLabel } from "./labelManufacturingDate";
-import { preparePackagingLot, assertPackagingLotMatchesLabel, splitPackagingIdentity } from "./packagingLot";
+import { preparePackagingLot, assertPackagingLotMatchesLabel, splitPackagingIdentity, inspectPackagingLotIdentity } from "./packagingLot";
 import { initializeApp } from "firebase/app";
 import { getAuth, onAuthStateChanged, signInAnonymously } from "firebase/auth";
 import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, runTransaction, serverTimestamp, addDoc } from "firebase/firestore";
@@ -102,32 +102,11 @@ const getProductLabel = (value = "") => normalizeProductType(value);
 // 예: 26101425TUS501. 이미 발급된 LOT는 재출력에서도 유지합니다.
 
 const getPackagingLot = (item) => {
-  const explicitPackLot = String(item?.packLot || "").trim();
-
-  if (explicitPackLot) {
-    return explicitPackLot;
-  }
-
-  const legacyMixLot = String(item?.mixLot || "").trim();
-
-  if (
-    item?.currentStep === "done" &&
-    /^F/i.test(legacyMixLot)
-  ) {
-    return legacyMixLot;
-  }
-
-  const shippedLot = String(item?.lot || "").trim();
-
-  if (shippedLot) {
-    return shippedLot;
-  }
-
-  return "";
+  return inspectPackagingLotIdentity(item).lot;
 };
 
 const getTraceMixLot = item => {
-  const candidates = [item?.mixLot, item?.productionLot, item?.sourceLot, item?.originalLot];
+  const candidates = [item?.mixLot, item?.productionLot, item?.sourceLot, item?.originalLot, item?.lot];
   return candidates.map(value => String(value || "").trim()).find(value => /^MIX-/i.test(value)) || "";
 };
 const LotLink = ({ item }) => {
@@ -1229,7 +1208,7 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
     const qtyChanged = safeQty !== Number(wip.qty);
 
     // 대시보드 수정에서는 현재 공정보다 뒤 단계로 건너뛰는 것은 막습니다.
-    if (currentIndex >= 0 && targetIndex > currentIndex) {
+    if (currentIndex < 0 || targetIndex < 0 || targetIndex > currentIndex) {
       return ctx.showToast(
         "대시보드에서는 현재 또는 이전 공정으로만 변경할 수 있습니다.",
         "error"
@@ -1257,6 +1236,15 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
           const live = liveSnap.data();
           const liveQty = Number(live.qty) || 0;
           const liveStep = live.currentStep;
+          if (["qty", "currentStep", "shrinkageRate", "type", "height", "mixLot", "packLot", "labelPrintJobId"]
+              .some(key => String(live[key] ?? "") !== String(wip[key] ?? ""))) {
+            throw new Error("수정 화면을 연 이후 수량, 공정 또는 로트 정보가 변경되었습니다. 최신 상태에서 다시 수정해주세요.");
+          }
+          const liveIndex = WIP_STEPS.findIndex(step => step.value === liveStep);
+          if (liveIndex < 0 || targetIndex < 0 || targetIndex > liveIndex || !Number.isInteger(Number(live.qty)) || Number(live.qty) < 0) {
+            throw new Error("현재 공정 또는 수량을 확인해주세요. 이전 공정으로만 변경할 수 있습니다.");
+          }
+          if (safeQty !== liveQty && !correctionReason) throw new Error("수량 보정 사유를 입력해주세요.");
           const structuralChange =
             safeQty !== liveQty || targetStep !== liveStep;
 
@@ -1417,13 +1405,23 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
       `${target.mixLot} 작업지시 ${target.qty}EA를 삭제하시겠습니까?\n삭제 즉시 해당 수량은 발주 잔량으로 자동 복구됩니다.`,
       async () => {
         try {
-          await deleteDoc(getDocRef("wipList", id));
+          await runTransaction(db, async transaction => {
+            const wipRef = getDocRef("wipList", id);
+            const snap = await transaction.get(wipRef);
+            if (!snap.exists()) throw new Error("이미 삭제되거나 이관된 작업지시입니다.");
+            const live = snap.data();
+            if (live.currentStep !== "step1" || ["qty", "mixLot", "type", "height", "packLot"]
+                .some(key => String(live[key] ?? "") !== String(target[key] ?? ""))) {
+              throw new Error("삭제 확인 중 공정, 수량 또는 로트 정보가 변경되었습니다. 최신 상태를 확인해주세요.");
+            }
+            transaction.delete(wipRef);
+          });
           ctx.showToast(
             "작업지시 삭제 완료 — 발주 잔량 자동 복구",
             "success"
           );
         } catch (e) {
-          ctx.showToast("삭제 실패", "error");
+          ctx.showToast(e?.message || "삭제 실패", "error");
         }
       }
     );
@@ -2416,11 +2414,20 @@ function Step1MaterialWarehouse({ inventory, inventoryHistory, wipList, masterSe
     const totalW = Object.values(neededBOM).reduce((a, b) => a + b, 0);
 
     try {
-      await setDoc(getDocRef("wipList", lot.id), {
-        ...lot,
-        weight: totalW.toFixed(3),
-        currentStep: "step2",
-        details: `${lot.details || ""}\n[${getKST()}] [소재창고] 배합 대기로 이관 (담당:${op})${lot.isExperimental ? ` | ${getExperimentalLabel(lot)} | 총 분말:${totalW.toFixed(3)}kg` : ""}`
+      await runTransaction(db, async transaction => {
+        const wipRef = getDocRef("wipList", lot.id);
+        const snap = await transaction.get(wipRef);
+        if (!snap.exists()) throw new Error("이미 삭제되거나 이관된 작업지시입니다.");
+        const live = snap.data();
+        if (live.currentStep !== "step1" || ["qty", "type", "height", "singleWeight", "mixLot", "isExperimental", "includeShrinkageSpecimen"]
+            .some(key => String(live[key] ?? "") !== String(lot[key] ?? ""))) {
+          throw new Error("소재창고 대상의 공정, 수량 또는 제품 조건이 변경되었습니다. 최신 상태를 확인해주세요.");
+        }
+        transaction.update(wipRef, {
+          weight: totalW.toFixed(3),
+          currentStep: "step2",
+          details: `${live.details || ""}\n[${getKST()}] [소재창고] 배합 대기로 이관 (담당:${op})${live.isExperimental ? ` | ${getExperimentalLabel(live)} | 총 분말:${totalW.toFixed(3)}kg` : ""}`
+        });
       });
       ctx.showToast(`로트 ${lot.mixLot} 배합 공정으로 이관 완료`, "success");
       logProcessToGoogleSheet("step1", lot, op, { details: "배합 공정 이관 완료" });
@@ -2657,7 +2664,7 @@ function Step2Mixing({ wipList, inventory, inventoryHistory, orderList, masterSe
     if (!Number.isFinite(finalMixedWeight) || finalMixedWeight <= 0) {
       return ctx.showToast("배합 중량이 올바르지 않습니다.", "error");
     }
-    if (finalProducedQty <= 0) return ctx.showToast("배합 수량이 올바르지 않습니다.", "error");
+    if (!Number.isInteger(Number(finalProducedQty)) || Number(finalProducedQty) <= 0) return ctx.showToast("배합 수량은 1 이상의 정수여야 합니다.", "error");
     if (isShortageMode && finalMixedWeight > origTotalWeight) {
       return ctx.showToast("실제 배합량이 원래 지시 중량을 초과할 수 없습니다.", "error");
     }
@@ -2731,6 +2738,11 @@ await runTransaction(db, async (transaction) => {
       throw new Error(
         "이미 다른 작업자가 처리한 배합 로트입니다."
       );
+    }
+    const liveMixWip = wipSnap.data();
+    if (["qty", "weight", "type", "height", "singleWeight", "mixLot", "isExperimental", "includeShrinkageSpecimen"]
+        .some(key => String(liveMixWip[key] ?? "") !== String(activeJob[key] ?? ""))) {
+      throw new Error("배합 대상의 수량 또는 제품 조건이 변경되었습니다. 원재료 투입량을 다시 확인해주세요.");
     }
 
 
@@ -3094,9 +3106,13 @@ function Step3FirstMolding({ wipList, masterSettings, ctx }) {
     if (!d.operator) return ctx.showToast("작업자 성명을 입력해주세요.", "error");
 
     const wItem = wipList.find((w) => w.id === id);
+    if (!wItem) return ctx.showToast("1차 성형 대상 로트가 없습니다.", "error");
     const press = d.pressure || getSeriesPressure(masterSettings, wItem?.type, "step3");
-    const aQty = parseInt(d.actualQty !== undefined ? d.actualQty : wItem.qty) || 0;
-    const defQty = parseInt(d.defects) || 0;
+    const aQty = Number(d.actualQty !== undefined ? d.actualQty : wItem.qty);
+    const defQty = Number(d.defects || 0);
+    if (!Number.isInteger(aQty) || aQty < 1 || !Number.isInteger(defQty) || defQty < 0 || defQty > aQty) {
+      return ctx.showToast("실 성형수량은 1 이상의 정수, 불량수량은 실 성형수량 이하의 0 이상의 정수로 입력해주세요.", "error");
+    }
 
     const dAvg = calcAvg(d.d1, d.d2, d.d3, 2);
     const hAvg = calcAvg(d.h1, d.h2, d.h3, 2);
@@ -3112,7 +3128,12 @@ function Step3FirstMolding({ wipList, masterSettings, ctx }) {
         const docSnap = await transaction.get(docRef);
         if (!docSnap.exists()) throw "이미 삭제된 로트입니다.";
         if (docSnap.data().currentStep !== "step3") throw "이미 다른 작업자가 처리한 로트입니다.";
-        transaction.update(docRef, { qty: Math.max(0, aQty - defQty), currentStep: "step4", details: `${docSnap.data().details || ""}\n${recordDetails}` });
+        const live = docSnap.data();
+        if (["qty", "type", "height", "singleWeight", "mixLot", "isExperimental", "includeShrinkageSpecimen"]
+            .some(key => String(live[key] ?? "") !== String(wItem[key] ?? ""))) {
+          throw "1차 성형 대상의 수량 또는 제품 조건이 변경되었습니다. 최신 상태에서 다시 입력해주세요.";
+        }
+        transaction.update(docRef, { qty: aQty - defQty, currentStep: "step4", details: `${live.details || ""}\n${recordDetails}` });
       });
       ctx.showToast("1차 성형 완료", "success");
       logProcessToGoogleSheet("step3", { ...wItem, qty: aQty - defQty }, d.operator, { defects: defQty, defectReason: d.defectReason || "-", conditions: `압력:${press}ton`, measurements: `직경:${dAvg}mm, 높이:${hAvg}mm, 무게:${wAvg}g`, details: d.specialNote || "-" });
@@ -3219,17 +3240,30 @@ function Step4SecondMolding({ wipList, masterSettings, ctx }) {
     const d = formData[id] || {};
     if (!d.operator) return ctx.showToast("작업자 성명을 필수로 입력해주세요.", "error");
 
-    const qtyA = parseInt(d.qtyA) || 0; const defA = parseInt(d.defectA) || 0;
-    const qtyB = parseInt(d.qtyB) || 0; const defB = parseInt(d.defectB) || 0;
+    const qtyA = Number(d.qtyA || 0); const defA = Number(d.defectA || 0);
+    const qtyB = Number(d.qtyB || 0); const defB = Number(d.defectB || 0);
     const wipItem = wipList.find((w) => w.id === id);
 
+    if (!wipItem || ![qtyA, defA, qtyB, defB].every(value => Number.isInteger(value) && value >= 0)) {
+      return ctx.showToast("정상 및 불량 수량은 0 이상의 정수로 입력해주세요.", "error");
+    }
+
     if (qtyA === 0 && qtyB === 0) return ctx.showToast("A호기 또는 B호기 중 정상 생산 수량을 배정해주세요!", "error");
-    if (qtyA + defA + qtyB + defB !== wipItem.qty) return ctx.showToast("입력한 수량 합계(정상+불량)가 대기 수량과 불일치합니다.", "error");
+    if (qtyA + defA + qtyB + defB !== Number(wipItem.qty)) return ctx.showToast("입력한 수량 합계(정상+불량)가 대기 수량과 불일치합니다.", "error");
 
     const dAvgA = calcAvg(d.d1A, d.d2A, d.d3A, 2); const hAvgA = calcAvg(d.h1A, d.h2A, d.h3A, 2); const pressA = d.pressureA || getSeriesPressure(masterSettings, wipItem?.type, "step4A");
     const dAvgB = calcAvg(d.d1B, d.d2B, d.d3B, 2); const hAvgB = calcAvg(d.h1B, d.h2B, d.h3B, 2); const pressB = d.pressureB || getSeriesPressure(masterSettings, wipItem?.type, "step4B");
     const noteStr = d.specialNote ? ` [메모:${d.specialNote}]` : "";
     const curTime = getKST(); 
+
+    // Keep the full allocation on every surviving child, including a line with only defects.
+    const allocationRecord = `[${curTime}] [2차성형 수량배분] 부모WIP:${id} | ` +
+      `A호기 정상:${qtyA}개 / 불량:${defA}개 (${defA > 0 ? d.defectReasonA || "사유미상" : "-"}) | ` +
+      `B호기 정상:${qtyB}개 / 불량:${defB}개 (${defB > 0 ? d.defectReasonB || "사유미상" : "-"}) | 담당:${d.operator}`;
+
+    // Auto IDs are stable across transaction retries and unique across operators.
+    const childRefA = qtyA > 0 ? doc(getColRef("wipList")) : null;
+    const childRefB = qtyB > 0 ? doc(getColRef("wipList")) : null;
 
     try {
       await runTransaction(db, async (transaction) => {
@@ -3238,29 +3272,37 @@ function Step4SecondMolding({ wipList, masterSettings, ctx }) {
         if (!docSnap.exists()) throw "이미 삭제된 로트입니다.";
         if (docSnap.data().currentStep !== "step4") throw "이미 다른 작업자가 처리한 로트입니다.";
         const currentData = docSnap.data();
+        if (!Number.isInteger(Number(currentData.qty)) || Number(currentData.qty) !== Number(wipItem.qty) ||
+            qtyA + defA + qtyB + defB !== Number(currentData.qty)) {
+          throw "최신 수량이 변경되었습니다. 정상·불량 배정을 다시 확인해주세요.";
+        }
 
         // 🌟 수정: Step5 (열처리 대기) 로 넘어갑니다.
         if (qtyA > 0) {
           const defStrA = defA > 0 ? ` [불량 ${defA}개: ${d.defectReasonA || "사유미상"}]` : "";
-          const idA = Date.now().toString() + "A";
-          transaction.set(getDocRef("wipList", idA), {
-            ...(qtyB > 0 ? splitPackagingIdentity(currentData) : currentData), id: idA, mixLot: `${currentData.mixLot}-A`, qty: qtyA, currentStep: "step5",
-            details: `${currentData.details || ""}\n[${curTime}] [2차성형 A호기] 압력:${pressA} | 직경:${dAvgA}mm | 높이:${hAvgA}mm | 담당:${d.operator}${defStrA}${noteStr}`,
+          const idA = childRefA.id;
+          transaction.set(childRefA, {
+            ...(qtyB > 0 ? splitPackagingIdentity({ ...currentData, id }) : currentData), id: idA,
+            mixLot: qtyB > 0 || /^MIX-/i.test(currentData.mixLot) ? `${currentData.mixLot}-A` : currentData.mixLot,
+            qty: qtyA, currentStep: "step5",
+            details: `${currentData.details || ""}\n${allocationRecord}\n[${curTime}] [2차성형 A호기] 압력:${pressA} | 직경:${dAvgA}mm | 높이:${hAvgA}mm | 담당:${d.operator}${defStrA}${noteStr}`,
           });
         }
         if (qtyB > 0) {
           const defStrB = defB > 0 ? ` [불량 ${defB}개: ${d.defectReasonB || "사유미상"}]` : "";
-          const idB = Date.now().toString() + "B";
-          transaction.set(getDocRef("wipList", idB), {
-            ...(qtyA > 0 ? splitPackagingIdentity(currentData) : currentData), id: idB, mixLot: `${currentData.mixLot}-B`, qty: qtyB, currentStep: "step5",
-            details: `${currentData.details || ""}\n[${curTime}] [2차성형 B호기] 압력:${pressB} | 직경:${dAvgB}mm | 높이:${hAvgB}mm | 담당:${d.operator}${defStrB}${noteStr}`,
+          const idB = childRefB.id;
+          transaction.set(childRefB, {
+            ...(qtyA > 0 ? splitPackagingIdentity({ ...currentData, id }) : currentData), id: idB,
+            mixLot: qtyA > 0 || /^MIX-/i.test(currentData.mixLot) ? `${currentData.mixLot}-B` : currentData.mixLot,
+            qty: qtyB, currentStep: "step5",
+            details: `${currentData.details || ""}\n${allocationRecord}\n[${curTime}] [2차성형 B호기] 압력:${pressB} | 직경:${dAvgB}mm | 높이:${hAvgB}mm | 담당:${d.operator}${defStrB}${noteStr}`,
           });
         }
         transaction.delete(docRef);
       });
       ctx.showToast("2차 성형 완료 및 열처리 이관", "success");
-      if (qtyA > 0) logProcessToGoogleSheet("step4", { ...wipItem, qty: qtyA }, d.operator, { defects: defA, defectReason: d.defectReasonA || "-", equipment: "A호기", conditions: `압력:${pressA}MPa`, measurements: `직경:${dAvgA}mm, 높이:${hAvgA}mm`, details: d.specialNote || "-" });
-      if (qtyB > 0) logProcessToGoogleSheet("step4", { ...wipItem, qty: qtyB }, d.operator, { defects: defB, defectReason: d.defectReasonB || "-", equipment: "B호기", conditions: `압력:${pressB}MPa`, measurements: `직경:${dAvgB}mm, 높이:${hAvgB}mm`, details: d.specialNote || "-" });
+      if (qtyA > 0 || defA > 0) logProcessToGoogleSheet("step4", { ...wipItem, qty: qtyA }, d.operator, { defects: defA, defectReason: d.defectReasonA || "-", equipment: "A호기", conditions: `압력:${pressA}MPa`, measurements: `직경:${dAvgA}mm, 높이:${hAvgA}mm`, details: d.specialNote || "-" });
+      if (qtyB > 0 || defB > 0) logProcessToGoogleSheet("step4", { ...wipItem, qty: qtyB }, d.operator, { defects: defB, defectReason: d.defectReasonB || "-", equipment: "B호기", conditions: `압력:${pressB}MPa`, measurements: `직경:${dAvgB}mm, 높이:${hAvgB}mm`, details: d.specialNote || "-" });
     } catch (err) { ctx.showToast(typeof err === "string" ? err : "오류 발생", "error"); }
   };
 
@@ -4607,7 +4649,7 @@ nextProcessLogs.push({
               `수축률:${gAvg}% | 분리됨(${gName}) | 담당:${d.operator}`;
 
             const newWip = {
-              ...(Object.keys(groupMap).length > 1 ? splitPackagingIdentity(orig) : orig),
+              ...(Object.keys(groupMap).length > 1 ? splitPackagingIdentity({ ...orig, id: lot.wipId }) : orig),
               id: newId,
               mixLot: newMixLot,
               qty: totalQty,
@@ -5037,7 +5079,8 @@ function Step6Inspection({ wipList, ctx }) {
     const data = formData[id] || {};
     if (!data.operator) return ctx.showToast("작업자 성명을 입력해주세요.", "error");
 
-    const defectQty = parseInt(data.defects) || 0;
+    const defectQty = Number(data.defects || 0);
+    if (!Number.isInteger(defectQty) || defectQty < 0) return ctx.showToast("불량 수량은 0 이상의 정수로 입력해주세요.", "error");
     const defectStr = defectQty > 0 ? ` [불량 ${defectQty}개: ${data.defectReason || "사유미상"}]` : "";
 
     const measuredAt = getKST();
@@ -5053,9 +5096,20 @@ function Step6Inspection({ wipList, ctx }) {
 
     try {
       const w = wipList.find((i) => i.id === id);
-      await setDoc(getDocRef("wipList", id), {
-        ...w,
-        qty: Math.max(0, w.qty - defectQty),
+      const completed = await runTransaction(db, async transaction => {
+        const wipRef = getDocRef("wipList", id);
+        const snap = await transaction.get(wipRef);
+        if (!snap.exists()) throw new Error("검수 대상 로트가 없습니다.");
+        const live = snap.data();
+        const liveQty = Number(live.qty);
+        if (!w || live.currentStep !== "step6" || !Number.isInteger(liveQty) || liveQty !== Number(w.qty)) {
+          throw new Error("검수 대상의 공정 또는 수량이 변경되었습니다. 최신 상태를 확인해주세요.");
+        }
+        if (!Number.isInteger(defectQty) || defectQty < 0 || defectQty > liveQty) {
+          throw new Error("불량 수량을 현재 수량 이내의 정수로 입력해주세요.");
+        }
+        const update = {
+        qty: liveQty - defectQty,
         currentStep: "step7",
         preMachiningDimensions: {
           outerDia: preMachiningOuterDia,
@@ -5071,11 +5125,14 @@ function Step6Inspection({ wipList, ctx }) {
           measuredAt,
           operator: data.operator,
         },
-        details: `${w.details || ""}\n[${measuredAt}] [검수/가공] ${dimensionText} | 담당:${data.operator}${defectStr}`,
+        details: `${live.details || ""}\n[${measuredAt}] [검수/가공] ${dimensionText} | 담당:${data.operator}${defectStr}${data.memo ? ` | 메모:${data.memo}` : ""}`,
+        };
+        transaction.update(wipRef, update);
+        return { ...live, ...update, id };
       });
       ctx.showToast("검수 완료", "success");
-      logProcessToGoogleSheet("step6", { ...w, qty: w.qty - defectQty }, data.operator, { defects: defectQty, defectReason: data.defectReason || "-", measurements: dimensionText, details: data.memo || "검수완료" });
-    } catch (err) { ctx.showToast("오류 발생", "error"); }
+      logProcessToGoogleSheet("step6", completed, data.operator, { defects: defectQty, defectReason: data.defectReason || "-", measurements: dimensionText, details: data.memo || "검수완료" });
+    } catch (err) { ctx.showToast(err?.message || "오류 발생", "error"); }
   };
 
   return (
@@ -5177,22 +5234,35 @@ function Step7Drying({ wipList, dryingRoom: room, ctx }) {
   const dryingWip = wipList.filter((w) => w.currentStep === "step7_drying");
 
   const handleRoomConfig = async (field, val) => {
-    try { await setDoc(getDocRef("equipment", "dryingRoom"), { ...room, [field]: val }); } catch (e) { console.error("저장 오류:", e); }
+    try { await setDoc(getDocRef("equipment", "dryingRoom"), { [field]: val }, { merge: true }); }
+    catch (e) { ctx.showToast("건조실 설정 저장에 실패했습니다. 다시 입력해주세요.", "error"); }
   };
 
   const handleStartDrying = async (wipId) => {
     if (!room?.operator) return ctx.showToast("건조실 담당자를 입력하세요.", "error");
     try {
-      const w = wipList.find((i) => i.id === wipId);
-      await setDoc(getDocRef("wipList", wipId), { ...w, currentStep: "step7_drying" });
+      await runTransaction(db, async transaction => {
+        const wipRef = getDocRef("wipList", wipId);
+        const snap = await transaction.get(wipRef);
+        if (!snap.exists() || snap.data().currentStep !== "step7") {
+          throw new Error("건조 대상의 공정이 변경되었습니다. 최신 상태를 확인해주세요.");
+        }
+        transaction.update(wipRef, { currentStep: "step7_drying" });
+      });
       ctx.showToast("건조 시작", "success");
-    } catch (e) { ctx.showToast("오류 발생", "error"); }
+    } catch (e) { ctx.showToast(e?.message || "오류 발생", "error"); }
   };
 
   const handleCompData = async (id, field, val) => {
-    const cData = room?.completionData || {};
-    const tData = cData[id] || {};
-    try { await setDoc(getDocRef("equipment", "dryingRoom"), { ...room, completionData: { ...cData, [id]: { ...tData, [field]: val } } }); } catch (e) {}
+    try {
+      await runTransaction(db, async transaction => {
+        const snap = await transaction.get(getDocRef("wipList", id));
+        if (!snap.exists() || snap.data().currentStep !== "step7_drying") {
+          throw new Error("이미 건조가 완료되었거나 공정이 변경되었습니다. 최신 상태를 확인해주세요.");
+        }
+        transaction.set(getDocRef("equipment", "dryingRoom"), { completionData: { [id]: { [field]: val } } }, { merge: true });
+      });
+    } catch (e) { ctx.showToast(e?.message || "건조 입력 저장에 실패했습니다.", "error"); }
   };
 
   const handleCompleteItem = async (targetId) => {
@@ -5200,36 +5270,43 @@ function Step7Drying({ wipList, dryingRoom: room, ctx }) {
     if (!w) return;
 
     const cData = room?.completionData?.[targetId] || {};
-    const def = parseInt(cData.defects) || 0;
+    const def = Number(cData.defects || 0);
     const remainQty = w.qty - def;
 
-    if (remainQty < 0) return ctx.showToast("불량 오류", "error");
+    if (!Number.isInteger(def) || def < 0 || remainQty < 0) return ctx.showToast("불량 수량은 현재 수량 이내의 정수로 입력해주세요.", "error");
     const defStr = def > 0 ? ` [불량 ${def}개: ${cData.reason || "사유미상"}]` : "";
     const memoStr = cData.specialNote ? ` [메모: ${cData.specialNote}]` : "";
     const recordDetails = `[${getKST()}] [건조] 온도:${room?.temp || 60}°C | 습도:${room?.humidity || 20}% | 담당:${room?.operator || "미상"}${defStr}${memoStr}`;
 
-  try {
-  // 제조일이 확인된 최초 라벨 출력 때 LOT를 발급합니다.
-  // 현재 문서의 기존 LOT/라벨 정보를 오래된 화면 값으로 덮어쓰지 않습니다.
-  await runTransaction(db, async transaction => {
-    const wipRef = getDocRef("wipList", targetId);
-    const snap = await transaction.get(wipRef);
-    if (!snap.exists()) throw new Error("건조 대상 로트가 없습니다.");
-    const live = snap.data();
-    if (live.currentStep !== "step7_drying" || Number(live.qty) !== Number(w.qty)) {
-      throw new Error("건조 대상의 공정 또는 수량이 변경되었습니다. 최신 상태를 확인해주세요.");
-    }
-    transaction.update(wipRef, {
-      qty: remainQty,
-      currentStep: "step8",
-      details: `${live.details || ""}\n${recordDetails}`,
-    });
-  });
-      const newCompData = { ...(room?.completionData || {}) };
-      delete newCompData[targetId];
-      await setDoc(getDocRef("equipment", "dryingRoom"), { ...room, completionData: newCompData });
+    try {
+      // LOT issuance remains with the first label request. Commit the process
+      // transfer and this lot's input cleanup together, preserving other lots.
+      const completed = await runTransaction(db, async transaction => {
+        const wipRef = getDocRef("wipList", targetId);
+        const roomRef = getDocRef("equipment", "dryingRoom");
+        const snap = await transaction.get(wipRef);
+        const roomSnap = await transaction.get(roomRef);
+        if (!snap.exists()) throw new Error("건조 대상 로트가 없습니다.");
+        const live = snap.data();
+        const liveRoom = roomSnap.exists() ? roomSnap.data() : {};
+        if (live.currentStep !== "step7_drying" || !Number.isInteger(Number(live.qty)) || Number(live.qty) !== Number(w.qty)) {
+          throw new Error("건조 대상의 공정 또는 수량이 변경되었습니다. 최신 상태를 확인해주세요.");
+        }
+        const liveData = liveRoom.completionData?.[targetId] || {};
+        if (["temp", "humidity", "operator"].some(key => String(liveRoom[key] ?? "") !== String(room?.[key] ?? "")) ||
+            ["defects", "reason", "specialNote"].some(key => String(liveData[key] ?? "") !== String(cData[key] ?? ""))) {
+          throw new Error("건조 조건 또는 완료 입력이 변경되었습니다. 최신 내용을 확인한 뒤 다시 완료해주세요.");
+        }
+        if (!liveRoom.operator) throw new Error("건조실 담당자를 입력하세요.");
+        const update = { qty: remainQty, currentStep: "step8", details: `${live.details || ""}\n${recordDetails}` };
+        const remainingData = { ...(liveRoom.completionData || {}) };
+        delete remainingData[targetId];
+        transaction.update(wipRef, update);
+        transaction.update(roomRef, { completionData: remainingData });
+        return { ...live, ...update, id: targetId };
+      });
       ctx.showToast("건조 완료 및 포장 이관", "success");
-      logProcessToGoogleSheet("step7", { ...w, qty: remainQty }, room?.operator, { defects: def, defectReason: cData.reason || "-", conditions: `온도:${room?.temp || 60}°C, 습도:${room?.humidity || 20}%`, details: cData.specialNote || "-" });
+      logProcessToGoogleSheet("step7", completed, room?.operator, { defects: def, defectReason: cData.reason || "-", conditions: `온도:${room?.temp || 60}°C, 습도:${room?.humidity || 20}%`, details: cData.specialNote || "-" });
     } catch (err) { ctx.showToast(err?.message || "오류 발생", "error"); }
   };
 

@@ -1,6 +1,30 @@
 // The printed/finished-goods LOT. Internal MIX identifiers remain trace links.
 export const PACKAGING_LOT_FORMAT = "manufacturing-date-height-US5-seq2";
 
+const isFinalLot = value => /^F/i.test(value) || /^\d{6}[1-9]\d*(?:\.\d+)?TUS5\d{2}$/.test(value);
+
+// Older records may store the final LOT outside packLot. Never silently renumber
+// a printed item, and never treat a split parent's archived identity as active.
+export const inspectPackagingLotIdentity = wip => {
+  const history = Array.isArray(wip?.labelPrintHistory) ? wip.labelPrintHistory : [];
+  const legacyMix = String(wip?.mixLot || "").trim();
+  const lotAlias = String(wip?.lot || "").trim();
+  const candidates = [wip?.packLot, /^MIX-/i.test(lotAlias) ? "" : lotAlias, wip?.labelPrintedPackLot,
+    ...history.map(entry => entry?.lotNumber),
+    !wip?.packagingIdentitySplit && isFinalLot(legacyMix) ? legacyMix : ""]
+    .map(value => String(value || "").trim()).filter(Boolean);
+  const unique = [...new Set(candidates)];
+  const hasPrintEvidence = Object.entries(wip || {}).some(([key, value]) =>
+    /^(labelPrinted|labelPrintJob|labelPrintCount|labelPrintHistory|labelReprint|labelLastReprint)/.test(key) &&
+    (Array.isArray(value) ? value.length > 0 : Boolean(value)));
+  return {
+    lot: unique[0] || "",
+    conflict: unique.length > 1,
+    hasPriorIdentity: unique.length > 0 || hasPrintEvidence || Boolean(wip?.packLotCreatedAt ||
+      wip?.packLotFormat || wip?.packLotSequence)
+  };
+};
+
 export const packagingDateKey = manufacturingDate => {
   if (typeof manufacturingDate !== "string" || !/^20\d{2}-\d{2}-\d{2}$/.test(manufacturingDate)) {
     throw new Error("로트 발급에 사용할 제조일을 확인해주세요.");
@@ -28,7 +52,11 @@ export const formatPackagingLot = (manufacturingDate, height, sequence) => {
 };
 
 export const assertPackagingLotMatchesLabel = (wip, manufacturingDate) => {
-  const lot = String(wip?.packLot || "").trim();
+  const identity = inspectPackagingLotIdentity(wip);
+  if (identity.conflict || (!identity.lot && identity.hasPriorIdentity)) {
+    throw new Error("기존 최종로트와 출력 이력이 일치하지 않습니다. 새 번호를 발급하지 않고 중단했습니다. 기존 기록을 확인해주세요.");
+  }
+  const lot = identity.lot;
   const match = lot.match(/^(\d{6})([1-9]\d*(?:\.\d+)?T)US5(\d{2})$/);
   if (!match && wip?.packLotFormat !== PACKAGING_LOT_FORMAT) return; // Preserve legacy F… lots.
   if (!match || Number(match[3]) === 0 ||
@@ -40,10 +68,10 @@ export const assertPackagingLotMatchesLabel = (wip, manufacturingDate) => {
 // Reads only: callers can finish every transaction read before any writes.
 // Counter, WIP and print job are then committed as one atomic operation.
 export const preparePackagingLot = async ({ transaction, getDocRef, wip, manufacturingDate, now }) => {
-  const existing = String(wip.packLot || "").trim();
+  assertPackagingLotMatchesLabel(wip, manufacturingDate);
+  const existing = inspectPackagingLotIdentity(wip).lot;
   if (existing) {
-    assertPackagingLotMatchesLabel(wip, manufacturingDate);
-    return { lot: existing, wipUpdate: {}, counter: null };
+    return { lot: existing, wipUpdate: wip.packLot ? {} : { packLot: existing, packLotRecoveredAt: now }, counter: null };
   }
   const dateKey = packagingDateKey(manufacturingDate);
   packagingHeight(wip.height);
@@ -69,13 +97,16 @@ export const preparePackagingLot = async ({ transaction, getDocRef, wip, manufac
 // A physically split child must not inherit its parent's printed LOT or print approval.
 // Retain the former packaging/print records as lineage, including after a process rollback.
 export const splitPackagingIdentity = wip => {
-  const child = { ...wip };
+  const child = { ...wip, packagingIdentitySplit: true };
   const inherited = {};
   for (const key of Object.keys(child)) {
-    if (/^(packLot|labelPrint|labelReprint|labelLastReprint)/.test(key)) {
+    if ((key === "lot" && !/^MIX-/i.test(String(child[key]))) || /^(packLot|labelPrint|labelReprint|labelLastReprint)/.test(key)) {
       inherited[key] = child[key];
       delete child[key];
     }
+  }
+  if (!wip.packagingIdentitySplit && isFinalLot(String(wip.mixLot || "").trim())) {
+    inherited.legacyMixLot = wip.mixLot;
   }
   if (Object.keys(inherited).length) {
     child.packagingLotLineage = [...(wip.packagingLotLineage || []), { sourceWipId: wip.id, ...inherited }];
