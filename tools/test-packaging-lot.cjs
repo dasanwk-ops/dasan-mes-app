@@ -138,6 +138,97 @@ test("existing F lots print unchanged without creating a new counter", async () 
   assert.equal(db.entries("systemCounters/").length, 0);
 });
 
+const legacyIdentityCases = [
+  ["legacy lot field", { lot: "F260914018" }],
+  ["last printed LOT", { labelPrintedPackLot: "F260914018", labelPrintedAt: "2026-09-14 10:00:00" }],
+  ["legacy mixLot after rollback", { mixLot: "F260914018", productionLot: "MIX-260910-123" }],
+  ["active print history", { labelPrintHistory: [{ jobId: "old-job", lotNumber: "F260914018", quantity: 10 }] }]
+];
+
+for (const [description, evidence] of legacyIdentityCases) {
+  test(`missing packLot preserves and canonicalizes ${description} without consuming a sequence`, async () => {
+    const original = { ...fixture("A"), ...evidence };
+    const db = database({ "wipList/A": original });
+    const h = screen(db, "A"); await h.print();
+    const saved = db.read("wipList/A");
+    assert.equal(h.toasts.at(-1).type, "success");
+    assert.equal(saved.packLot, "F260914018");
+    assert.equal(saved.packLotRecoveredAt, "2026-10-16 10:00:00");
+    assert.equal(db.entries("systemCounters/").length, 0);
+    assert.equal(db.entries("print-queue/")[0][1].lotNumber, "F260914018");
+    for (const key of ["id", "mixLot", "productionLot", "lot", "qty", "currentStep", "type", "height", "shrinkageRate", "heatTreatmentHistory"]) {
+      assert.deepEqual(saved[key], original[key], `production field ${key} must be preserved`);
+    }
+    if (original.labelPrintHistory) assert.deepEqual(saved.labelPrintHistory[0], original.labelPrintHistory[0]);
+    await screen(db, "A", { now: "2026-10-17 10:00:00" }).print();
+    assert.equal(db.read("wipList/A").packLotRecoveredAt, saved.packLotRecoveredAt);
+    assert.ok(db.entries("print-queue/").every(([, job]) => job.lotNumber === "F260914018"));
+    assert.equal(db.entries("systemCounters/").length, 0);
+  });
+}
+
+test("conflicting final LOT identities block printing without changing any document", async () => {
+  const conflicts = [
+    { packLot: "F260914018", lot: "F260914019" },
+    { packLot: "F260914018", labelPrintedPackLot: "F260914019" },
+    { mixLot: "F260914018", labelPrintedPackLot: "F260914019" },
+    { labelPrintHistory: [{ lotNumber: "F260914018", jobId: "one" }, { lotNumber: "F260914019", jobId: "two" }] }
+  ];
+  for (const evidence of conflicts) {
+    const original = { ...fixture("A"), ...evidence };
+    const db = database({ "wipList/A": original });
+    const h = screen(db, "A"); await h.print();
+    assert.equal(h.toasts.at(-1).type, "error", JSON.stringify(evidence));
+    assert.deepEqual(db.read("wipList/A"), original);
+    assert.equal(db.entries("systemCounters/").length, 0);
+    assert.equal(db.entries("print-queue/").length, 0);
+  }
+});
+
+test("prior printing with no recoverable LOT blocks silent renumbering and preserves evidence", async () => {
+  for (const evidence of [
+    { labelPrintedAt: "2026-09-14 10:00:00" },
+    { labelPrintJobId: "old-job" },
+    { labelPrintHistory: [{ jobId: "old-job", quantity: 10 }] },
+    { labelPrintedQty: 10 },
+    { labelReprintCount: 1 },
+    { labelReprintTotalQty: 2 },
+    { labelLastReprintedAt: "2026-09-14 11:00:00" }
+  ]) {
+    const original = { ...fixture("A"), ...evidence };
+    const db = database({ "wipList/A": original });
+    const h = screen(db, "A"); await h.print();
+    assert.equal(h.toasts.at(-1).type, "error", JSON.stringify(evidence));
+    assert.deepEqual(db.read("wipList/A"), original);
+    assert.equal(db.entries("systemCounters/").length, 0);
+    assert.equal(db.entries("print-queue/").length, 0);
+  }
+});
+
+test("legacy identity recovery and its print request roll back together if the commit fails", async () => {
+  const original = { ...fixture("A"), labelPrintedPackLot: "F260914018", labelPrintedAt: "old" };
+  const db = database({ "wipList/A": original }); db.rejectCommit(true);
+  const h = screen(db, "A"); await h.print();
+  assert.equal(h.toasts.at(-1).type, "error");
+  assert.deepEqual(db.read("wipList/A"), original);
+  assert.equal(db.entries("systemCounters/").length, 0);
+  assert.equal(db.entries("print-queue/").length, 0);
+});
+
+test("an internal MIX alias in lot is retained as trace data and does not become a printed final LOT", async () => {
+  const original = { ...fixture("A"), lot: "MIX-261010-123-A" };
+  const db = database({ "wipList/A": original });
+  const h = screen(db, "A"); await h.print();
+  assert.equal(h.toasts.at(-1).type, "success");
+  assert.equal(db.read("wipList/A").packLot, "26101425TUS501");
+  assert.equal(db.read("wipList/A").lot, original.lot);
+  assert.equal(db.entries("print-queue/")[0][1].lotNumber, "26101425TUS501");
+  assert.equal(db.read("systemCounters/packLot-US5-261014").lastSeq, 1);
+  await screen(db, "A").print();
+  assert.equal(db.entries("print-queue/").length, 2);
+  assert.equal(db.read("systemCounters/packLot-US5-261014").lastSeq, 1);
+});
+
 test("failed queue commit rolls back LOT, counter, date confirmation and print history", async () => {
   const original = { ...fixture("A"), heatTreatmentHistory: [] };
   const db = database({ "wipList/A": original }); db.rejectCommit(true);
@@ -183,6 +274,41 @@ test("split children get independent sequences and retain parent packaging linea
   assert.deepEqual(db.read("wipList/A"), parent);
 });
 
+for (const [description, evidence] of legacyIdentityCases) {
+  test(`split children retire ${description} into lineage and never inherit it on later printing`, async () => {
+    const original = { ...fixture("A"), ...evidence };
+    const db = database({ "wipList/A": original });
+    const h = screen(db, "A");
+    for (const id of ["B", "C"]) {
+      const child = { ...h.split(original), id, qty: 5 };
+      // Keep the legacy trace string unchanged, as happens on a shrinkage
+      // grouping without a suffix; retired parent identity must still stay retired.
+      assert.equal(child.packagingIdentitySplit, true);
+      assert.equal(child.packLot, undefined);
+      assert.equal(child.lot, undefined);
+      assert.equal(child.labelPrintedPackLot, undefined);
+      assert.equal(child.labelPrintHistory, undefined);
+      assert.ok(JSON.stringify(child.packagingLotLineage).includes("F260914018"));
+      db.write(`wipList/${id}`, child);
+      const childScreen = screen(db, id); await childScreen.print();
+      assert.equal(childScreen.toasts.at(-1).type, "success");
+    }
+    assert.equal(db.read("wipList/B").packLot, "26101425TUS501");
+    assert.equal(db.read("wipList/C").packLot, "26101425TUS502");
+    await screen(db, "B").print();
+    assert.equal(db.read("wipList/B").packLot, "26101425TUS501");
+    assert.equal(db.read("systemCounters/packLot-US5-261014").lastSeq, 2);
+    const secondGeneration = { ...h.split(db.read("wipList/B")), id: "D", qty: 2 };
+    db.write("wipList/D", secondGeneration);
+    const descendantScreen = screen(db, "D"); await descendantScreen.print();
+    assert.equal(descendantScreen.toasts.at(-1).type, "success");
+    assert.equal(db.read("wipList/D").packLot, "26101425TUS503");
+    const lineage = JSON.stringify(db.read("wipList/D").packagingLotLineage);
+    assert.ok(lineage.includes("F260914018")); assert.ok(lineage.includes("26101425TUS501"));
+    assert.deepEqual(db.read("wipList/A"), original);
+  });
+}
+
 test("packaging completion retains assigned lot and MIX linkage", async () => {
   const db = database({ "wipList/A": fixture("A") }); await screen(db, "A").print();
   const h = screen(db, "A", { form: { operator: "담당" } }); await h.complete();
@@ -216,13 +342,16 @@ test("actual A/B molding handler clears inherited label approval for both childr
   const start = source.indexOf("  const moveNext =", source.indexOf("function Step4SecondMolding("));
   const handler = source.slice(start, source.indexOf("\n  return (", start));
   const toasts = [];
+  let childId = 0;
   const context = vm.createContext({
     Date, db, formData: { A: { operator: "담당", qtyA: "6", qtyB: "4" } }, wipList: [original],
     masterSettings: {}, calcAvg: () => "0", getSeriesPressure: () => "250", getKST: () => "2026-10-16 10:00:00",
-    getDocRef: ref, runTransaction: db.runTransaction, logProcessToGoogleSheet: () => {},
+    getDocRef: ref, getColRef: collection => ({ path: collection }),
+    doc: collection => ref(collection.path, `split-${++childId}`),
+    runTransaction: db.runTransaction, logProcessToGoogleSheet: () => {},
     ctx: { showToast: (message, type) => toasts.push({ message, type }) }
   });
-  vm.runInContext(lotHelper + handler + ";this.run=moveNext;", context); await context.run("A");
+  vm.runInContext(lotHelper + lotReaders + handler + ";this.run=moveNext;", context); await context.run("A");
   assert.equal(toasts.at(-1).type, "success"); assert.equal(db.read("wipList/A"), undefined);
   const children = db.entries("wipList/").map(([, w]) => w);
   assert.deepEqual(children.map(w => w.qty).sort(), [4, 6]);
@@ -231,6 +360,52 @@ test("actual A/B molding handler clears inherited label approval for both childr
     assert.equal(child.packagingLotLineage[0].packLot, original.packLot);
   }
 });
+
+for (const machine of ["A", "B"]) {
+  for (const previouslyPrinted of [false, true]) {
+    test(`single ${machine} molding output preserves legacy F mixLot${previouslyPrinted ? " and prior printed LOT" : " alone"} through print and reprint`, async () => {
+      const original = { ...fixture("parent"), currentStep: "step4", mixLot: "F260914018",
+        productionLot: "MIX-260910-123",
+        ...(previouslyPrinted ? { labelPrintedPackLot: "F260914018", labelPrintedAt: "old",
+          labelPrintHistory: [{ jobId: "old-job", lotNumber: "F260914018", quantity: 10 }] } : {}) };
+      const db = database({ "wipList/parent": original });
+      const start = source.indexOf("  const moveNext =", source.indexOf("function Step4SecondMolding("));
+      const handler = source.slice(start, source.indexOf("\n  return (", start));
+      const toasts = [];
+      const context = vm.createContext({
+        Date, db, formData: { parent: { operator: "담당", [`qty${machine}`]: "10" } }, wipList: [original],
+        masterSettings: {}, calcAvg: () => "0", getSeriesPressure: () => "250", getKST: () => "2026-10-16 10:00:00",
+        getDocRef: ref, getColRef: collection => ({ path: collection }),
+        doc: collection => ref(collection.path, `single-${machine}`),
+        runTransaction: db.runTransaction, logProcessToGoogleSheet: () => {},
+        ctx: { showToast: (message, type) => toasts.push({ message, type }) }
+      });
+      vm.runInContext(lotHelper + lotReaders + handler + ";this.run=moveNext;", context); await context.run("parent");
+      assert.equal(toasts.at(-1).type, "success");
+      assert.equal(db.read("wipList/parent"), undefined);
+      const children = db.entries("wipList/").map(([, child]) => child);
+      assert.equal(children.length, 1);
+      const child = children[0];
+      assert.equal(child.mixLot, "F260914018");
+      assert.equal(child.productionLot, original.productionLot);
+      assert.equal(child.qty, 10);
+      assert.equal(child.currentStep, "step5");
+      assert.equal(child.packagingIdentitySplit, undefined);
+      assert.deepEqual(child.labelPrintHistory, original.labelPrintHistory);
+      // The intervening process stages keep this same final identity. Exercise
+      // the actual print handler after bringing the synthetic child to packaging.
+      db.write(`wipList/${child.id}`, { ...child, currentStep: "step8" });
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const h = screen(db, child.id); await h.print();
+        assert.equal(h.toasts.at(-1).type, "success");
+        assert.equal(db.read(`wipList/${child.id}`).packLot, "F260914018");
+      }
+      assert.equal(db.entries("systemCounters/").length, 0);
+      assert.equal(db.entries("print-queue/").length, 2);
+      assert.ok(db.entries("print-queue/").every(([, job]) => job.lotNumber === "F260914018"));
+    });
+  }
+}
 
 test("actual shipping handler carries new LOT through partial and full shipment", async () => {
   const db = database({ "wipList/A": fixture("A") });
@@ -247,7 +422,7 @@ test("actual shipping handler carries new LOT through partial and full shipment"
       ctx: { showToast: (message, type) => toasts.push({ message, type }),
         showConfirm: (_message, callback) => confirmations.push(callback()) }
     });
-    vm.runInContext(existingHelpers + lotReaders + handler + ";this.run=handleShip;", context);
+    vm.runInContext(lotHelper + existingHelpers + lotReaders + handler + ";this.run=handleShip;", context);
     await context.run(db.read("wipList/A")); await Promise.all(confirmations);
     assert.equal(toasts.at(-1).type, "success");
   }
