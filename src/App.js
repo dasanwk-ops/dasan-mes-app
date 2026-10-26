@@ -545,6 +545,8 @@ details:
 };
 
 // --- [Firebase Initialization] ---
+export const isShippingGroupsPreview =
+  new URLSearchParams(window.location.search).get("preview") === "shipping-groups";
 const firebaseConfig = {
   apiKey: process.env.REACT_APP_FIREBASE_API_KEY || "AIzaSyDxHU5KH8Wdq6Ct73S-gUOvK2YqD7J23kI",
   authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN || "dasanind-mes.firebaseapp.com",
@@ -553,9 +555,9 @@ const firebaseConfig = {
   messagingSenderId: "782401133060",
   appId: "1:782401133060:web:e6997bdb37fad09dd1f351",
 };
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
+const app = isShippingGroupsPreview ? null : initializeApp(firebaseConfig);
+const auth = app ? getAuth(app) : null;
+const db = app ? getFirestore(app) : null;
 const appId = typeof __app_id !== "undefined" ? __app_id : "dasan-mes-app";
 const getColRef = (colName) => collection(db, "artifacts", appId, "public", "data", colName);
 const getDocRef = (colName, docId) => doc(db, "artifacts", appId, "public", "data", colName, docId.toString());
@@ -6002,6 +6004,52 @@ const curTime = getKST();
 // ==========================================
 // Step 9: Finished Goods
 // ==========================================
+export function ShippingGroupsPreview() {
+  const [notice, setNotice] = useState("");
+  const samples = [
+    ["345 BL3", 25, [40, 44, 94, 65]],
+    ["345 B1", 30, [57, 44]],
+    ["234 B1", 25, [14, 26, 23]],
+    ["345 BL3", 30, [12]],
+    ["345 A2", 25, [24]],
+    ["345 BL1", 25, [36]],
+    ["345 A1", 25, [18]],
+    ["345 BL4", 25, [32]],
+    ["345 BL2", 25, [28]],
+  ].flatMap(([type, height, quantities], groupIndex) => quantities.map((qty, index) => ({
+    id: `preview-${groupIndex}-${index}`, type, height, qty, currentStep: "done",
+    mixLot: `MIX-TEST-${groupIndex + 1}-${index + 1}`,
+    packLot: `TEST-PACK-${groupIndex + 1}-${index + 1}`,
+  })));
+  const currentMonth = getKST().slice(0, 7);
+  const currentYear = Number(currentMonth.slice(0, 4));
+  const previousMonth = new Date(Date.UTC(currentYear, Number(currentMonth.slice(5)) - 2, 1)).toISOString().slice(0, 7);
+  const sampleHistory = [
+    [currentMonth, "01", "345 BL1", 25, 20],
+    [currentMonth, "01", "345 BL3", 25, 30],
+    [previousMonth, "15", "234 B1", 25, 12],
+    [`${currentYear - 1}-12`, "20", "345 A1", 30, 16],
+  ].map(([month, day, type, height, qty], index) => ({
+    id: `preview-shipment-${index}`, type, height, qty, date: `${month}-${day} 10:${index}0`,
+    packLot: `TEST-SHIP-${index + 1}`, productionLot: `MIX-TEST-SHIP-${index + 1}`,
+    destination: "예시 거래처", operator: "예시 담당자",
+  }));
+  const previewCtx = {
+    showToast: message => setNotice(message),
+    showConfirm: () => setNotice("예시 화면에서는 실제 출고가 저장되지 않습니다."),
+  };
+  return <main className="min-h-screen bg-slate-50 p-4 md:p-8">
+    <div className="max-w-7xl mx-auto space-y-4">
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900">
+        <h1 className="text-lg font-bold">완제품 묶음 보기 · 예시 재고</h1>
+        <p className="text-sm mt-1">9개 제품 묶음, 15개 로트와 월별 출고 예시가 준비되어 있습니다. + / −와 연도·월 선택을 눌러보세요. 실제 재고와 연결되지 않으며 출고도 저장되지 않습니다.</p>
+      </div>
+      {notice && <div role="status" className="rounded-xl border border-indigo-200 bg-indigo-50 p-4 text-indigo-800">{notice}</div>}
+      <Step9FinishedGoods wipList={samples} shippingHistory={sampleHistory} orderList={[]} ctx={previewCtx} previewOnly />
+    </div>
+  </main>;
+}
+
 const getCurrentProcessLabel = step => {
   if (step === "done") return "완제품 창고 (출고 대기)";
   if (step === "step7") return "건조 대기";
@@ -6015,13 +6063,42 @@ const getFinishedStock = (wipList, shippingHistory) => {
   return wipList.filter(w => w.currentStep === "done" && Number(w.qty) > 0 && !completedIds.has(String(w.id)));
 };
 
-function Step9FinishedGoods({ wipList, shippingHistory, orderList, ctx }) {
+const compareFinishedProductGroups = (a, b) => {
+  const seriesOrder = ["345", "234"];
+  const shadeOrder = ["BL1", "BL2", "BL3", "BL4", "B1", "A1", "A2"];
+  const rank = (order, value) => order.includes(value) ? order.indexOf(value) : order.length;
+  const [aSeries, aShade = ""] = getProductLabel(a.type).split(/\s+/);
+  const [bSeries, bShade = ""] = getProductLabel(b.type).split(/\s+/);
+  const heightDifference = Number(String(a.height).replace(/T$/i, "")) - Number(String(b.height).replace(/T$/i, ""));
+  return rank(seriesOrder, aSeries) - rank(seriesOrder, bSeries) ||
+    aSeries.localeCompare(bSeries, "ko", { numeric: true }) ||
+    rank(shadeOrder, aShade) - rank(shadeOrder, bShade) ||
+    aShade.localeCompare(bShade, "ko", { numeric: true }) ||
+    (Number.isFinite(heightDifference) ? heightDifference : 0) ||
+    String(a.height).localeCompare(String(b.height), "ko", { numeric: true });
+};
+
+// Shipping records store their local Korean date as YYYY-MM-DD HH:mm.
+const getShippingHistoryPeriod = value => {
+  const match = String(value || "").trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:$|[ T])/);
+  if (!match) return "";
+  const year = Number(match[1]), month = Number(match[2]), day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() + 1 !== month || date.getUTCDate() !== day) return "";
+  return `${match[1]}-${match[2]}`;
+};
+
+function Step9FinishedGoods({ wipList, shippingHistory, orderList, ctx, previewOnly = false }) {
   const finishedWip = getFinishedStock(wipList, shippingHistory);
   const [shipData, setShipData] = useState({});
+  const [expandedGroups, setExpandedGroups] = useState({});
   const shippingBusy = useRef(new Set());
   const [shippingIds, setShippingIds] = useState([]);
+  const [historyPeriod, setHistoryPeriod] = useState(() => getKST().slice(0, 7));
+  const [showUndatedHistory, setShowUndatedHistory] = useState(false);
 
   const handleShip = async (wip) => {
+    if (previewOnly) return ctx.showToast("예시 화면에서는 실제 출고가 저장되지 않습니다.", "info");
     const d = shipData[wip.id] || {};
     const safeQty = Number(d.qty);
 
@@ -6179,15 +6256,29 @@ transaction.set(
   const inventorySummary = finishedWip.reduce((acc, curr) => {
     const productType = getProductLabel(curr.type);
     const k = `${productType}_${curr.height}`;
-    if (!acc[k]) acc[k] = { type: productType, height: curr.height, qty: 0 };
-    acc[k].qty += Number(curr.qty) || 0; return acc;
+    if (!acc[k]) acc[k] = { key: k, type: productType, height: curr.height, qty: 0, lots: [] };
+    acc[k].qty += Number(curr.qty) || 0;
+    acc[k].lots.push(curr);
+    return acc;
   }, {});
+  const inventoryGroups = Object.values(inventorySummary).sort(compareFinishedProductGroups);
+  const currentPeriod = getKST().slice(0, 7);
+  const historyYear = historyPeriod.slice(0, 4);
+  const datedHistory = shippingHistory.map(record => ({ record, period: getShippingHistoryPeriod(record.date) }));
+  const historyYears = [...new Set([currentPeriod.slice(0, 4), historyYear,
+    ...datedHistory.filter(item => item.period).map(item => item.period.slice(0, 4))])].sort((a, b) => Number(b) - Number(a));
+  const undatedHistoryCount = datedHistory.filter(item => !item.period).length;
+  const visibleShippingHistory = datedHistory
+    .filter(item => showUndatedHistory ? !item.period : item.period === historyPeriod)
+    .map(item => item.record)
+    .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+  const historyTotalQty = visibleShippingHistory.reduce((sum, record) => sum + (Number(record.qty) || 0), 0);
 
   return (
     <div className="bg-white rounded-xl border p-6 space-y-6">
       <h3 className="text-lg font-bold flex items-center"><Archive className="w-5 h-5 mr-2 text-indigo-500" /> 완제품 현재고 요약</h3>
       <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
-        {Object.values(inventorySummary).map((i) => (
+        {inventoryGroups.map((i) => (
           <div key={`${i.type}_${i.height}`} className="bg-white p-4 rounded-xl shadow border text-center">
             <div className="text-sm font-bold text-slate-500 mb-1">{i.type} <span className="text-indigo-600">{i.height}T</span></div>
             <div className="text-2xl font-black">{i.qty} EA</div>
@@ -6197,16 +6288,32 @@ transaction.set(
       </div>
 
       <div className="bg-white rounded-xl shadow-sm border p-6">
-        <h3 className="text-lg font-bold mb-4">로트별 출고 처리</h3>
+        <h3 className="text-lg font-bold mb-1">제품별 출고 처리</h3>
+        <p className="text-sm text-slate-500 mb-4">같은 제품·색상·두께의 재고를 묶어 표시합니다. +를 누르면 로트별 수량과 출고 항목을 확인할 수 있습니다.</p>
         <div className="overflow-x-auto">
           <table className="w-full text-sm text-left border-collapse">
-            <thead className="bg-slate-50 border-b text-xs text-slate-500"><tr><th className="p-3">포장 LOT</th><th className="p-3">제품/색상</th><th className="p-3">현재고</th><th className="p-3 w-28">출고 수량</th><th className="p-3 w-48">출고처</th><th className="p-3 w-32">담당자</th><th className="p-3 text-center">작업</th></tr></thead>
+            <thead className="bg-slate-50 border-b text-xs text-slate-500"><tr><th className="p-3">제품 묶음 / 포장 LOT</th><th className="p-3">제품/색상</th><th className="p-3">현재고</th><th className="p-3 w-28">출고 수량</th><th className="p-3 w-48">출고처</th><th className="p-3 w-32">담당자</th><th className="p-3 text-center">작업</th></tr></thead>
             <tbody>
               {finishedWip.length === 0 && <tr><td colSpan="7" className="text-center py-6 text-slate-400">대기 물량 없음</td></tr>}
-              {finishedWip.map((w) => {
+              {inventoryGroups.map((group) => (
+                <React.Fragment key={group.key}>
+                  <tr className="border-b bg-indigo-50/60" data-testid="shipping-product-group">
+                    <td colSpan="2" className="p-3">
+                      <button type="button" aria-expanded={!!expandedGroups[group.key]}
+                        aria-label={`${group.type} ${group.height}T 로트 ${expandedGroups[group.key] ? "접기" : "펼치기"}`}
+                        onClick={() => setExpandedGroups(prev => ({ ...prev, [group.key]: !prev[group.key] }))}
+                        className="flex items-center gap-3 w-full text-left rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500">
+                        <span aria-hidden="true" className="flex items-center justify-center w-8 h-8 shrink-0 rounded-lg border border-indigo-200 bg-white text-xl font-bold text-indigo-700">{expandedGroups[group.key] ? "−" : "+"}</span>
+                        <span><span className="font-bold text-slate-800">{group.type} <span className="text-indigo-600">{group.height}T</span></span><span className="block text-xs text-slate-500 mt-1">{group.lots.length}개 로트</span></span>
+                      </button>
+                    </td>
+                    <td className="p-3 font-black text-indigo-700 text-lg whitespace-nowrap" data-testid="shipping-group-quantity">{group.qty} <span className="text-xs font-medium">EA</span></td>
+                    <td colSpan="4" className="p-3 text-xs text-slate-500">{expandedGroups[group.key] ? "아래에서 로트별로 출고하세요." : "펼쳐서 로트별 수량 확인 및 출고"}</td>
+                  </tr>
+              {expandedGroups[group.key] && group.lots.map((w) => {
                 const d = shipData[w.id] || {};
                 return (
-                  <tr key={w.id} className="border-b hover:bg-slate-50">
+                  <tr key={w.id} data-testid={`shipping-lot-${w.id}`} className="border-b hover:bg-slate-50">
                     <td className="p-3">
   <div className="font-black text-indigo-700">
     {getPackagingLot(w) || w.mixLot}
@@ -6226,10 +6333,12 @@ transaction.set(
                       </div>
                     </td>
                     <td className="p-3"><input type="text" placeholder="담당자" value={d.operator || ""} onChange={(e) => setShipData({ ...shipData, [w.id]: { ...d, operator: e.target.value } }) } className="w-full border p-2 rounded text-center font-bold focus:border-indigo-400 outline-none" /></td>
-                    <td className="p-3 text-center"><button disabled={shippingIds.includes(w.id)} onClick={() => handleShip(w)} className="bg-indigo-600 text-white px-4 py-2.5 rounded-lg font-bold shadow-md hover:bg-indigo-700 flex items-center justify-center transition-transform hover:scale-105 w-full"><Truck className="w-4 h-4 mr-1.5" /> 출고</button></td>
+                    <td className="p-3 text-center"><button disabled={shippingIds.includes(w.id)} onClick={() => handleShip(w)} className="bg-indigo-600 text-white px-4 py-2.5 rounded-lg font-bold shadow-md hover:bg-indigo-700 flex items-center justify-center transition-transform hover:scale-105 w-full"><Truck className="w-4 h-4 mr-1.5" /> {previewOnly ? "예시 출고" : "출고"}</button></td>
                   </tr>
                 );
               })}
+                </React.Fragment>
+              ))}
             </tbody>
           </table>
         </div>
@@ -6237,16 +6346,43 @@ transaction.set(
 
       <div className="bg-white rounded-xl shadow-sm border p-6">
         <h3 className="text-lg font-bold mb-4 flex items-center"><History className="w-5 h-5 mr-2 text-slate-500" /> 완제품 출고 이력</h3>
+        <div className="flex flex-wrap items-center gap-3 mb-3">
+          <label className="text-sm font-bold text-slate-700 flex items-center gap-2">연도
+            <select aria-label="출고 연도" value={historyYear}
+              onChange={e => { setHistoryPeriod(`${e.target.value}-${historyPeriod.slice(5)}`); setShowUndatedHistory(false); }}
+              className="border rounded-lg p-2 bg-white">
+              {historyYears.map(year => <option key={year} value={year}>{year}년</option>)}
+            </select>
+          </label>
+          <button type="button" onClick={() => { setHistoryPeriod(currentPeriod); setShowUndatedHistory(false); }}
+            className="border border-indigo-200 rounded-lg px-3 py-2 text-sm font-bold text-indigo-700">이번 달</button>
+          {undatedHistoryCount > 0 && <button type="button" aria-pressed={showUndatedHistory}
+            onClick={() => setShowUndatedHistory(prev => !prev)}
+            className="border border-amber-300 rounded-lg px-3 py-2 text-sm text-amber-800">날짜 미확인 ({undatedHistoryCount}건)</button>}
+        </div>
+        <div className="grid grid-cols-6 lg:grid-cols-12 gap-2 mb-3" role="group" aria-label="출고 월 선택">
+          {Array.from({ length: 12 }, (_, index) => {
+            const month = index + 1;
+            const period = `${historyYear}-${String(month).padStart(2, "0")}`;
+            const selected = !showUndatedHistory && historyPeriod === period;
+            return <button key={month} type="button" aria-label={`${historyYear}년 ${month}월 출고 이력`} aria-pressed={selected}
+              onClick={() => { setHistoryPeriod(period); setShowUndatedHistory(false); }}
+              className={`rounded-lg border px-2 py-2 text-sm font-bold ${selected ? "bg-indigo-600 border-indigo-600 text-white" : "bg-white border-slate-200 text-slate-600 hover:bg-indigo-50"}`}>{month}월</button>;
+          })}
+        </div>
+        <p className="text-sm text-slate-600 mb-3" data-testid="shipping-history-summary">
+          {showUndatedHistory ? "날짜 미확인" : `${historyYear}년 ${Number(historyPeriod.slice(5))}월`} · {visibleShippingHistory.length}건 · 출고 합계 <strong className="text-indigo-700">{historyTotalQty.toLocaleString()} EA</strong>
+        </p>
         <div className="overflow-x-auto max-h-60 border rounded-lg">
           <table className="w-full text-sm text-left">
             <thead className="bg-slate-50 sticky top-0 text-xs text-slate-500"><tr><th className="p-3">출고일시</th><th className="p-3">포장 LOT</th><th className="p-3">제품</th><th className="p-3 text-right pr-6">출고수량</th><th className="p-3">출고처</th><th className="p-3">담당자</th></tr></thead>
             <tbody className="divide-y divide-slate-100">
-              {shippingHistory.map((h) => (
-                <tr key={h.id} className="hover:bg-slate-50 transition-colors">
+              {visibleShippingHistory.map((h) => (
+                <tr key={h.id} data-testid={`shipping-history-row-${h.id}`} className="hover:bg-slate-50 transition-colors">
                   <td className="p-3 text-xs text-slate-500">{h.date}</td><td className="p-3 font-mono font-bold text-slate-700">{h.packLot || h.lot}<LotLink item={h} /></td><td className="p-3 font-bold text-slate-800">{getProductLabel(h.type)} <span className="text-indigo-600">{h.height}T</span></td><td className="p-3 font-black text-indigo-600 text-right pr-6">{h.qty} EA</td><td className="p-3 font-bold text-slate-700">{h.destination}</td><td className="p-3 font-bold text-slate-600">{h.operator}</td>
                 </tr>
               ))}
-              {shippingHistory.length === 0 && <tr><td colSpan="6" className="text-center py-6 text-slate-400">출고 이력이 없습니다.</td></tr>}
+              {visibleShippingHistory.length === 0 && <tr><td colSpan="6" className="text-center py-6 text-slate-400">{showUndatedHistory ? "날짜 미확인 이력이 없습니다." : `${historyYear}년 ${Number(historyPeriod.slice(5))}월 출고 이력이 없습니다.`}</td></tr>}
             </tbody>
           </table>
         </div>
