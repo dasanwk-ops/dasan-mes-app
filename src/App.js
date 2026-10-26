@@ -6018,6 +6018,7 @@ const getFinishedStock = (wipList, shippingHistory) => {
 function Step9FinishedGoods({ wipList, shippingHistory, orderList, ctx }) {
   const finishedWip = getFinishedStock(wipList, shippingHistory);
   const [shipData, setShipData] = useState({});
+  const [expandedGroups, setExpandedGroups] = useState({});
   const shippingBusy = useRef(new Set());
   const [shippingIds, setShippingIds] = useState([]);
 
@@ -6179,8 +6180,10 @@ transaction.set(
   const inventorySummary = finishedWip.reduce((acc, curr) => {
     const productType = getProductLabel(curr.type);
     const k = `${productType}_${curr.height}`;
-    if (!acc[k]) acc[k] = { type: productType, height: curr.height, qty: 0 };
-    acc[k].qty += Number(curr.qty) || 0; return acc;
+    if (!acc[k]) acc[k] = { key: k, type: productType, height: curr.height, qty: 0, lots: [] };
+    acc[k].qty += Number(curr.qty) || 0;
+    acc[k].lots.push(curr);
+    return acc;
   }, {});
 
   return (
@@ -6197,16 +6200,32 @@ transaction.set(
       </div>
 
       <div className="bg-white rounded-xl shadow-sm border p-6">
-        <h3 className="text-lg font-bold mb-4">로트별 출고 처리</h3>
+        <h3 className="text-lg font-bold mb-1">제품별 출고 처리</h3>
+        <p className="text-sm text-slate-500 mb-4">같은 제품·색상·두께의 재고를 묶어 표시합니다. +를 누르면 로트별 수량과 출고 항목을 확인할 수 있습니다.</p>
         <div className="overflow-x-auto">
           <table className="w-full text-sm text-left border-collapse">
-            <thead className="bg-slate-50 border-b text-xs text-slate-500"><tr><th className="p-3">포장 LOT</th><th className="p-3">제품/색상</th><th className="p-3">현재고</th><th className="p-3 w-28">출고 수량</th><th className="p-3 w-48">출고처</th><th className="p-3 w-32">담당자</th><th className="p-3 text-center">작업</th></tr></thead>
+            <thead className="bg-slate-50 border-b text-xs text-slate-500"><tr><th className="p-3">제품 묶음 / 포장 LOT</th><th className="p-3">제품/색상</th><th className="p-3">현재고</th><th className="p-3 w-28">출고 수량</th><th className="p-3 w-48">출고처</th><th className="p-3 w-32">담당자</th><th className="p-3 text-center">작업</th></tr></thead>
             <tbody>
               {finishedWip.length === 0 && <tr><td colSpan="7" className="text-center py-6 text-slate-400">대기 물량 없음</td></tr>}
-              {finishedWip.map((w) => {
+              {Object.values(inventorySummary).map((group) => (
+                <React.Fragment key={group.key}>
+                  <tr className="border-b bg-indigo-50/60" data-testid="shipping-product-group">
+                    <td colSpan="2" className="p-3">
+                      <button type="button" aria-expanded={!!expandedGroups[group.key]}
+                        aria-label={`${group.type} ${group.height}T 로트 ${expandedGroups[group.key] ? "접기" : "펼치기"}`}
+                        onClick={() => setExpandedGroups(prev => ({ ...prev, [group.key]: !prev[group.key] }))}
+                        className="flex items-center gap-3 w-full text-left rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500">
+                        <span aria-hidden="true" className="flex items-center justify-center w-8 h-8 shrink-0 rounded-lg border border-indigo-200 bg-white text-xl font-bold text-indigo-700">{expandedGroups[group.key] ? "−" : "+"}</span>
+                        <span><span className="font-bold text-slate-800">{group.type} <span className="text-indigo-600">{group.height}T</span></span><span className="block text-xs text-slate-500 mt-1">{group.lots.length}개 로트</span></span>
+                      </button>
+                    </td>
+                    <td className="p-3 font-black text-indigo-700 text-lg whitespace-nowrap" data-testid="shipping-group-quantity">{group.qty} <span className="text-xs font-medium">EA</span></td>
+                    <td colSpan="4" className="p-3 text-xs text-slate-500">{expandedGroups[group.key] ? "아래에서 로트별로 출고하세요." : "펼쳐서 로트별 수량 확인 및 출고"}</td>
+                  </tr>
+              {expandedGroups[group.key] && group.lots.map((w) => {
                 const d = shipData[w.id] || {};
                 return (
-                  <tr key={w.id} className="border-b hover:bg-slate-50">
+                  <tr key={w.id} data-testid={`shipping-lot-${w.id}`} className="border-b hover:bg-slate-50">
                     <td className="p-3">
   <div className="font-black text-indigo-700">
     {getPackagingLot(w) || w.mixLot}
@@ -6230,6 +6249,8 @@ transaction.set(
                   </tr>
                 );
               })}
+                </React.Fragment>
+              ))}
             </tbody>
           </table>
         </div>
