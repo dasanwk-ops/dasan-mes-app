@@ -454,7 +454,7 @@ test("actual shipping handler carries new LOT through partial and full shipment"
   for (const quantity of [3, 7]) {
     const confirmations = [], toasts = [];
     const context = vm.createContext({
-      Date, db, shipData: { A: { qty: quantity, destination: "시험 출고처", operator: "담당" } },
+      Date, db, previewOnly: false, shipData: { A: { qty: quantity, destination: "시험 출고처", operator: "담당" } },
       shippingBusy: { current: new Set() }, setShippingIds: () => {}, setShipData: () => {},
       getKST: () => "2026-10-16 10:00:00", serverTimestamp: () => "SERVER_TIME",
       getDocRef: ref, runTransaction: db.runTransaction, logProcessToGoogleSheet: () => {},

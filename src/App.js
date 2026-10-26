@@ -545,6 +545,8 @@ details:
 };
 
 // --- [Firebase Initialization] ---
+export const isShippingGroupsPreview =
+  new URLSearchParams(window.location.search).get("preview") === "shipping-groups";
 const firebaseConfig = {
   apiKey: process.env.REACT_APP_FIREBASE_API_KEY || "AIzaSyDxHU5KH8Wdq6Ct73S-gUOvK2YqD7J23kI",
   authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN || "dasanind-mes.firebaseapp.com",
@@ -553,9 +555,9 @@ const firebaseConfig = {
   messagingSenderId: "782401133060",
   appId: "1:782401133060:web:e6997bdb37fad09dd1f351",
 };
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
+const app = isShippingGroupsPreview ? null : initializeApp(firebaseConfig);
+const auth = app ? getAuth(app) : null;
+const db = app ? getFirestore(app) : null;
 const appId = typeof __app_id !== "undefined" ? __app_id : "dasan-mes-app";
 const getColRef = (colName) => collection(db, "artifacts", appId, "public", "data", colName);
 const getDocRef = (colName, docId) => doc(db, "artifacts", appId, "public", "data", colName, docId.toString());
@@ -6002,6 +6004,34 @@ const curTime = getKST();
 // ==========================================
 // Step 9: Finished Goods
 // ==========================================
+export function ShippingGroupsPreview() {
+  const [notice, setNotice] = useState("");
+  const samples = [
+    ["345 BL3", 25, [40, 44, 94, 65]],
+    ["345 B1", 30, [57, 44]],
+    ["234 B1", 25, [14, 26, 23]],
+    ["345 BL3", 30, [12]],
+  ].flatMap(([type, height, quantities], groupIndex) => quantities.map((qty, index) => ({
+    id: `preview-${groupIndex}-${index}`, type, height, qty, currentStep: "done",
+    mixLot: `MIX-TEST-${groupIndex + 1}-${index + 1}`,
+    packLot: `TEST-PACK-${groupIndex + 1}-${index + 1}`,
+  })));
+  const previewCtx = {
+    showToast: message => setNotice(message),
+    showConfirm: () => setNotice("예시 화면에서는 실제 출고가 저장되지 않습니다."),
+  };
+  return <main className="min-h-screen bg-slate-50 p-4 md:p-8">
+    <div className="max-w-7xl mx-auto space-y-4">
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900">
+        <h1 className="text-lg font-bold">완제품 묶음 보기 · 예시 재고</h1>
+        <p className="text-sm mt-1">4개 제품 묶음, 10개 로트가 준비되어 있습니다. + / −를 눌러 펼치고 접어보세요. 실제 재고와 연결되지 않으며 출고도 저장되지 않습니다.</p>
+      </div>
+      {notice && <div role="status" className="rounded-xl border border-indigo-200 bg-indigo-50 p-4 text-indigo-800">{notice}</div>}
+      <Step9FinishedGoods wipList={samples} shippingHistory={[]} orderList={[]} ctx={previewCtx} previewOnly />
+    </div>
+  </main>;
+}
+
 const getCurrentProcessLabel = step => {
   if (step === "done") return "완제품 창고 (출고 대기)";
   if (step === "step7") return "건조 대기";
@@ -6015,7 +6045,7 @@ const getFinishedStock = (wipList, shippingHistory) => {
   return wipList.filter(w => w.currentStep === "done" && Number(w.qty) > 0 && !completedIds.has(String(w.id)));
 };
 
-function Step9FinishedGoods({ wipList, shippingHistory, orderList, ctx }) {
+function Step9FinishedGoods({ wipList, shippingHistory, orderList, ctx, previewOnly = false }) {
   const finishedWip = getFinishedStock(wipList, shippingHistory);
   const [shipData, setShipData] = useState({});
   const [expandedGroups, setExpandedGroups] = useState({});
@@ -6023,6 +6053,7 @@ function Step9FinishedGoods({ wipList, shippingHistory, orderList, ctx }) {
   const [shippingIds, setShippingIds] = useState([]);
 
   const handleShip = async (wip) => {
+    if (previewOnly) return ctx.showToast("예시 화면에서는 실제 출고가 저장되지 않습니다.", "info");
     const d = shipData[wip.id] || {};
     const safeQty = Number(d.qty);
 
@@ -6245,7 +6276,7 @@ transaction.set(
                       </div>
                     </td>
                     <td className="p-3"><input type="text" placeholder="담당자" value={d.operator || ""} onChange={(e) => setShipData({ ...shipData, [w.id]: { ...d, operator: e.target.value } }) } className="w-full border p-2 rounded text-center font-bold focus:border-indigo-400 outline-none" /></td>
-                    <td className="p-3 text-center"><button disabled={shippingIds.includes(w.id)} onClick={() => handleShip(w)} className="bg-indigo-600 text-white px-4 py-2.5 rounded-lg font-bold shadow-md hover:bg-indigo-700 flex items-center justify-center transition-transform hover:scale-105 w-full"><Truck className="w-4 h-4 mr-1.5" /> 출고</button></td>
+                    <td className="p-3 text-center"><button disabled={shippingIds.includes(w.id)} onClick={() => handleShip(w)} className="bg-indigo-600 text-white px-4 py-2.5 rounded-lg font-bold shadow-md hover:bg-indigo-700 flex items-center justify-center transition-transform hover:scale-105 w-full"><Truck className="w-4 h-4 mr-1.5" /> {previewOnly ? "예시 출고" : "출고"}</button></td>
                   </tr>
                 );
               })}

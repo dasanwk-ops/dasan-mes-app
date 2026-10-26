@@ -17,6 +17,7 @@ const { createRoot } = require("react-dom/client");
 const { act, Simulate } = require("react-dom/test-utils");
 const source = fs.readFileSync(path.join(__dirname, "../src/App.js"), "utf8");
 const normalize = source.slice(source.indexOf("const normalizeProductType ="), source.indexOf("const getProductShade ="));
+const lotReaders = source.slice(source.indexOf("const getTraceMixLot ="), source.indexOf("const getProductionLot ="));
 const start = source.indexOf("const getFinishedStock =");
 const end = source.indexOf("function StepTracking(", start);
 assert.ok(start > 0 && end > start);
@@ -53,10 +54,32 @@ const sandbox = { React, useState: React.useState, useRef: React.useRef, console
   }
 };
 vm.createContext(sandbox);
-const code = babel.transformSync(normalize + "\nconst getProductLabel = normalizeProductType;\n" + source.slice(start, end) + "\nthis.Screen = Step9FinishedGoods;", {
+const code = babel.transformSync(normalize + "\nconst getProductLabel = normalizeProductType;\n" + lotReaders + source.slice(start, end) + "\nthis.Screen = Step9FinishedGoods;", {
   babelrc: false, configFile: false, presets: [require.resolve("@babel/preset-react")]
 }).code;
 vm.runInContext(code, sandbox);
+const previewSource = source.slice(source.indexOf("export function ShippingGroupsPreview("), source.indexOf("const getCurrentProcessLabel ="));
+vm.runInContext(babel.transformSync(previewSource.replace("export function", "function") + "\nthis.Preview = ShippingGroupsPreview;", {
+  babelrc: false, configFile: false, presets: [require.resolve("@babel/preset-react")]
+}).code, sandbox);
+
+// The demo URL must bypass SDK initialization and the entire production App.
+const initSource = source.slice(source.indexOf("export const isShippingGroupsPreview ="), source.indexOf("const appId ="));
+const indexSource = fs.readFileSync(path.join(__dirname, "../src/index.js"), "utf8").replace(/^import .*;$/gm, "");
+for (const search of ["?preview=shipping-groups", "?step=step9"]) {
+  let sdkCalls = 0, rendered;
+  const appStub = () => null;
+  const bootstrap = { URLSearchParams, process: { env: {} }, window: { location: { search } }, document,
+    initializeApp: () => { sdkCalls++; return {}; }, getAuth: () => { sdkCalls++; return {}; }, getFirestore: () => { sdkCalls++; return {}; },
+    React, App: appStub, ShippingGroupsPreview: sandbox.Preview, createRoot: () => ({ render: element => { rendered = element; } }) };
+  vm.createContext(bootstrap);
+  vm.runInContext(initSource.replace("export const", "const") + babel.transformSync(indexSource, {
+    babelrc: false, configFile: false, presets: [require.resolve("@babel/preset-react")]
+  }).code, bootstrap);
+  assert.equal(sdkCalls, search.includes("preview=") ? 0 : 3);
+  assert.equal(rendered.type, search.includes("preview=") ? sandbox.Preview : appStub);
+}
+console.log("PASS demo entry skips all Firebase initialization and production App effects; ordinary entry is unchanged");
 const root = createRoot(document.getElementById("root"));
 const render = async () => { await act(async () => root.render(React.createElement(sandbox.Screen, { wipList: stock, shippingHistory: history, orderList: [], ctx }))); };
 const rows = () => [...document.querySelectorAll('[data-testid="shipping-product-group"]')];
@@ -110,6 +133,23 @@ const change = async (el, value) => { assert.ok(el); await act(async () => Simul
   await render();
   assert.equal(rows().length, 0);
   assert.match(document.body.textContent, /대기 물량 없음/);
+  const beforePreview = { transactions, writes: writes.length, logs: logs.length };
+  await act(async () => root.render(React.createElement(sandbox.Preview)));
+  assert.equal(rows().length, 4);
+  assert.match(document.body.textContent, /10개 로트/);
+  assert.equal(group().querySelector('[data-testid="shipping-group-quantity"]').textContent, "243 EA");
+  await click(group().querySelector("button"));
+  assert.equal(document.querySelectorAll('[data-testid^="shipping-lot-"]').length, 4);
+  const example = lot("preview-0-0");
+  assert.match(example.textContent, /MIX-TEST-1-1/);
+  assert.doesNotMatch(example.textContent, /MIX LOT 확인 필요/);
+  await change(example.querySelector('input[type="number"]'), "1");
+  await change(example.querySelector("select"), "이엔씨");
+  await change(example.querySelector('input[placeholder="담당자"]'), "예시 담당");
+  await click(example.querySelector("button"));
+  assert.match(document.querySelector('[role="status"]').textContent, /실제 출고가 저장되지 않습니다/);
+  assert.deepEqual({ transactions, writes: writes.length, logs: logs.length }, beforePreview);
+  console.log("PASS demo has four groups/ten LOTs and never transacts or sends Sheets logs, even with a valid shipment form");
   await act(async () => root.unmount());
   console.log("PASS exhausted groups disappear and empty stock remains readable");
 })().catch(error => { console.error(error); process.exitCode = 1; });
