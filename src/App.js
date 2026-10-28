@@ -57,6 +57,23 @@ const getSeriesWeight = (settings, productType, height) => {
   );
 };
 
+// 16T is available only for 234; shared/345 specifications stay unchanged.
+const getSeriesHeights = (settings, productType) => {
+  const heights = settings?.PRODUCT_HEIGHTS || DEFAULT_MASTER_SETTINGS.PRODUCT_HEIGHTS;
+  return getSeriesKey(productType) === "234"
+    ? ["16", ...heights.filter(height => String(height) !== "16")]
+    : heights;
+};
+
+// Switching from 234 16T to 345 must not retain an unsupported thickness.
+const getOrderProductSelection = (settings, order, color) => {
+  const heights = getSeriesHeights(settings, color);
+  const height = heights.find(h => String(h) === String(order.height))
+    ?? heights.find(h => String(h) === "25")
+    ?? heights[0];
+  return { ...order, color, height, singleWeight: getSeriesWeight(settings, color, height) };
+};
+
 const getSeriesPressure = (settings, productType, stepKey) => {
   const series = getSeriesKey(productType);
   const fallback =
@@ -637,7 +654,7 @@ const DEFAULT_MASTER_SETTINGS = {
   WEIGHT_BY_HEIGHT: { 20: 502, 22: 553, 25: 628, 30: 754, 35: 879 },
   WEIGHT_BY_SERIES: {
     "345": { 20: 502, 22: 553, 25: 628, 30: 754, 35: 879 },
-    "234": { 20: 502, 22: 553, 25: 628, 30: 754, 35: 879 },
+    "234": { 16: 450, 20: 502, 22: 553, 25: 628, 30: 754, 35: 879 },
   },
   RATIO_BY_COLOR: {
     // 3:45 제품군: 기존 BOM 그대로 유지
@@ -702,6 +719,7 @@ const mergeMasterSettings = (loaded = {}) => {
     },
     "234": {
       ...legacyWeights,
+      16: DEFAULT_MASTER_SETTINGS.WEIGHT_BY_SERIES["234"]["16"],
       ...(loaded.WEIGHT_BY_SERIES?.["234"] || {}),
     },
   };
@@ -2209,7 +2227,7 @@ function Step0OrderManagement({ orderList, wipList, shippingHistory, masterSetti
                   <div className="text-[11px] font-black text-slate-500 mb-2">{series} 제품군</div>
                   <div className="flex flex-wrap gap-2">
                     {masterSettings.PRODUCT_COLORS.filter((c) => c.startsWith(`${series} `)).map((c) => (
-                      <button key={c} type="button" onClick={() => setNewOrder({ ...newOrder, color: c, singleWeight: getSeriesWeight(masterSettings, c, newOrder.height) })} className={`px-3 py-1.5 rounded-md text-sm font-bold border ${newOrder.color === c ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-slate-700"}`}>{c}</button>
+                      <button key={c} type="button" onClick={() => setNewOrder(previous => getOrderProductSelection(masterSettings, previous, c))} className={`px-3 py-1.5 rounded-md text-sm font-bold border ${newOrder.color === c ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-slate-700"}`}>{c}</button>
                     ))}
                   </div>
                 </div>
@@ -2219,7 +2237,7 @@ function Step0OrderManagement({ orderList, wipList, shippingHistory, masterSetti
           <div>
             <label className="block text-sm font-medium mb-2">내열 두께 (T)</label>
             <div className="flex flex-wrap gap-2">
-              {masterSettings.PRODUCT_HEIGHTS.map((h) => (
+              {getSeriesHeights(masterSettings, newOrder.color).map((h) => (
                 <button key={h} type="button" onClick={() => setNewOrder({ ...newOrder, height: h, singleWeight: getSeriesWeight(masterSettings, newOrder.color, h) })} className={`px-3 py-1.5 rounded-md text-sm font-medium border ${newOrder.height === h ? "bg-indigo-600 text-white" : "bg-white"}`}>{h}T</button>
               ))}
             </div>
@@ -6643,7 +6661,7 @@ function Step10Settings({ masterSettings, ctx }) {
                           <div key={series} className="border rounded-xl p-4 bg-slate-50">
                             <div className="font-black text-indigo-700 mb-3">{series} 생산조건</div>
                             <div className="space-y-2">
-                              {settings.PRODUCT_HEIGHTS.map(height => (
+                              {getSeriesHeights(settings, `${series} BL3`).map(height => (
                                 <div key={height} className="flex justify-between items-center bg-white p-2.5 rounded-lg border">
                                   <span className="font-bold text-slate-600">{height}T</span>
                                   <div className="relative">
