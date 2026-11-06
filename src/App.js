@@ -1145,6 +1145,41 @@ if (
 // ==========================================
 // Dashboard View 
 // ==========================================
+// Read-only product breakdowns. Original dashboard totals remain the source of truth.
+const groupDashboardProducts = records => {
+  const groups = new Map();
+  records.forEach(record => {
+    const qty = Number(record.qty) || 0;
+    if (qty === 0) return;
+    const type = getProductLabel(record.type) || "제품 미확인";
+    const height = String(record.height ?? "").trim().replace(/T$/i, "");
+    const key = JSON.stringify([type, height]);
+    if (!groups.has(key)) groups.set(key, { key, type, height, qty: 0 });
+    groups.get(key).qty += qty;
+  });
+  return [...groups.values()].sort(compareFinishedProductGroups);
+};
+
+function DashboardProductBreakdown({ groups, scope, compact = false }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const limit = compact ? 4 : 6;
+  const visible = expanded ? groups : groups.slice(0, limit);
+  return <div className="w-full min-w-0 mt-3 border-t border-slate-100 pt-3" data-testid={`dashboard-products-${scope}`}>
+    <div className="flex items-center justify-between text-[11px] text-slate-500 mb-2"><span>제품별 수량</span><span>{groups.length}종</span></div>
+    {groups.length === 0 ? <p className="text-xs text-slate-400 py-2 text-center">해당 물량 없음</p> :
+      <ul className="space-y-1.5">{visible.map(group => <li key={group.key} data-testid="dashboard-product-row" data-product={group.type} data-height={group.height} data-qty={group.qty}
+        className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-2.5 py-2 text-xs">
+        <span className="min-w-0 break-words font-semibold text-slate-700">{group.type} <span className="text-indigo-600 whitespace-nowrap">{group.height ? `${group.height}T` : "두께 미확인"}</span></span>
+        <span className="shrink-0 font-black text-slate-800 tabular-nums">{group.qty.toLocaleString()} <span className="font-normal text-[10px] text-slate-500">EA</span></span>
+      </li>)}</ul>}
+    {groups.length > limit && <button type="button" aria-expanded={expanded} data-testid="dashboard-products-toggle"
+      onClick={event => { event.stopPropagation(); setExpanded(value => !value); }}
+      className="w-full mt-2 rounded-lg border border-indigo-100 bg-white py-1.5 text-xs font-bold text-indigo-600 hover:bg-indigo-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500">
+      {expanded ? "접기" : `+ 나머지 ${groups.length - limit}종 더보기`}
+    </button>}
+  </div>;
+}
+
 function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, shippingHistory, furnaces, setActiveStep, ctx, masterSettings }) {
   const stockForecast = React.useMemo(() => {
     const getBOM = (color, singleWeight, qty, options, isOrder = false) => {
@@ -1185,6 +1220,13 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
   const readyToShipQty = (wipList || []).filter((w) => w.currentStep === "done").reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
   const pipelineSteps = PROCESS_STEPS.filter((s) => s.id.startsWith("step") && !["step0", "step1", "step9"].includes(s.id));
   const activeWipList = (wipList || []).filter((w) => w.currentStep !== "done");
+  const pendingProductGroups = groupDashboardProducts(orderList
+    .filter(order => order.status !== "취소")
+    .map(order => ({ type: order.color, height: order.height, qty: getOrderProgress(order, wipList, shippingHistory).remainingQty })));
+  const wipProductGroups = groupDashboardProducts(activeWipList);
+  const readyProductGroups = groupDashboardProducts((wipList || []).filter(w => w.currentStep === "done"));
+  const warehouseWaitingQty = activeWipList.filter(w => w.currentStep === "step1")
+    .reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
 
   const [editingId, setEditingId] = React.useState(null);
   const [editData, setEditData] = React.useState({});
@@ -1746,58 +1788,54 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="bg-white rounded-xl p-6 shadow-sm border border-slate-100 flex flex-col items-center">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-start">
+        <div className="bg-white rounded-xl p-6 shadow-sm border border-slate-100 flex flex-col items-center" data-testid="dashboard-summary-pending">
           <div className="text-slate-500 text-xs font-bold mb-1">추가 생산 필요 수량</div>
-          <div className="text-3xl font-black text-indigo-600">{pendingOrdersQty.toLocaleString()} EA</div>
+          <div className="text-3xl font-black text-indigo-600" data-testid="dashboard-total-pending">{pendingOrdersQty.toLocaleString()} EA</div>
+          <DashboardProductBreakdown groups={pendingProductGroups} scope="pending" />
         </div>
-        <div className="bg-white rounded-xl p-6 shadow-sm border border-slate-100 flex flex-col items-center">
+        <div className="bg-white rounded-xl p-6 shadow-sm border border-slate-100 flex flex-col items-center" data-testid="dashboard-summary-wip">
           <div className="text-slate-500 text-xs font-bold mb-1">진행 중 공정 물량</div>
-          <div className="text-3xl font-black text-blue-600">{wipQty.toLocaleString()} EA</div>
+          <div className="text-3xl font-black text-blue-600" data-testid="dashboard-total-wip">{wipQty.toLocaleString()} EA</div>
+          <DashboardProductBreakdown groups={wipProductGroups} scope="wip" />
+          {warehouseWaitingQty > 0 && <p className="w-full text-[11px] text-slate-500 mt-3" data-testid="dashboard-warehouse-note">소재창고 대기 {warehouseWaitingQty.toLocaleString()} EA 포함 · 퀵 네비게이션은 혼합 이후 공정을 표시합니다.</p>}
         </div>
-        <div onClick={() => document.getElementById("master-finished-goods")?.scrollIntoView({ behavior: "smooth" })} className="bg-white rounded-xl p-6 shadow-sm border border-slate-100 flex flex-col items-center cursor-pointer hover:border-green-400 transition-all group relative overflow-hidden">
+        <div onClick={() => document.getElementById("master-finished-goods")?.scrollIntoView({ behavior: "smooth" })} className="bg-white rounded-xl p-6 shadow-sm border border-slate-100 flex flex-col items-center cursor-pointer hover:border-green-400 transition-all group relative overflow-hidden" data-testid="dashboard-summary-ready">
           <div className="text-slate-500 text-xs font-bold mb-1">출고대기 완제품</div>
-          <div className="text-3xl font-black text-green-600">{readyToShipQty.toLocaleString()} EA</div>
+          <div className="text-3xl font-black text-green-600" data-testid="dashboard-total-ready">{readyToShipQty.toLocaleString()} EA</div>
+          <DashboardProductBreakdown groups={readyProductGroups} scope="ready" />
         </div>
       </div>
 
       <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
-        <h3 className="text-lg font-bold mb-6 text-slate-800 flex items-center"><ArrowRight className="w-5 h-5 mr-2 text-blue-600" /> 공정 상황 퀵 네비게이션</h3>
-        <div className="flex justify-between items-start w-full">
-          {pipelineSteps.map((step, idx) => {
-  const dashboardStepMap = {
-    step2: ["step2"],
-    step3: ["step3"],
-    step4: ["step4"],
-    step5: ["step5"],
-    step5_shrink: ["step5_shrink"],
-    step6: ["step6"],
-    step7: ["step7", "step7_drying"],
-    step8: ["step8"],
-  };
-
-  const validSteps = dashboardStepMap[step.id] || [step.id];
-
-  const count = wipList
-    .filter((w) => validSteps.includes(w.currentStep))
-    .reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
+        <h3 className="text-lg font-bold mb-2 text-slate-800 flex items-center"><ArrowRight className="w-5 h-5 mr-2 text-blue-600" /> 공정 상황 퀵 네비게이션</h3>
+        <p className="text-sm text-slate-500 mb-4">제품·색상·두께별 진행 수량입니다. 공정을 누르면 해당 작업 화면으로 이동합니다.</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          {pipelineSteps.map(step => {
+            const dashboardStepMap = {
+              step2: ["step2"], step3: ["step3"], step4: ["step4"],
+              step5: ["step5"], step5_shrink: ["step5_shrink"], step6: ["step6"],
+              step7: ["step7", "step7_drying"], step8: ["step8"],
+            };
+            const validSteps = dashboardStepMap[step.id] || [step.id];
+            const stepWip = wipList.filter(w => validSteps.includes(w.currentStep));
+            const count = stepWip.reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
+            const productGroups = groupDashboardProducts(stepWip);
             const Icon = step.icon;
-            return (
-              <div key={step.id} onClick={() => setActiveStep(step.id)} className="flex-1 flex flex-col items-center relative group cursor-pointer hover:bg-slate-50 rounded-xl py-2">
-                {idx < pipelineSteps.length - 1 && <div className="absolute top-6 left-1/2 w-full h-0.5 bg-slate-100 -z-10"></div>}
-                <div className={`w-10 h-10 rounded-2xl flex items-center justify-center mb-2 shadow-sm ${count > 0 ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-400"}`}>
-                  <Icon className="w-5 h-5" />
-                </div>
-                <div className="text-center w-full">
-                  <div className="text-[10px] font-bold text-slate-500 mb-0.5">{step.name}</div>
-                  <div className={`text-sm font-black ${count > 0 ? "text-blue-700" : "text-slate-300"}`}>{count}</div>
-                </div>
-              </div>
-            );
+            return <div key={step.id} onClick={() => setActiveStep(step.id)} data-testid={`dashboard-stage-${step.id}`}
+              className="min-w-0 rounded-xl border border-slate-200 p-3 cursor-pointer hover:border-blue-300 hover:bg-blue-50/30 transition-colors">
+              <button type="button" onClick={event => { event.stopPropagation(); setActiveStep(step.id); }}
+                aria-label={`${step.name} 작업 화면으로 이동`} data-testid="dashboard-stage-link"
+                className="w-full flex items-center gap-2 text-left rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
+                <span className={`w-10 h-10 shrink-0 rounded-2xl flex items-center justify-center shadow-sm ${count > 0 ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-400"}`}><Icon className="w-5 h-5" /></span>
+                <span className="min-w-0 flex-1 text-xs font-bold text-slate-700">{step.name}</span>
+                <span data-testid="dashboard-stage-total" className={`shrink-0 text-base font-black tabular-nums ${count > 0 ? "text-blue-700" : "text-slate-400"}`}>{count.toLocaleString()} <span className="text-[10px] font-normal">EA</span></span>
+              </button>
+              <DashboardProductBreakdown groups={productGroups} scope={step.id} compact />
+            </div>;
           })}
         </div>
       </div>
-
       <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6 space-y-6">
         <div className="flex justify-between items-center">
           <div className="flex items-center gap-2">
