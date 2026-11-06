@@ -28,7 +28,7 @@ let stock = [fixture("a", "BL3", 25, 40), fixture("b", "345 BL3", "25", 44),
   fixture("pending", "345 BL3", 25, 999, { currentStep: "step8" }), fixture("shipped", "345 BL3", 25, 100)];
 const shipment = (id, date, qty, extra = {}) => ({ id, date, qty, type: "345 BL3", height: 25,
   packLot: `PACK-HISTORY-${id}`, productionLot: `MIX-HISTORY-${id}`, destination: "예시 출고처", operator: "예시 담당", ...extra });
-const history = [
+let history = [
   shipment("past", "2024-06-20 12:00", 100, { sourceWipId: "shipped", remainingQty: 0 }),
   shipment("current-old", "2026-10-03 09:00", 8),
   shipment("previous-month", "2026-09-20 10:00", 9),
@@ -99,6 +99,13 @@ const group = () => rows().find(row => row.querySelector("button").getAttribute(
 const lot = id => document.querySelector(`[data-testid="shipping-lot-${id}"]`);
 const click = async el => { assert.ok(el); await act(async () => el.click()); };
 const change = async (el, value) => { assert.ok(el); await act(async () => Simulate.change(el, { target: { value } })); };
+const historyGroups = () => [...document.querySelectorAll('[data-testid="shipping-history-group"]')];
+const expandHistory = async () => {
+  for (const row of historyGroups()) {
+    const button = row.querySelector("button");
+    if (button.getAttribute("aria-expanded") === "false") await click(button);
+  }
+};
 const historyRows = () => [...document.querySelectorAll('[data-testid^="shipping-history-row-"]')];
 const historyIds = () => historyRows().map(row => row.getAttribute("data-testid").replace("shipping-history-row-", ""));
 const historyYear = () => document.querySelector('select[aria-label="출고 연도"]');
@@ -111,6 +118,10 @@ const historySummary = () => document.querySelector('[data-testid="shipping-hist
     assert.equal(sandbox.historyPeriod(value), "", `invalid history date: ${value}`);
   }
   await render();
+  assert.equal(historyGroups().length, 1);
+  assert.equal(historyRows().length, 0);
+  assert.equal(historyGroups()[0].querySelector("button").getAttribute("aria-expanded"), "false");
+  assert.equal(historyGroups()[0].querySelector('[data-testid="shipping-history-group-quantity"]').textContent, "20 EA");
   assert.equal(rows().length, 4);
   assert.deepEqual(rows().map(row => row.querySelector("button").getAttribute("aria-label").replace(/ 로트 .*/, "")),
     ["345 BL3 25T", "345 BL3 30T", "345 B1 25T", "234 BL3 25T"]);
@@ -120,35 +131,89 @@ const historySummary = () => document.querySelector('[data-testid="shipping-hist
   assert.ok(rows().every(row => row.querySelector("button").getAttribute("aria-expanded") === "false"));
   assert.equal(historyYear().value, "2026");
   assert.equal(historyMonth(2026, 10).getAttribute("aria-pressed"), "true");
+  await expandHistory();
   assert.deepEqual(historyIds(), ["current-new", "current-old"]);
   assert.match(historySummary().textContent, /2\s*건/);
   assert.match(historySummary().textContent, /20\s*EA/);
   assert.ok([...historyYear().options].some(option => option.value === "2025"));
   assert.ok([...historyYear().options].some(option => option.value === "2024"));
   await click(historyMonth(2026, 9));
+  await expandHistory();
   assert.deepEqual(historyIds(), ["previous-month"]);
   assert.equal(historyMonth(2026, 9).getAttribute("aria-pressed"), "true");
   assert.equal(group().querySelector('[data-testid="shipping-group-quantity"]').textContent, "84 EA");
   assert.equal(lot("shipped"), null);
   await click(historyMonth(2026, 1));
+  await expandHistory();
   assert.deepEqual(historyIds(), []);
   assert.match(historySummary().textContent, /0\s*건/);
   await change(historyYear(), "2025");
   await click(historyMonth(2025, 12));
+  await expandHistory();
   assert.deepEqual(historyIds(), ["previous-year"]);
   const unknownDates = [...document.querySelectorAll("button")].find(button => /날짜 미확인/.test(button.textContent));
   assert.ok(unknownDates);
   assert.match(unknownDates.textContent, /3\s*건/);
   await click(unknownDates);
+  await expandHistory();
   assert.deepEqual(historyIds().sort(), ["invalid-day", "invalid-month", "missing-date"]);
   await change(historyYear(), "2026");
   await click(historyMonth(2026, 10));
+  await expandHistory();
   assert.deepEqual(historyIds(), ["current-new", "current-old"]);
   assert.equal(transactions, 0);
   assert.equal(writes.length, 0);
   assert.equal(logs.length, 0);
   assert.equal(JSON.stringify(history), originalHistory);
   console.log("PASS current Korean month, year/month selection, history totals/order, invalid dates, empty month, no writes, old shipped stock stays excluded");
+
+  // A separate month verifies grouped totals and real detail rows without production access.
+  const savedHistory = history;
+  history = [
+    ["p1", "345 BL3", 25, 94], ["p2", "BL3", "25", 96],
+    ["h30", "345 BL3", 30, 40], ["b1", "345 B1", 25, 50],
+    ["b2", "345 B1", "25", 40], ["s1", "234 BL3", 25, 60],
+    ["s2", "234 BL3", 25, 30], ["s3", "234 B1", 25, 75],
+  ].map(([id, type, height, qty], index) => ({ id, type, height, qty,
+    date: `2026-11-05 14:${String(index).padStart(2, "0")}`,
+    packLot: index < 2 ? "SAME-PARTIAL-LOT" : `PACK-${id}`,
+    productionLot: `MIX-${id}`, destination: `Destination-${id}`, operator: `Operator-${id}` }));
+  const historySnapshot = JSON.stringify(history);
+  await render();
+  await click(historyMonth(2026, 11));
+  assert.equal(historyRows().length, 0);
+  assert.equal(historyGroups().length, 5);
+  assert.deepEqual(historyGroups().map(row => row.querySelector("button").getAttribute("aria-label").replace(/ 출고 이력 .*/, "")),
+    ["345 BL3 25T", "345 BL3 30T", "345 B1 25T", "234 BL3 25T", "234 B1 25T"]);
+  assert.deepEqual(historyGroups().map(row => Number(row.querySelector('[data-testid="shipping-history-group-quantity"]').textContent.replace(/[^0-9]/g, ""))), [190, 40, 90, 90, 75]);
+  assert.match(historySummary().textContent, /8건/);
+  assert.match(historySummary().textContent, /485 EA/);
+  await click(historyGroups()[0].querySelector("button"));
+  assert.deepEqual(historyIds(), ["p2", "p1"]);
+  assert.match(historyRows()[0].textContent, /SAME-PARTIAL-LOT/);
+  assert.match(historyRows()[0].textContent, /Destination-p2/);
+  assert.match(historyRows()[0].textContent, /Operator-p2/);
+  assert.equal(group().querySelector("button").getAttribute("aria-expanded"), "false");
+  await click(group().querySelector("button"));
+  await change(lot("b").querySelector('input[type="number"]'), "3");
+  await click(historyGroups()[0].querySelector("button"));
+  assert.equal(lot("b").querySelector('input[type="number"]').value, "3");
+  await change(lot("b").querySelector('input[type="number"]'), "");
+  await click(group().querySelector("button"));
+  await expandHistory();
+  assert.equal(historyRows().length, 8);
+  assert.equal(historyRows().filter(row => /SAME-PARTIAL-LOT/.test(row.textContent)).length, 2);
+  assert.equal(JSON.stringify(history), historySnapshot);
+  assert.equal(transactions, 0); assert.equal(writes.length, 0); assert.equal(logs.length, 0);
+  history = history.map(record => record.id === "s3" ? { ...record, qty: 80 } : record);
+  await render();
+  assert.match(historySummary().textContent, /490 EA/);
+  assert.equal(historyGroups()[4].querySelector('[data-testid="shipping-history-group-quantity"]').textContent, "80 EA");
+  history = savedHistory;
+  await render();
+  await click(historyMonth(2026, 10));
+  assert.equal(JSON.stringify(history), originalHistory);
+  console.log("PASS history groups: 8 records/5 groups/485EA, same LOT partials retained, legacy normalization, latest-first details, independent toggles, live totals, no writes.");
 
   const priorStock = stock;
   const shades = ["BL1", "BL2", "BL3", "BL4", "B1", "A1", "A2"];
@@ -210,11 +275,14 @@ const historySummary = () => document.querySelector('[data-testid="shipping-hist
   assert.equal(rows().reduce((sum, row) => sum + Number(row.querySelector("button").textContent.match(/(\d+)\s*개 로트/)[1]), 0), Number(previewCounts[2]));
   assert.equal(historyYear().value, "2026");
   assert.equal(historyMonth(2026, 10).getAttribute("aria-pressed"), "true");
+  await expandHistory();
   assert.equal(historyRows().length, 2);
   await click(historyMonth(2026, 9));
+  await expandHistory();
   assert.equal(historyRows().length, 1);
   await change(historyYear(), "2025");
   await click(historyMonth(2025, 12));
+  await expandHistory();
   assert.equal(historyRows().length, 1);
   await change(historyYear(), "2026");
   await click(historyMonth(2026, 10));
