@@ -1,0 +1,38 @@
+name: Inspect MES security administration permissions
+on:
+  push:
+    branches: [mes-safety-test]
+    paths: [.github/workflows/mes-security-permissions-20261112.yml]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  inspect:
+    if: github.repository_id == '1197083974'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/782401133060/locations/global/workloadIdentityPools/github-mes-audit/providers/github-mes-audit
+          service_account: mes-audit-reader@dasanind-mes.iam.gserviceaccount.com
+          token_format: access_token
+          access_token_lifetime: 600s
+          create_credentials_file: false
+      - name: Read permissions only
+        env:
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          node - <<'NODE'
+          (async()=>{
+            const headers={Authorization:'Bearer '+process.env.ACCESS_TOKEN,'Content-Type':'application/json'};
+            const permissions=['firebaserules.rulesets.create','firebaserules.releases.get','firebaserules.releases.update','firebaseauth.configs.get','firebaseauth.configs.update','firebaseauth.users.create','firebaseauth.users.update','resourcemanager.projects.getIamPolicy','resourcemanager.projects.setIamPolicy'];
+            const p=await fetch('https://cloudresourcemanager.googleapis.com/v1/projects/dasanind-mes:testIamPermissions',{method:'POST',headers,body:JSON.stringify({permissions}),signal:AbortSignal.timeout(15000)});
+            const pj=await p.json();
+            console.log('ADMIN_PERMISSION_CHECK='+JSON.stringify({status:p.status,permissions:pj.permissions||[],error:pj.error?.status||null}));
+            const r=await fetch('https://firebaserules.googleapis.com/v1/projects/dasanind-mes/releases/cloud.firestore',{headers,signal:AbortSignal.timeout(15000)});
+            const j=await r.json();
+            console.log('RULES_READ_CHECK='+JSON.stringify({status:r.status,hasRuleset:!!j.rulesetName,error:j.error?.status||null}));
+          })().catch(e=>{console.error('Permission inspection failed: '+e.name);process.exitCode=1;});
+          NODE
