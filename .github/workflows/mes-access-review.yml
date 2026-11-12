@@ -1,0 +1,68 @@
+name: MES external access review
+on:
+  push:
+    branches: [security/mes-access-review-20261112]
+    paths: [.github/workflows/mes-access-review.yml]
+permissions:
+  contents: read
+jobs:
+  review:
+    if: github.repository_id == '1197083974'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: c9f484437fe1a9a62d5da6666361b9dce4afd8b7
+          persist-credentials: false
+      - name: Inspect unauthenticated serving and minimal database permissions
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const source = fs.readFileSync('src/App.js','utf8');
+          const host = 'https://dasan-mes-app.vercel.app';
+          const report = {};
+          const request = async (url, options = {}) => fetch(url, {...options, signal:AbortSignal.timeout(15000)});
+          const inspect = async (url) => {
+            const res = await request(url, {redirect:'manual'});
+            const body = await res.text();
+            return {res, body, info:{status:res.status, noindexHeader:/noindex/i.test(res.headers.get('x-robots-tag')||''), frameProtection:res.headers.get('x-frame-options')||'', csp:!!res.headers.get('content-security-policy'), nosniff:res.headers.get('x-content-type-options')==='nosniff', isAppShell:body.includes('id="root"'), noindexHtml:/<meta[^>]+(?:robots|googlebot)[^>]+noindex/i.test(body)}};
+          };
+          (async()=>{
+            const home = await inspect(host+'/'); report.home = home.info;
+            const direct = await inspect(host+'/?step=step9'); report.directRoute = direct.info;
+            const robots = await inspect(host+'/robots.txt'); report.robots = {status:robots.res.status, actualRobots:/User-agent:/i.test(robots.body), disallowAll:/Disallow:\s*\//i.test(robots.body)};
+            const scriptPath = home.body.match(/src="([^"]*\/static\/js\/[^\"]+\.js)"/)?.[1];
+            if(scriptPath){
+              const script = await request(new URL(scriptPath,host)); const code = await script.text();
+              const pins=[...source.matchAll(/const\s+(?:MASTER_PIN|PROCESS_PIN)\s*=\s*"([^"]+)"/g)].map(m=>m[1]);
+              report.bundle={status:script.status, embeddedPinCount:pins.filter(pin=>code.includes(JSON.stringify(pin))).length};
+              const mapPath=code.match(/sourceMappingURL=([^\s]+)/)?.[1];
+              if(mapPath){ const m=await request(new URL(mapPath,new URL(scriptPath,host)),{method:'HEAD',redirect:'manual'}); report.sourceMap={status:m.status}; }
+            }
+            report.dynamicNoindex=/meta\.content\s*=\s*"noindex, nofollow"/.test(source);
+            const key=source.match(/apiKey:\s*process\.env\.[A-Z_]+\s*\|\|\s*"([^"]+)"/)?.[1];
+            const project=source.match(/projectId:\s*process\.env\.[A-Z_]+\s*\|\|\s*"([^"]+)"/)?.[1];
+            if(!key || project!=='dasanind-mes') throw Error('Reviewed Firebase config mismatch');
+            const base='https://firestore.googleapis.com/v1/projects/'+project+'/databases/(default)/documents/artifacts/dasan-mes-app/public/data:runQuery';
+            const query={structuredQuery:{select:{fields:[{fieldPath:'__name__'}]},from:[{collectionId:'wipList'}],limit:1}};
+            const probe=async token=>{
+              const res=await request(base,{method:'POST',headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},body:JSON.stringify(query)});
+              const j=await res.json();
+              return {status:res.status, readAllowed:res.ok, returnedDocument:Array.isArray(j)&&j.some(row=>!!row.document), errorStatus:j.error?.status||null};
+            };
+            report.databaseWithoutAuth=await probe(null);
+            const signup=await request('https://identitytoolkit.googleapis.com/v1/accounts:signUp?key='+key,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({returnSecureToken:true})});
+            const anonymous=await signup.json();
+            report.anonymousSignIn={status:signup.status, allowed:!!anonymous.idToken};
+            if(anonymous.idToken){
+              try{ report.databaseWithAnonymousNoPin=await probe(anonymous.idToken); }
+              finally{
+                const cleanup=await request('https://identitytoolkit.googleapis.com/v1/accounts:delete?key='+key,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idToken:anonymous.idToken})});
+                report.temporaryAuthAccountDeleted=cleanup.ok;
+              }
+            }
+            console.log('SANITIZED_ACCESS_REVIEW='+JSON.stringify(report));
+            console.log('Production record writes, print requests and Apps Script calls: 0. No record contents, document IDs, passwords or tokens logged.');
+          })().catch(error=>{console.error('Access review failed: '+error.name);process.exitCode=1;});
+          NODE
