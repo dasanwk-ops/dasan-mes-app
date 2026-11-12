@@ -1,0 +1,37 @@
+name: Web hardening checks
+on:
+  push:
+    branches: [main, security/mes-access-review-20261112]
+    paths:
+      - public/index.html
+      - vercel.json
+      - .env.production
+      - tools/test-web-hardening.cjs
+      - .github/workflows/web-hardening-checks.yml
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Validate static security configuration
+        run: node tools/test-web-hardening.cjs
+      - name: Install existing dependencies without lifecycle scripts
+        run: npm install --ignore-scripts --no-package-lock --no-audit --no-fund > /tmp/mes-install.log 2>&1 || { tail -n 40 /tmp/mes-install.log; exit 1; }
+      - name: Existing production regressions
+        run: |
+          set -euo pipefail
+          { npm run test:finished-goods && node tools/test-heat-completion.cjs && npm run test:packaging-lot && npm run test:wip-lot-safety && node tools/test-dashboard-products.cjs; } > /tmp/mes-regressions.log 2>&1 || { tail -n 80 /tmp/mes-regressions.log; exit 1; }
+          grep -E '^PASS|tests passed|# pass |# fail ' /tmp/mes-regressions.log
+      - name: Build and verify unpublished source maps
+        run: |
+          set -euo pipefail
+          CI=false npm run build > /tmp/mes-build.log 2>&1 || { tail -n 60 /tmp/mes-build.log; exit 1; }
+          grep -E 'Compiled|Failed' /tmp/mes-build.log
+          node tools/test-web-hardening.cjs --build
+          node tools/test-dashboard-products.cjs > /tmp/mes-dashboard.log 2>&1 || { tail -n 50 /tmp/mes-dashboard.log; exit 1; }
+          grep '^PASS' /tmp/mes-dashboard.log
