@@ -31,6 +31,8 @@ jobs:
         run: npm run test:packaging-lot
       - name: Existing WIP transition and split safety
         run: npm run test:wip-lot-safety
+      - name: Zero-yield closure regression
+        run: node tools/test-fully-defective-close.cjs
       - name: Production build including guarded integration
         run: CI=false npm run build
       - name: Check integration again after build
