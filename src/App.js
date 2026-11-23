@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { getLabelManufacturingDate, confirmLabelManufacturingDate, manufacturingDateSourceLabel } from "./labelManufacturingDate";
+import { FULLY_DEFECTIVE_STEP, isFullyDefectiveClosed, canCloseFullyDefective, hasActiveEquipmentReference } from "./fullyDefectiveClosure";
 import { preparePackagingLot, assertPackagingLotMatchesLabel, splitPackagingIdentity, inspectPackagingLotIdentity, packagingLotLabelLines } from "./packagingLot";
 import { initializeApp } from "firebase/app";
 import { getAuth, onAuthStateChanged, signInAnonymously } from "firebase/auth";
@@ -595,10 +596,9 @@ const getOrderProgress = (order, wipList = [], shippingHistory = []) => {
     (h) => String(h.orderId || "") === orderId
   );
 
-  const wipQty = linkedWip.reduce(
-    (sum, w) => sum + Math.max(0, Number(w.qty) || 0),
-    0
-  );
+  const wipQty = linkedWip
+    .filter(w => !isFullyDefectiveClosed(w))
+    .reduce((sum, w) => sum + Math.max(0, Number(w.qty) || 0), 0);
 
   const finishedStockQty = linkedWip
     .filter((w) => w.currentStep === "done")
@@ -1216,10 +1216,13 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
     if (o.status === "취소") return sum;
     return sum + getOrderProgress(o, wipList, shippingHistory).remainingQty;
   }, 0);
-  const wipQty = (wipList || []).filter((w) => w.currentStep !== "done").reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
+  const wipQty = (wipList || []).filter((w) => w.currentStep !== "done" && !isFullyDefectiveClosed(w)).reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
   const readyToShipQty = (wipList || []).filter((w) => w.currentStep === "done").reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
   const pipelineSteps = PROCESS_STEPS.filter((s) => s.id.startsWith("step") && !["step0", "step1", "step9"].includes(s.id));
-  const activeWipList = (wipList || []).filter((w) => w.currentStep !== "done");
+  const activeWipList = (wipList || []).filter((w) => w.currentStep !== "done" && !isFullyDefectiveClosed(w));
+  const fullyDefectiveHistory = (wipList || [])
+    .filter(isFullyDefectiveClosed)
+    .sort((a, b) => String(b.fullyDefectiveClosedAt || "").localeCompare(String(a.fullyDefectiveClosedAt || "")));
   const pendingProductGroups = groupDashboardProducts(orderList
     .filter(order => order.status !== "취소")
     .map(order => ({ type: order.color, height: order.height, qty: getOrderProgress(order, wipList, shippingHistory).remainingQty })));
@@ -1228,6 +1231,10 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
   const warehouseWaitingQty = activeWipList.filter(w => w.currentStep === "step1")
     .reduce((sum, w) => sum + (Number(w.qty) || 0), 0);
 
+  const [closingDefectiveId, setClosingDefectiveId] = React.useState(null);
+  const [defectiveCloseForm, setDefectiveCloseForm] = React.useState({ operator: "", reason: "" });
+  const closingDefectiveRef = React.useRef(new Set());
+  const [closingDefectiveBusy, setClosingDefectiveBusy] = React.useState([]);
   const [editingId, setEditingId] = React.useState(null);
   const [editData, setEditData] = React.useState({});
   const [editingInvId, setEditingInvId] = React.useState(null);
@@ -1448,6 +1455,68 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
     }
 
     await saveChanges();
+  };
+
+  // Administrator-only quality closure for an already zero-yield production LOT.
+  // Keep the WIP document and its complete process history. No finished inventory,
+  // shipping record, packing LOT or label queue item is created.
+  const handleFullyDefectiveClose = (wip) => {
+    const operator = String(defectiveCloseForm.operator || "").trim();
+    const reason = String(defectiveCloseForm.reason || "").trim();
+    if (!canCloseFullyDefective(wip)) return ctx.showToast("양품 수량 0EA의 미종료 로트만 전량 불량 종료할 수 있습니다.", "error");
+    if (!operator || !reason) return ctx.showToast("담당자와 전량 불량 사유를 모두 입력해주세요.", "error");
+    if (operator.length > 80 || reason.length > 250) return ctx.showToast("담당자는 80자, 사유는 250자 이내로 입력해주세요.", "error");
+
+    ctx.showConfirm(
+      `${wip.mixLot} (${getProductLabel(wip.type)} ${wip.height}T)\n양품 0EA를 전량 불량으로 종료하시겠습니까?\n\n담당: ${operator}\n사유: ${reason}\n※ 라벨/완제품/출고 수량은 생성되지 않으며 생산 이력은 보존됩니다.`,
+      async () => {
+        if (closingDefectiveRef.current.has(wip.id)) return;
+        closingDefectiveRef.current.add(wip.id);
+        setClosingDefectiveBusy([...closingDefectiveRef.current]);
+        try {
+          const now = getKST();
+          await runTransaction(db, async transaction => {
+            const wipRef = getDocRef("wipList", wip.id);
+            const furnacesRef = getDocRef("equipment", "furnaces");
+            const dryingRef = getDocRef("equipment", "dryingRoom");
+            const [wipSnap, furnaceSnap, dryingSnap] = await Promise.all([
+              transaction.get(wipRef),
+              transaction.get(furnacesRef),
+              transaction.get(dryingRef)
+            ]);
+            if (!wipSnap.exists()) throw new Error("생산 LOT를 찾을 수 없습니다.");
+            const live = wipSnap.data();
+            if (["currentStep", "qty", "mixLot", "type", "height", "packLot", "labelPrintedAt", "labelPrintJobId"]
+              .some(key => String(live[key] ?? "") !== String(wip[key] ?? ""))) {
+              throw new Error("처리 도중 로트 정보가 변경되었습니다. 새로고침 후 다시 확인해주세요.");
+            }
+            if (!canCloseFullyDefective(live)) throw new Error("현재 수량 또는 라벨 상태로는 전량 불량 종료할 수 없습니다.");
+            if (hasActiveEquipmentReference(wip.id,
+              furnaceSnap.exists() ? furnaceSnap.data() : {},
+              dryingSnap.exists() ? dryingSnap.data() : {})) {
+              throw new Error("열처리 또는 건조 장비에 이 로트가 배정되어 있습니다. 장비 작업을 먼저 정리해주세요.");
+            }
+            transaction.update(wipRef, {
+              qty: 0,
+              currentStep: FULLY_DEFECTIVE_STEP,
+              fullyDefectiveFromStep: live.currentStep,
+              fullyDefectiveClosedAt: now,
+              fullyDefectiveClosedBy: operator,
+              fullyDefectiveReason: reason,
+              details: `${live.details || ""}\n[${now}] [전량 불량 종료] 양품 0EA | 이전공정:${live.currentStep} | 담당:${operator} | 사유:${reason}`
+            });
+          });
+          setClosingDefectiveId(null);
+          setDefectiveCloseForm({ operator: "", reason: "" });
+          ctx.showToast(`${wip.mixLot} 전량 불량 종료 완료 — 생산 이력 보존`, "success");
+        } catch (error) {
+          ctx.showToast(error?.message || "전량 불량 종료 실패", "error");
+        } finally {
+          closingDefectiveRef.current.delete(wip.id);
+          setClosingDefectiveBusy([...closingDefectiveRef.current]);
+        }
+      }
+    );
   };
 
   const handleDeleteWip = (id) => {
@@ -2103,7 +2172,27 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
                         {isEditing ? (
                           <><button onClick={() => handleSaveWip(wip)} className="bg-orange-500 text-white p-1.5 rounded shadow-sm">저장</button><button onClick={() => setEditingId(null)} className="bg-slate-200 text-slate-700 p-1.5 rounded shadow-sm">취소</button></>
                         ) : (
-                          <><button onClick={() => { setEditingId(wip.id); setEditData({ ...wip, correctionReason: "" }); }} className="text-slate-500 hover:text-indigo-600 p-1 bg-white border rounded shadow-sm">수정</button><button onClick={() => handleDeleteWip(wip.id)} className="text-red-400 hover:bg-red-500 hover:text-white p-1 bg-white border rounded shadow-sm transition-colors">삭제</button></>
+                          <>
+                            <button onClick={() => { setEditingId(wip.id); setEditData({ ...wip, correctionReason: "" }); }} className="text-slate-500 hover:text-indigo-600 p-1 bg-white border rounded shadow-sm">수정</button>
+                            <button onClick={() => handleDeleteWip(wip.id)} className="text-red-400 hover:bg-red-500 hover:text-white p-1 bg-white border rounded shadow-sm transition-colors">삭제</button>
+                            {canCloseFullyDefective(wip) && (
+                              <div className="mt-2 w-52 text-left">
+                                {closingDefectiveId === wip.id ? (
+                                  <div className="p-2 border border-red-200 bg-red-50 rounded-lg space-y-2">
+                                    <div className="text-xs font-bold text-red-800">양품 0EA · 이력 보존 종료</div>
+                                    <input type="text" maxLength={80} value={defectiveCloseForm.operator} onChange={event => setDefectiveCloseForm({ ...defectiveCloseForm, operator: event.target.value })} placeholder="담당자 (필수)" aria-label="전량 불량 종료 담당자" className="w-full p-1.5 border rounded text-xs" />
+                                    <textarea maxLength={250} rows={2} value={defectiveCloseForm.reason} onChange={event => setDefectiveCloseForm({ ...defectiveCloseForm, reason: event.target.value })} placeholder="불량 사유 (필수)" aria-label="전량 불량 종료 사유" className="w-full p-1.5 border rounded text-xs" />
+                                    <div className="flex gap-1">
+                                      <button type="button" disabled={closingDefectiveBusy.includes(wip.id)} onClick={() => handleFullyDefectiveClose(wip)} className="flex-1 p-1.5 rounded bg-red-700 text-white text-xs disabled:opacity-50">종료 확정</button>
+                                      <button type="button" onClick={() => setClosingDefectiveId(null)} className="p-1.5 rounded bg-white border text-xs">취소</button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <button type="button" onClick={() => { setClosingDefectiveId(wip.id); setDefectiveCloseForm({ operator: "", reason: "" }); }} className="w-full text-xs px-2 py-1.5 font-bold text-red-700 bg-red-50 border border-red-200 rounded hover:bg-red-100">전량 불량 종료</button>
+                                )}
+                              </div>
+                            )}
+                          </>
                         )}
                       </div>
                     </td>
@@ -2114,6 +2203,28 @@ function DashboardView({ inventory, wipList, orderList = [], inventoryHistory, s
           </table>
         </div>
       </div>
+      {fullyDefectiveHistory.length > 0 && (
+        <div className="bg-white rounded-xl shadow-sm border border-red-100 p-6">
+          <h3 className="text-lg font-bold text-red-800 mb-2">전량 불량 종료 이력</h3>
+          <p className="text-xs text-slate-500 mb-4">양품 0EA · 완제품 재고 및 출고 대상에서 제외 · 기존 생산 기록 보존</p>
+          <div className="overflow-x-auto max-h-72">
+            <table className="w-full text-xs text-left">
+              <thead className="bg-red-50 text-red-800"><tr><th className="p-2">생산 LOT</th><th className="p-2">제품</th><th className="p-2">종료일시</th><th className="p-2">담당자</th><th className="p-2">사유</th></tr></thead>
+              <tbody>
+                {fullyDefectiveHistory.map(wip => (
+                  <tr key={wip.id} className="border-b">
+                    <td className="p-2 font-bold text-indigo-700">{wip.mixLot}</td>
+                    <td className="p-2">{getProductLabel(wip.type)} {wip.height}T</td>
+                    <td className="p-2">{wip.fullyDefectiveClosedAt || "-"}</td>
+                    <td className="p-2">{wip.fullyDefectiveClosedBy || "-"}</td>
+                    <td className="p-2 max-w-64 break-words">{wip.fullyDefectiveReason || "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -6110,6 +6221,7 @@ export function ShippingGroupsPreview() {
 
 const getCurrentProcessLabel = step => {
   if (step === "done") return "완제품 창고 (출고 대기)";
+  if (step === FULLY_DEFECTIVE_STEP) return "전량 불량 종료";
   if (step === "step7") return "건조 대기";
   if (step === "step7_drying") return "건조 진행 중";
   return PROCESS_STEPS.find(item => item.id === step)?.name || `공정 확인 필요 (${step || "미지정"})`;
@@ -6533,15 +6645,22 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
     ]);
   }, [wipList, shippingHistory, orderList, hasSearched, searchLot, editingId]);
 
-  const startEdit = (res) => { setEditData({ ...res.data }); setEditingId(res.data.id); };
+  const startEdit = (res) => {
+    if (res.collection === "wipList" && isFullyDefectiveClosed(res.data)) {
+      return ctx.showToast("전량 불량 종료된 생산 LOT는 이력 보존을 위해 수정할 수 없습니다.", "error");
+    }
+    setEditData({ ...res.data }); setEditingId(res.data.id);
+  };
 
   const handleSaveEdit = async (res) => {
+    if (res.collection === "wipList" && isFullyDefectiveClosed(res.data)) return ctx.showToast("종료된 생산 LOT는 수정할 수 없습니다.", "error");
     try {
       await runTransaction(db, async transaction => {
         const ref = getDocRef(res.collection, res.data.id);
         const snap = await transaction.get(ref);
         if (!snap.exists()) throw new Error("이미 출고되었거나 삭제된 데이터입니다. 다시 검색해주세요.");
         const current = snap.data();
+        if (res.collection === "wipList" && isFullyDefectiveClosed(current)) throw new Error("전량 불량 종료 이력은 수정할 수 없습니다.");
         for (const key of ["qty", "currentStep", "details"]) {
           if ((current[key] ?? "") !== (res.data[key] ?? "")) {
             throw new Error("검색 이후 수량 또는 공정이 변경되었습니다. 다시 검색한 뒤 수정해주세요.");
@@ -6559,11 +6678,22 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
   };
 
   const handleDelete = (res) => {
+    if (res.collection === "wipList" && isFullyDefectiveClosed(res.data)) return ctx.showToast("전량 불량 종료 이력은 영구 삭제할 수 없습니다.", "error");
     const targetLot = res.data.mixLot || res.data.lot;
     if (ctx && ctx.showConfirm) {
       ctx.showConfirm(`[마스터 권한] 정말로 로트(${targetLot}) 데이터를 영구 삭제하시겠습니까?`, async () => {
         try {
-          await deleteDoc(getDocRef(res.collection, res.data.id));
+          if (res.collection === "wipList") {
+            await runTransaction(db, async transaction => {
+              const ref = getDocRef(res.collection, res.data.id);
+              const snapshot = await transaction.get(ref);
+              if (!snapshot.exists()) throw new Error("로트가 존재하지 않습니다.");
+              if (isFullyDefectiveClosed(snapshot.data())) throw new Error("전량 불량 종료 이력은 영구 삭제할 수 없습니다.");
+              transaction.delete(ref);
+            });
+          } else {
+            await deleteDoc(getDocRef(res.collection, res.data.id));
+          }
           ctx.showToast(`로트(${targetLot}) 영구 삭제 완료`, "success");
           setResults(results.filter((r) => r.data.id !== res.data.id));
         } catch (error) { ctx.showToast("삭제 실패", "error"); }
@@ -6595,7 +6725,7 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
               <div key={idx} className={`border-2 rounded-2xl p-6 transition-all ${isEditing ? "border-orange-400 bg-orange-50/30" : "border-indigo-100 bg-indigo-50/30"}`}>
                 <div className={`flex flex-col md:flex-row justify-between items-start md:items-center border-b pb-4 mb-4 gap-4 ${isEditing ? "border-orange-200" : "border-indigo-100"}`}>
                   <div>
-                    <span className={`px-3 py-1 rounded-full text-xs font-black mr-3 ${result.type === "shipped" ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700"}`}>{result.type === "shipped" ? "출고 완료 제품" : result.data.currentStep === "done" ? "완제품 재고" : "생산 진행 중"}</span>
+                    <span className={`px-3 py-1 rounded-full text-xs font-black mr-3 ${result.type === "shipped" ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700"}`}>{result.type === "shipped" ? "출고 완료 제품" : result.data.currentStep === "done" ? "완제품 재고" : isFullyDefectiveClosed(result.data) ? "전량 불량 종료" : "생산 진행 중"}</span>
                     <span className="font-black text-2xl text-slate-800">{result.data.lot ||
  result.data.packLot ||
  result.data.mixLot}</span>
@@ -6636,11 +6766,15 @@ function StepTracking({ wipList, shippingHistory, inventoryHistory, orderList, c
                   </div>
 
                   <div className="mt-6 pt-4 flex justify-between items-center border-t border-slate-200">
-                    <button onClick={() => handleDelete(result)} className="flex items-center text-red-500 bg-red-50 hover:bg-red-100 px-4 py-2.5 rounded-xl font-black text-sm transition-colors border border-red-200"><Trash2 className="w-4 h-4 mr-1.5" /> 데이터 영구 삭제</button>
+                    {result.collection === "wipList" && isFullyDefectiveClosed(result.data) ? (
+                      <span className="text-sm font-bold text-red-700">전량 불량 종료 · 생산 이력 보존 (수정 및 삭제 차단)</span>
+                    ) : (
+                      <button onClick={() => handleDelete(result)} className="flex items-center text-red-500 bg-red-50 hover:bg-red-100 px-4 py-2.5 rounded-xl font-black text-sm transition-colors border border-red-200"><Trash2 className="w-4 h-4 mr-1.5" /> 데이터 영구 삭제</button>
+                    )}
                     <div className="flex space-x-3">
                       {isEditing ? (
                         <><button onClick={() => setEditingId(null)} className="px-6 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-bold transition-colors">취소</button><button onClick={() => handleSaveEdit(result)} className="flex items-center px-6 py-2.5 bg-orange-500 hover:bg-orange-600 text-white rounded-xl font-black shadow-md transition-colors"><Save className="w-4 h-4 mr-1.5" /> 강제 수정 저장</button></>
-                      ) : (
+                      ) : (result.collection === "wipList" && isFullyDefectiveClosed(result.data)) ? null : (
                         <button onClick={() => startEdit(result)} className="flex items-center px-6 py-2.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-black shadow-md transition-colors"><Edit2 className="w-4 h-4 mr-1.5" /> 데이터 강제 수정</button>
                       )}
                     </div>
